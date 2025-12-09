@@ -2,42 +2,47 @@
 const colorMode = useColorMode()
 
 const navigation = [
-  { label: 'Dashboard', icon: 'i-heroicons-home', to: '/' },
-  { label: 'Apps', icon: 'i-heroicons-cube', to: '/apps' },
-  { label: 'Settings', icon: 'i-heroicons-cog-6-tooth', to: '/settings' }
+  {
+    label: 'Dashboard',
+    icon: 'i-heroicons-home',
+    to: '/'
+  },
+  {
+    label: 'Apps',
+    icon: 'i-heroicons-cube',
+    to: '/apps'
+  },
+  {
+    label: 'Settings',
+    icon: 'i-heroicons-cog-6-tooth',
+    to: '/settings'
+  }
 ]
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-50 dark:bg-gray-950">
-    <!-- Sidebar -->
-    <aside class="fixed inset-y-0 left-0 z-50 w-64 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800">
-      <!-- Logo -->
-      <div class="flex items-center gap-2 h-16 px-4 border-b border-gray-200 dark:border-gray-800">
-        <UIcon name="i-heroicons-rocket-launch" class="w-8 h-8 text-primary-500" />
-        <span class="text-xl font-bold">Deployer</span>
-      </div>
+  <UDashboardGroup>
+    <UDashboardSidebar collapsible resizable>
+      <template #header="{ collapsed }">
+        <div class="flex items-center gap-2" :class="collapsed ? 'justify-center' : ''">
+          <UIcon name="i-heroicons-rocket-launch" class="size-8 text-primary-500 shrink-0" />
+          <span v-if="!collapsed" class="text-xl font-bold truncate">Deployer</span>
+        </div>
+      </template>
 
-      <!-- Navigation -->
-      <nav class="p-4 space-y-1">
-        <UButton
-          v-for="item in navigation"
-          :key="item.to"
-          :to="item.to"
-          :icon="item.icon"
-          variant="ghost"
-          color="neutral"
-          class="w-full justify-start"
-          :class="{ 'bg-gray-100 dark:bg-gray-800': $route.path === item.to }"
-        >
-          {{ item.label }}
-        </UButton>
-      </nav>
+      <template #default="{ collapsed }">
+        <UNavigationMenu
+          :items="navigation"
+          orientation="vertical"
+          :collapsed="collapsed"
+          highlight
+          color="primary"
+        />
+      </template>
 
-      <!-- Footer -->
-      <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 dark:border-gray-800">
-        <div class="flex items-center justify-between">
-          <span class="text-sm text-gray-500">v0.1.0</span>
+      <template #footer="{ collapsed }">
+        <div class="flex items-center" :class="collapsed ? 'justify-center' : 'justify-between'">
+          <span v-if="!collapsed" class="text-sm text-muted">v0.1.0</span>
           <UButton
             :icon="colorMode.value === 'dark' ? 'i-heroicons-sun' : 'i-heroicons-moon'"
             variant="ghost"
@@ -46,28 +51,27 @@ const navigation = [
             @click="colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'"
           />
         </div>
-      </div>
-    </aside>
+      </template>
+    </UDashboardSidebar>
 
-    <!-- Main content -->
-    <main class="pl-64">
-      <!-- Header -->
-      <header class="sticky top-0 z-40 h-16 bg-white/80 dark:bg-gray-900/80 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-        <div class="flex items-center justify-between h-full px-6">
-          <h1 class="text-lg font-semibold">
+    <UDashboardPanel>
+      <template #header>
+        <UDashboardNavbar>
+          <template #leading>
             <slot name="header" />
-          </h1>
-          <div class="flex items-center gap-4">
-            <UButton icon="i-heroicons-bell" variant="ghost" color="neutral" />
-            <UAvatar text="U" size="sm" />
-          </div>
-        </div>
-      </header>
+          </template>
+          <template #trailing>
+            <div class="flex items-center gap-2">
+              <UButton icon="i-heroicons-bell" variant="ghost" color="neutral" />
+              <UAvatar text="U" size="sm" />
+            </div>
+          </template>
+        </UDashboardNavbar>
+      </template>
 
-      <!-- Page content -->
-      <div class="p-6">
+      <template #body>
         <slot />
-      </div>
-    </main>
-  </div>
+      </template>
+    </UDashboardPanel>
+  </UDashboardGroup>
 </template>
