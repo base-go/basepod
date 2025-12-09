@@ -28,6 +28,27 @@ A self-hosted Platform as a Service (PaaS) built with **Go**, **Podman**, and **
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Quick Install (VPS/Linux)
+
+One-line install on any Linux VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
+```
+
+With a custom domain (enables automatic SSL):
+
+```bash
+DEPLOYER_DOMAIN=deploy.example.com curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
+```
+
+Supported: Ubuntu, Debian, Fedora, CentOS, Rocky, Alma, Arch
+
+After install:
+- Dashboard: `http://your-server-ip:3000`
+- Apps get domains: `appname.deploy.example.com`
+- SSL is automatic via Let's Encrypt
+
 ## Quick Start (macOS)
 
 Complete setup for local development with `*.pod` domains.
