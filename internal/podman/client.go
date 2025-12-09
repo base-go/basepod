@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,31 +237,27 @@ func (c *client) Ping(ctx context.Context) error {
 
 // CreateContainer creates a new container
 func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) (string, error) {
-	// Convert env map to slice
-	envSlice := make([]string, 0, len(opts.Env))
-	for k, v := range opts.Env {
-		envSlice = append(envSlice, fmt.Sprintf("%s=%s", k, v))
-	}
-
 	// Convert port mappings
 	portMappings := make([]map[string]interface{}, 0)
 	for containerPort, hostPort := range opts.Ports {
+		cPort, _ := strconv.Atoi(containerPort)
+		hPort, _ := strconv.Atoi(hostPort)
 		portMappings = append(portMappings, map[string]interface{}{
-			"container_port": containerPort,
-			"host_port":      hostPort,
+			"container_port": cPort,
+			"host_port":      hPort,
 		})
 	}
 
 	spec := map[string]interface{}{
-		"name":          opts.Name,
-		"image":         opts.Image,
-		"env":           envSlice,
-		"portmappings":  portMappings,
-		"volumes":       opts.Volumes,
-		"netns":         map[string]interface{}{"nsmode": "bridge"},
-		"command":       opts.Command,
-		"working_dir":   opts.WorkingDir,
-		"labels":        opts.Labels,
+		"name":         opts.Name,
+		"image":        opts.Image,
+		"env":          opts.Env,
+		"portmappings": portMappings,
+		"volumes":      opts.Volumes,
+		"netns":        map[string]interface{}{"nsmode": "bridge"},
+		"command":      opts.Command,
+		"working_dir":  opts.WorkingDir,
+		"labels":       opts.Labels,
 	}
 
 	if len(opts.Networks) > 0 {

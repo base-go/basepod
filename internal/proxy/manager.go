@@ -50,8 +50,8 @@ func (m *Manager) SyncRoutes(ctx context.Context) error {
 		}
 
 		// Determine upstream based on container
-		upstream := fmt.Sprintf("localhost:%d", a.Ports.ExposePort)
-		if a.Ports.ExposePort == 0 {
+		upstream := fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+		if a.Ports.HostPort == 0 {
 			// Default to container port + app-specific offset
 			upstream = fmt.Sprintf("localhost:%d", 10000+a.Ports.ContainerPort)
 		}

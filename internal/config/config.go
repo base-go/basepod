@@ -3,8 +3,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -209,9 +211,18 @@ func GetPodmanSocket() string {
 		return fmt.Sprintf("/run/user/%d/podman/podman.sock", uid)
 
 	case "darwin":
-		// macOS: Podman machine socket location
+		// macOS: Try to get socket path from podman machine inspect
+		if socketPath := getPodmanMachineSocket(); socketPath != "" {
+			return socketPath
+		}
+		// Fallback: check common locations
+		tmpDir := os.TempDir()
+		socketPath := filepath.Join(tmpDir, "podman", "podman-machine-default-api.sock")
+		if _, err := os.Stat(socketPath); err == nil {
+			return socketPath
+		}
+		// Fallback to old location
 		home, _ := os.UserHomeDir()
-		// Try the default podman machine socket
 		return filepath.Join(home, ".local", "share", "containers", "podman", "machine", "podman.sock")
 
 	case "windows":
@@ -221,4 +232,34 @@ func GetPodmanSocket() string {
 	default:
 		return ""
 	}
+}
+
+// getPodmanMachineSocket tries to get the socket path from podman machine inspect
+func getPodmanMachineSocket() string {
+	cmd := exec.Command("podman", "machine", "inspect", "--format", "json")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	var machines []struct {
+		ConnectionInfo struct {
+			PodmanSocket struct {
+				Path string `json:"Path"`
+			} `json:"PodmanSocket"`
+		} `json:"ConnectionInfo"`
+	}
+
+	if err := json.Unmarshal(output, &machines); err != nil {
+		return ""
+	}
+
+	if len(machines) > 0 && machines[0].ConnectionInfo.PodmanSocket.Path != "" {
+		socketPath := machines[0].ConnectionInfo.PodmanSocket.Path
+		if _, err := os.Stat(socketPath); err == nil {
+			return socketPath
+		}
+	}
+
+	return ""
 }

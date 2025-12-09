@@ -1,0 +1,33 @@
+<script setup lang="ts">
+interface Props {
+  label: string
+  value: number | string
+  icon: string
+  color?: 'primary' | 'success' | 'warning' | 'error' | 'info' | 'neutral'
+}
+
+withDefaults(defineProps<Props>(), {
+  color: 'primary'
+})
+</script>
+
+<template>
+  <UCard>
+    <div class="flex items-center gap-4">
+      <div
+        class="flex items-center justify-center w-12 h-12 rounded-lg"
+        :class="`bg-${color}-100 dark:bg-${color}-900/20`"
+      >
+        <UIcon
+          :name="icon"
+          class="w-6 h-6"
+          :class="`text-${color}-500`"
+        />
+      </div>
+      <div>
+        <p class="text-sm text-gray-500 dark:text-gray-400">{{ label }}</p>
+        <p class="text-2xl font-bold">{{ value }}</p>
+      </div>
+    </div>
+  </UCard>
+</template>

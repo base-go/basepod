@@ -1,82 +1,83 @@
 <script setup lang="ts">
+import type { AppsResponse, App } from '~/types'
+import type { TableColumn } from '@nuxt/ui'
+
 definePageMeta({
   title: 'Apps'
 })
 
-const { data: apps, refresh } = await useFetch('/api/apps')
+const toast = useToast()
+const { data: apps, refresh } = await useApiFetch<AppsResponse>('/apps')
 
 const isCreateModalOpen = ref(false)
 const isDeployModalOpen = ref(false)
-const selectedApp = ref<any>(null)
+const selectedApp = ref<App | null>(null)
 
-const newApp = ref({
-  name: '',
-  domain: '',
-  port: 8080,
-  enableSSL: true
-})
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'data' in error) {
+    const data = (error as { data?: { error?: string } }).data
+    if (data?.error) return data.error
+  }
+  return 'An unexpected error occurred'
+}
 
-const deployForm = ref({
-  image: ''
-})
-
-async function createApp() {
+async function startApp(app: App) {
   try {
-    await $fetch('/api/apps', {
-      method: 'POST',
-      body: newApp.value
-    })
-    isCreateModalOpen.value = false
-    newApp.value = { name: '', domain: '', port: 8080, enableSSL: true }
+    await $api(`/apps/${app.id}/start`, { method: 'POST' })
+    toast.add({ title: `${app.name} started`, color: 'success' })
     refresh()
-  } catch (error: any) {
-    console.error('Failed to create app:', error)
+  } catch (error) {
+    toast.add({ title: 'Failed to start app', description: getErrorMessage(error), color: 'error' })
   }
 }
 
-async function deployApp() {
-  if (!selectedApp.value) return
-
+async function stopApp(app: App) {
   try {
-    await $fetch(`/api/apps/${selectedApp.value.id}/deploy`, {
-      method: 'POST',
-      body: deployForm.value
-    })
-    isDeployModalOpen.value = false
-    deployForm.value = { image: '' }
+    await $api(`/apps/${app.id}/stop`, { method: 'POST' })
+    toast.add({ title: `${app.name} stopped`, color: 'warning' })
     refresh()
-  } catch (error: any) {
-    console.error('Failed to deploy:', error)
+  } catch (error) {
+    toast.add({ title: 'Failed to stop app', description: getErrorMessage(error), color: 'error' })
   }
 }
 
-async function startApp(app: any) {
-  await $fetch(`/api/apps/${app.id}/start`, { method: 'POST' })
-  refresh()
-}
-
-async function stopApp(app: any) {
-  await $fetch(`/api/apps/${app.id}/stop`, { method: 'POST' })
-  refresh()
-}
-
-async function deleteApp(app: any) {
+async function deleteApp(app: App) {
   if (!confirm(`Delete ${app.name}?`)) return
-  await $fetch(`/api/apps/${app.id}`, { method: 'DELETE' })
-  refresh()
+  try {
+    await $api(`/apps/${app.id}`, { method: 'DELETE' })
+    toast.add({ title: `${app.name} deleted`, color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to delete app', description: getErrorMessage(error), color: 'error' })
+  }
 }
 
-function openDeploy(app: any) {
-  selectedApp.value = app
-  isDeployModalOpen.value = true
+async function deployApp(app: App) {
+  // If app has an image, deploy directly without modal
+  if (app.image) {
+    try {
+      await $api(`/apps/${app.id}/deploy`, {
+        method: 'POST',
+        body: { image: app.image }
+      })
+      toast.add({ title: `Deploying ${app.name}...`, color: 'success' })
+      refresh()
+    } catch (error) {
+      toast.add({ title: 'Failed to deploy', description: getErrorMessage(error), color: 'error' })
+    }
+  } else {
+    // No image defined, show modal
+    selectedApp.value = app
+    isDeployModalOpen.value = true
+  }
 }
 
-const columns = [
-  { key: 'name', label: 'Name' },
-  { key: 'status', label: 'Status' },
-  { key: 'domain', label: 'Domain' },
-  { key: 'image', label: 'Image' },
-  { key: 'actions', label: '' }
+const columns: TableColumn<App>[] = [
+  { accessorKey: 'name', header: 'Name' },
+  { accessorKey: 'status', header: 'Status' },
+  { accessorKey: 'domain', header: 'Domain' },
+  { accessorKey: 'image', header: 'Image' },
+  { id: 'actions', header: '' }
 ]
 </script>
 
@@ -95,71 +96,71 @@ const columns = [
 
     <!-- Apps Table -->
     <UCard>
-      <UTable :columns="columns" :rows="apps?.apps || []">
-        <template #name-data="{ row }">
-          <div class="flex items-center gap-2">
+      <UTable :columns="columns" :data="apps?.apps || []">
+        <template #name-cell="{ row }">
+          <NuxtLink :to="`/apps/${row.original.id}`" class="flex items-center gap-2 hover:text-primary-500">
             <UIcon name="i-heroicons-cube" class="w-5 h-5 text-gray-400" />
-            <span class="font-medium">{{ row.name }}</span>
-          </div>
+            <span class="font-medium">{{ row.original.name }}</span>
+          </NuxtLink>
         </template>
 
-        <template #status-data="{ row }">
+        <template #status-cell="{ row }">
           <UBadge
-            :color="row.status === 'running' ? 'success' : row.status === 'stopped' ? 'warning' : 'gray'"
+            :color="row.original.status === 'running' ? 'success' : row.original.status === 'stopped' ? 'warning' : 'neutral'"
           >
-            {{ row.status }}
+            {{ row.original.status }}
           </UBadge>
         </template>
 
-        <template #domain-data="{ row }">
+        <template #domain-cell="{ row }">
           <a
-            v-if="row.domain"
-            :href="`https://${row.domain}`"
+            v-if="row.original.domain"
+            :href="`http://${row.original.domain}`"
             target="_blank"
             class="text-primary-500 hover:underline"
           >
-            {{ row.domain }}
+            {{ row.original.domain }}
           </a>
           <span v-else class="text-gray-400">-</span>
         </template>
 
-        <template #image-data="{ row }">
-          <code v-if="row.image" class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
-            {{ row.image }}
+        <template #image-cell="{ row }">
+          <code v-if="row.original.image" class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
+            {{ row.original.image }}
           </code>
           <span v-else class="text-gray-400">Not deployed</span>
         </template>
 
-        <template #actions-data="{ row }">
+        <template #actions-cell="{ row }">
           <div class="flex items-center justify-end gap-2">
             <UButton
-              v-if="row.status !== 'running'"
+              v-if="row.original.status !== 'running'"
               icon="i-heroicons-play"
               variant="ghost"
               color="success"
               size="sm"
-              @click="startApp(row)"
+              @click="startApp(row.original)"
             />
             <UButton
-              v-if="row.status === 'running'"
+              v-if="row.original.status === 'running'"
               icon="i-heroicons-stop"
               variant="ghost"
               color="warning"
               size="sm"
-              @click="stopApp(row)"
+              @click="stopApp(row.original)"
             />
             <UButton
               icon="i-heroicons-arrow-up-tray"
               variant="ghost"
               size="sm"
-              @click="openDeploy(row)"
+              @click="deployApp(row.original)"
             />
             <UButton
               icon="i-heroicons-trash"
               variant="ghost"
               color="error"
               size="sm"
-              @click="deleteApp(row)"
+              @click="deleteApp(row.original)"
             />
           </div>
         </template>
@@ -173,56 +174,7 @@ const columns = [
       </div>
     </UCard>
 
-    <!-- Create App Modal -->
-    <UModal v-model:open="isCreateModalOpen">
-      <template #header>
-        <h3 class="text-lg font-semibold">Create New App</h3>
-      </template>
-
-      <form @submit.prevent="createApp" class="space-y-4 p-4">
-        <UFormField label="App Name" required>
-          <UInput v-model="newApp.name" placeholder="my-app" />
-        </UFormField>
-
-        <UFormField label="Domain">
-          <UInput v-model="newApp.domain" placeholder="my-app.example.com" />
-        </UFormField>
-
-        <UFormField label="Container Port">
-          <UInput v-model.number="newApp.port" type="number" />
-        </UFormField>
-
-        <UFormField>
-          <UCheckbox v-model="newApp.enableSSL" label="Enable SSL (HTTPS)" />
-        </UFormField>
-
-        <div class="flex justify-end gap-2 pt-4">
-          <UButton variant="ghost" @click="isCreateModalOpen = false">Cancel</UButton>
-          <UButton type="submit">Create</UButton>
-        </div>
-      </form>
-    </UModal>
-
-    <!-- Deploy Modal -->
-    <UModal v-model:open="isDeployModalOpen">
-      <template #header>
-        <h3 class="text-lg font-semibold">Deploy {{ selectedApp?.name }}</h3>
-      </template>
-
-      <form @submit.prevent="deployApp" class="space-y-4 p-4">
-        <UFormField label="Docker Image" required>
-          <UInput v-model="deployForm.image" placeholder="nginx:latest" />
-        </UFormField>
-
-        <p class="text-sm text-gray-500">
-          Enter a Docker image from Docker Hub or a private registry.
-        </p>
-
-        <div class="flex justify-end gap-2 pt-4">
-          <UButton variant="ghost" @click="isDeployModalOpen = false">Cancel</UButton>
-          <UButton type="submit" :loading="false">Deploy</UButton>
-        </div>
-      </form>
-    </UModal>
+    <AppsCreateAppModal v-model:open="isCreateModalOpen" @created="refresh()" />
+    <AppsDeployAppModal v-model:open="isDeployModalOpen" :app="selectedApp" @deployed="refresh()" />
   </div>
 </template>

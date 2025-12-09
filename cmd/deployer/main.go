@@ -8,11 +8,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/deployer/deployer/internal/api"
+	"github.com/deployer/deployer/internal/caddy"
 	"github.com/deployer/deployer/internal/config"
 	"github.com/deployer/deployer/internal/podman"
 	"github.com/deployer/deployer/internal/storage"
@@ -65,16 +69,54 @@ func main() {
 	}
 	defer store.Close()
 
-	// Initialize Podman client
+	// Initialize Podman client (auto-start if needed)
+	log.Printf("Connecting to Podman...")
+	if err := ensurePodmanRunning(); err != nil {
+		log.Printf("Warning: Failed to ensure Podman is running: %v", err)
+	}
+
 	pm, err := podman.NewClient()
 	if err != nil {
 		log.Printf("Warning: Failed to connect to Podman: %v", err)
-		log.Printf("Podman socket expected at: %s", config.GetPodmanSocket())
-		log.Printf("Make sure Podman is running (try: podman system service --time=0 &)")
+		log.Printf("Please start Podman manually: podman machine start")
+	} else {
+		// Verify connection with ping
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if pingErr := pm.Ping(ctx); pingErr != nil {
+			log.Printf("Warning: Podman ping failed: %v", pingErr)
+		} else {
+			log.Printf("Podman connected successfully")
+		}
+		cancel()
+	}
+
+	// Initialize Caddy client (auto-start if needed)
+	caddyURL := os.Getenv("CADDY_ADMIN_URL")
+	if caddyURL == "" {
+		caddyURL = "http://localhost:2019"
+	}
+	caddyClient := caddy.NewClient(caddyURL)
+	if err := caddyClient.Ping(); err != nil {
+		log.Printf("Caddy not running, attempting to start...")
+		if startErr := ensureCaddyRunning(); startErr != nil {
+			log.Printf("Warning: Failed to start Caddy: %v", startErr)
+			caddyClient = nil
+		} else {
+			// Retry ping
+			time.Sleep(1 * time.Second)
+			if err := caddyClient.Ping(); err != nil {
+				log.Printf("Warning: Still failed to connect to Caddy: %v", err)
+				caddyClient = nil
+			} else {
+				log.Printf("Caddy started successfully")
+			}
+		}
+	} else {
+		log.Printf("Caddy connected successfully")
 	}
 
 	// Create API server
-	apiServer := api.NewServer(store, pm)
+	apiServer := api.NewServer(store, pm, caddyClient)
 
 	// Override port from flag
 	if *port != 0 {
@@ -166,4 +208,73 @@ func runSetup(paths *config.Paths) {
 	fmt.Println()
 	fmt.Println("Or run directly:")
 	fmt.Println("  go run ./cmd/deployer")
+}
+
+// ensurePodmanRunning starts Podman machine if not running (macOS) or service (Linux)
+func ensurePodmanRunning() error {
+	if runtime.GOOS == "darwin" {
+		// Check if machine is running
+		cmd := exec.Command("podman", "machine", "list", "--format", "{{.Running}}")
+		output, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("failed to check Podman machine status: %w", err)
+		}
+
+		if !strings.Contains(string(output), "true") {
+			log.Printf("Starting Podman machine...")
+			startCmd := exec.Command("podman", "machine", "start")
+			startCmd.Stdout = os.Stdout
+			startCmd.Stderr = os.Stderr
+			if err := startCmd.Run(); err != nil {
+				return fmt.Errorf("failed to start Podman machine: %w", err)
+			}
+			// Wait for machine to be ready
+			time.Sleep(5 * time.Second)
+		}
+		return nil
+	}
+
+	// Linux: start podman socket service
+	cmd := exec.Command("systemctl", "--user", "start", "podman.socket")
+	if err := cmd.Run(); err != nil {
+		// Try without systemd
+		cmd = exec.Command("podman", "system", "service", "--time=0")
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start Podman service: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureCaddyRunning starts Caddy in the background
+func ensureCaddyRunning() error {
+	// Try to find caddy in PATH or common locations
+	caddyPath, err := exec.LookPath("caddy")
+	if err != nil {
+		// Try common paths on macOS
+		commonPaths := []string{
+			"/opt/homebrew/bin/caddy",
+			"/usr/local/bin/caddy",
+			"/usr/bin/caddy",
+		}
+		for _, p := range commonPaths {
+			if _, err := os.Stat(p); err == nil {
+				caddyPath = p
+				break
+			}
+		}
+		if caddyPath == "" {
+			return fmt.Errorf("caddy not found. Install with: brew install caddy")
+		}
+	}
+
+	// Start caddy with default config (admin API only)
+	cmd := exec.Command(caddyPath, "start")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start Caddy: %w", err)
+	}
+
+	return nil
 }

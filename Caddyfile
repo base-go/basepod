@@ -1,0 +1,18 @@
+# Deployer Caddyfile
+# Run with: caddy run --config Caddyfile
+#
+# This enables the admin API on localhost:2019
+# The deployer server will dynamically add routes via the API
+
+{
+	# Enable admin API
+	admin localhost:2019
+
+	# For local development, use self-signed certs
+	local_certs
+
+	# Disable auto HTTPS for local development
+	auto_https disable_redirects
+}
+
+# Routes are added dynamically via API at /config/apps/http/servers/deployer
