@@ -1,0 +1,49 @@
+# Binaries
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (keep deployer.yaml.example)
+# Don't ignore the example
+!deployer.yaml.example
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+
+# Node modules (for web UI)
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Air (hot reload)
+tmp/
