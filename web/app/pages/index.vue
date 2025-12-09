@@ -41,10 +41,6 @@ const podmanStatus = computed(() => {
 
 <template>
   <div>
-    <template #header>
-      Dashboard
-    </template>
-
     <!-- Stats Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       <UCard v-for="stat in stats" :key="stat.label">
