@@ -7,7 +7,9 @@ export default defineNuxtConfig({
     '@nuxt/ui',
     '@nuxt/eslint'
   ],
-
+  css: [
+    '@/assets/css/main.css'
+  ],
   ui: {
     colorMode: true
   },
