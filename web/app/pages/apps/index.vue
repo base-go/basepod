@@ -82,10 +82,6 @@ const columns = [
 
 <template>
   <div>
-    <template #header>
-      Apps
-    </template>
-
     <!-- Header Actions -->
     <div class="flex items-center justify-between mb-6">
       <div>
