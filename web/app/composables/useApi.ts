@@ -1,44 +1,26 @@
 // API composable for making requests to the deployer backend
 
-export function useApi() {
+export function useApiBase() {
   const config = useRuntimeConfig()
+  return config.public.apiBase as string
+}
 
-  const baseURL = config.public.apiBase
+export function useApiFetch<T>(path: string, options?: { server?: boolean }) {
+  const config = useRuntimeConfig()
+  const baseURL = config.public.apiBase as string
+  return useFetch<T>(path, {
+    baseURL,
+    ...options
+  } as object)
+}
 
-  async function get<T>(path: string): Promise<T> {
-    return await $fetch<T>(path, { baseURL })
-  }
-
-  async function post<T>(path: string, body?: any): Promise<T> {
-    return await $fetch<T>(path, {
-      method: 'POST',
-      baseURL,
-      body
-    })
-  }
-
-  async function put<T>(path: string, body?: any): Promise<T> {
-    return await $fetch<T>(path, {
-      method: 'PUT',
-      baseURL,
-      body
-    })
-  }
-
-  async function del<T>(path: string): Promise<T> {
-    return await $fetch<T>(path, {
-      method: 'DELETE',
-      baseURL
-    })
-  }
-
-  return {
-    get,
-    post,
-    put,
-    del,
-    baseURL
-  }
+export async function $api<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> {
+  const config = useRuntimeConfig()
+  const baseURL = config.public.apiBase as string
+  return await $fetch<T>(path, {
+    baseURL,
+    ...options
+  } as object)
 }
 
 // Types

@@ -1,20 +1,16 @@
 <script setup lang="ts">
+import type { HealthResponse } from '~/types'
+
 definePageMeta({
   title: 'Settings'
 })
 
-const { data: health } = await useFetch('/api/health')
+const { data: health } = await useApiFetch<HealthResponse>('/health')
 
 const settings = ref({
   domain: '',
   email: '',
   enableWildcard: true
-})
-
-const podmanSocket = computed(() => {
-  return health.value?.podman === 'connected'
-    ? 'Connected'
-    : health.value?.podman_error || 'Disconnected'
 })
 </script>
 

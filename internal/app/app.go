@@ -38,8 +38,8 @@ const (
 // PortConfig holds port configuration
 type PortConfig struct {
 	ContainerPort int    `json:"container_port"` // Port the app listens on inside container
+	HostPort      int    `json:"host_port"`      // Port exposed on the host
 	Protocol      string `json:"protocol"`       // http, https, tcp
-	ExposePort    int    `json:"expose_port"`    // External port (0 = auto-assign)
 }
 
 // VolumeMount represents a volume mount

@@ -1,48 +1,138 @@
 <script setup lang="ts">
+import type { App } from '~/types'
+
 const route = useRoute()
+const toast = useToast()
 const appId = route.params.id as string
 
-const { data: app, refresh } = await useFetch(`/api/apps/${appId}`)
-const { data: logs } = await useFetch(`/api/apps/${appId}/logs?tail=100`, {
-  transform: (data: string) => data
-})
+const { data: app, refresh } = await useApiFetch<App>(`/apps/${appId}`)
 
 const activeTab = ref('overview')
 
 const tabs = [
-  { key: 'overview', label: 'Overview', icon: 'i-heroicons-information-circle' },
-  { key: 'logs', label: 'Logs', icon: 'i-heroicons-document-text' },
-  { key: 'env', label: 'Environment', icon: 'i-heroicons-key' },
-  { key: 'settings', label: 'Settings', icon: 'i-heroicons-cog-6-tooth' }
+  { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
+  { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
+  { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
+  { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' }
 ]
 
+const logs = ref('')
+const logsLoading = ref(false)
+
+async function fetchLogs() {
+  if (!app.value?.container_id) return
+  logsLoading.value = true
+  try {
+    logs.value = await $api<string>(`/apps/${appId}/logs?tail=100`)
+  } catch {
+    logs.value = ''
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'logs') {
+    fetchLogs()
+  }
+})
+
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'data' in error) {
+    const data = (error as { data?: { error?: string } }).data
+    if (data?.error) return data.error
+  }
+  return 'An unexpected error occurred'
+}
+
 async function startApp() {
-  await $fetch(`/api/apps/${appId}/start`, { method: 'POST' })
-  refresh()
+  try {
+    await $api(`/apps/${appId}/start`, { method: 'POST' })
+    toast.add({ title: 'App started', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to start', description: getErrorMessage(error), color: 'error' })
+  }
 }
 
 async function stopApp() {
-  await $fetch(`/api/apps/${appId}/stop`, { method: 'POST' })
-  refresh()
+  try {
+    await $api(`/apps/${appId}/stop`, { method: 'POST' })
+    toast.add({ title: 'App stopped', color: 'warning' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to stop', description: getErrorMessage(error), color: 'error' })
+  }
 }
 
 async function restartApp() {
-  await $fetch(`/api/apps/${appId}/restart`, { method: 'POST' })
-  refresh()
+  try {
+    await $api(`/apps/${appId}/restart`, { method: 'POST' })
+    toast.add({ title: 'App restarted', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to restart', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+// Settings form
+const settingsForm = ref({
+  domain: '',
+  port: 8080,
+  enableSSL: false
+})
+
+// Initialize settings form when app data loads
+watch(() => app.value, (appData) => {
+  if (appData) {
+    settingsForm.value = {
+      domain: appData.domain || '',
+      port: appData.ports?.container_port || 8080,
+      enableSSL: appData.ssl?.enabled || false
+    }
+  }
+}, { immediate: true })
+
+async function saveSettings() {
+  try {
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: {
+        domain: settingsForm.value.domain,
+        port: settingsForm.value.port,
+        enable_ssl: settingsForm.value.enableSSL
+      }
+    })
+    toast.add({ title: 'Settings saved', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function deleteApp() {
+  if (!confirm(`Are you sure you want to delete ${app.value?.name}? This cannot be undone.`)) return
+
+  try {
+    await $api(`/apps/${appId}`, { method: 'DELETE' })
+    toast.add({ title: 'App deleted', color: 'success' })
+    navigateTo('/apps')
+  } catch (error) {
+    toast.add({ title: 'Failed to delete', description: getErrorMessage(error), color: 'error' })
+  }
 }
 </script>
 
 <template>
   <div v-if="app">
-    <template #header>
-      {{ app.name }}
-    </template>
-
     <!-- App Header -->
     <div class="flex items-start justify-between mb-6">
       <div class="flex items-center gap-4">
-        <div class="flex items-center justify-center w-16 h-16 rounded-xl bg-primary-100 dark:bg-primary-900/20">
-          <UIcon name="i-heroicons-cube" class="w-8 h-8 text-primary-500" />
+        <NuxtLink to="/apps" class="text-gray-400 hover:text-gray-600">
+          <UIcon name="i-heroicons-arrow-left" class="w-5 h-5" />
+        </NuxtLink>
+        <div class="flex items-center justify-center w-14 h-14 rounded-xl bg-primary-100 dark:bg-primary-900/20">
+          <UIcon name="i-heroicons-cube" class="w-7 h-7 text-primary-500" />
         </div>
         <div>
           <h1 class="text-2xl font-bold">{{ app.name }}</h1>
@@ -54,15 +144,15 @@ async function restartApp() {
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-3">
         <UBadge
-          :color="app.status === 'running' ? 'success' : app.status === 'stopped' ? 'warning' : 'gray'"
+          :color="app.status === 'running' ? 'success' : app.status === 'stopped' ? 'warning' : 'neutral'"
           size="lg"
         >
           {{ app.status }}
         </UBadge>
 
-        <UButtonGroup>
+        <div class="flex gap-2">
           <UButton
             v-if="app.status !== 'running'"
             icon="i-heroicons-play"
@@ -81,12 +171,12 @@ async function restartApp() {
           </UButton>
           <UButton
             icon="i-heroicons-arrow-path"
-            variant="soft"
+            variant="outline"
             @click="restartApp"
           >
             Restart
           </UButton>
-        </UButtonGroup>
+        </div>
       </div>
     </div>
 
@@ -103,11 +193,11 @@ async function restartApp() {
         <dl class="space-y-3">
           <div class="flex justify-between">
             <dt class="text-gray-500">ID</dt>
-            <dd class="font-mono text-sm">{{ app.id }}</dd>
+            <dd class="font-mono text-sm">{{ app.id.slice(0, 8) }}...</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">Container ID</dt>
-            <dd class="font-mono text-sm">{{ app.container_id || '-' }}</dd>
+            <dd class="font-mono text-sm">{{ app.container_id ? app.container_id.slice(0, 12) + '...' : '-' }}</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">Image</dt>
@@ -141,7 +231,7 @@ async function restartApp() {
           <div class="flex justify-between">
             <dt class="text-gray-500">SSL</dt>
             <dd>
-              <UBadge :color="app.ssl?.enabled ? 'success' : 'gray'">
+              <UBadge :color="app.ssl?.enabled ? 'success' : 'neutral'">
                 {{ app.ssl?.enabled ? 'Enabled' : 'Disabled' }}
               </UBadge>
             </dd>
@@ -155,13 +245,17 @@ async function restartApp() {
       <template #header>
         <div class="flex items-center justify-between">
           <h3 class="font-semibold">Container Logs</h3>
-          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" @click="refresh">
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="logsLoading" @click="fetchLogs">
             Refresh
           </UButton>
         </div>
       </template>
 
-      <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-96 overflow-y-auto">{{ logs || 'No logs available' }}</pre>
+      <div v-if="!app.container_id" class="text-center py-8 text-gray-500">
+        <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>App has not been deployed yet</p>
+      </div>
+      <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
     </UCard>
 
     <!-- Environment Tab -->
@@ -169,7 +263,7 @@ async function restartApp() {
       <template #header>
         <div class="flex items-center justify-between">
           <h3 class="font-semibold">Environment Variables</h3>
-          <UButton variant="soft" size="sm" icon="i-heroicons-plus">
+          <UButton variant="outline" size="sm" icon="i-heroicons-plus">
             Add Variable
           </UButton>
         </div>
@@ -181,13 +275,14 @@ async function restartApp() {
           :key="key"
           class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800"
         >
-          <code class="font-mono">{{ key }}</code>
-          <code class="font-mono text-gray-500">{{ value }}</code>
+          <code class="font-mono text-sm">{{ key }}</code>
+          <code class="font-mono text-sm text-gray-500">{{ value }}</code>
         </div>
       </div>
 
       <div v-else class="text-center py-8 text-gray-500">
-        No environment variables configured
+        <UIcon name="i-heroicons-key" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>No environment variables configured</p>
       </div>
     </UCard>
 
@@ -199,18 +294,21 @@ async function restartApp() {
 
       <div class="space-y-4 max-w-md">
         <UFormField label="Domain">
-          <UInput :model-value="app.domain" placeholder="app.example.com" />
+          <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
         </UFormField>
 
         <UFormField label="Container Port">
-          <UInput :model-value="app.ports?.container_port" type="number" />
+          <UInput v-model.number="settingsForm.port" type="number" />
         </UFormField>
 
         <UFormField>
-          <UCheckbox :model-value="app.ssl?.enabled" label="Enable SSL" />
+          <UCheckbox v-model="settingsForm.enableSSL" label="Enable SSL" />
         </UFormField>
 
-        <UButton>Save Changes</UButton>
+        <div class="flex gap-2 pt-4">
+          <UButton @click="saveSettings">Save Changes</UButton>
+          <UButton color="error" variant="outline" @click="deleteApp">Delete App</UButton>
+        </div>
       </div>
     </UCard>
   </div>

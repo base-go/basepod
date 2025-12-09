@@ -28,164 +28,170 @@ A self-hosted Platform as a Service (PaaS) built with **Go**, **Podman**, and **
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Quick Start (macOS)
 
-### Server Installation (VPS)
+Complete setup for local development with `*.pod` domains.
 
-```bash
-# Download and run installer
-curl -sSL https://raw.githubusercontent.com/deployer/deployer/main/scripts/install.sh | bash
-
-# Configure your domain
-nano ~/deployer/config/deployer.yaml
-
-# Start services
-systemctl --user enable --now deployer deployer-caddy
-```
-
-### CLI Installation (Local)
+### Step 1: Install Dependencies
 
 ```bash
-# Install CLI only
-curl -sSL https://raw.githubusercontent.com/deployer/deployer/main/scripts/install-cli.sh | bash
+# Install Homebrew packages
+brew install podman caddy dnsmasq
 
-# Login to your server
-deployerctl login https://deployer.yourdomain.com
+# Initialize Podman VM
+podman machine init
+podman machine start
 ```
 
-## Usage
+### Step 2: Setup Local DNS and Port Forwarding
 
-### Web UI
-
-Access your deployer dashboard at `https://deployer.yourdomain.com`
-
-- Create and manage apps
-- Monitor deployments
-- View logs in real-time
-- Configure environment variables
-
-### CLI
+This enables wildcard `*.pod` domains (e.g., `nginx.pod`, `mysql.pod`).
 
 ```bash
-# List all apps
-deployerctl apps
+# Configure dnsmasq
+echo -e "address=/pod/127.0.0.2\nlisten-address=127.0.0.2\nport=53" | sudo tee /opt/homebrew/etc/dnsmasq.conf
 
-# Create a new app
-deployerctl create myapp --domain myapp.example.com
+# Create loopback alias for 127.0.0.2
+sudo ifconfig lo0 alias 127.0.0.2
 
-# Deploy from Docker image
-deployerctl deploy myapp --image nginx:latest
+# Setup macOS resolver
+sudo mkdir -p /etc/resolver
+sudo bash -c 'echo "nameserver 127.0.0.2" > /etc/resolver/pod'
 
-# View logs
-deployerctl logs myapp --tail 100
+# Start dnsmasq
+sudo /opt/homebrew/sbin/dnsmasq
 
-# Start/stop/restart
-deployerctl start myapp
-deployerctl stop myapp
-deployerctl restart myapp
+# Forward port 80 to 8080 (so you can use http://app.pod instead of :8080)
+echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
 
-# Delete an app
-deployerctl delete myapp
+# Verify DNS works
+ping -c 1 test.pod
+# Should show: PING test.pod (127.0.0.2)
 ```
 
-### REST API
+### Step 3: Build and Run
+
+```bash
+# Clone and build
+git clone https://github.com/deployer/deployer.git
+cd deployer
+go build -o deployer ./cmd/deployer
+
+# Start the server (auto-starts Podman & Caddy)
+./deployer
+
+# In a new terminal, start the web UI
+cd web
+bun install
+bun dev
+```
+
+### Step 4: Access Dashboard
+
+Open http://localhost:3000
+
+- Create apps manually or use **One-Click Apps**
+- Apps automatically get `{name}.pod` domains
+- Access apps at `http://nginx.pod`, `http://ghost.pod`, etc.
+
+### After Reboot
+
+The loopback alias, dnsmasq, and port forwarding don't persist. Run on each boot:
+
+```bash
+sudo ifconfig lo0 alias 127.0.0.2
+sudo /opt/homebrew/sbin/dnsmasq
+echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
+```
+
+Or create a startup script at `~/deployer-start.sh`:
+
+```bash
+#!/bin/bash
+sudo ifconfig lo0 alias 127.0.0.2
+sudo /opt/homebrew/sbin/dnsmasq
+echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
+cd ~/Base/deployer && ./deployer
+```
+
+### Troubleshooting
+
+**Cloudflare WARP conflict:** WARP uses port 53. Disable it when developing locally.
+
+**dnsmasq won't start:** Check if something else is using port 53:
+```bash
+sudo lsof -i :53
+```
+
+**Podman not connecting:** Restart the machine:
+```bash
+podman machine stop
+podman machine start
+```
+
+**DNS not resolving:** Flush cache:
+```bash
+sudo dscacheutil -flushcache
+sudo killall -HUP mDNSResponder
+```
+
+## One-Click Apps
+
+Pre-configured templates available:
+
+| Category | Apps |
+|----------|------|
+| Databases | MySQL, PostgreSQL, MariaDB, MongoDB, Redis |
+| Admin Tools | phpMyAdmin, Adminer, pgAdmin |
+| Web Servers | Nginx, Apache, Caddy |
+| CMS | WordPress, Ghost |
+| Dev Tools | Gitea, Portainer, Uptime Kuma |
+| Automation | n8n |
+
+## REST API
 
 ```bash
 # List apps
-curl https://deployer.example.com/api/apps
+curl http://localhost:3000/api/apps
 
 # Create app
-curl -X POST https://deployer.example.com/api/apps \
+curl -X POST http://localhost:3000/api/apps \
   -H "Content-Type: application/json" \
-  -d '{"name": "myapp", "domain": "myapp.example.com"}'
+  -d '{"name": "myapp"}'
 
 # Deploy
-curl -X POST https://deployer.example.com/api/apps/myapp/deploy \
+curl -X POST http://localhost:3000/api/apps/{id}/deploy \
   -H "Content-Type: application/json" \
   -d '{"image": "nginx:latest"}'
+
+# Get templates
+curl http://localhost:3000/api/templates
 ```
 
-## Configuration
-
-Configuration file: `~/deployer/config/deployer.yaml`
-
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 443
-  api_port: 3000
-  log_level: "info"
-
-domain:
-  root: "deployer.example.com"  # Your deployer domain
-  wildcard: true                 # Enable *.deployer.example.com
-  email: "admin@example.com"     # For Let's Encrypt
-
-podman:
-  socket_path: ""    # Auto-detected
-  network: "deployer"
-
-database:
-  path: "data/deployer.db"
-```
-
-## Directory Structure
+## Architecture
 
 ```
-~/deployer/
-├── bin/                    # Binaries
-│   ├── deployer            # Server
-│   ├── deployerctl         # CLI
-│   └── caddy               # Reverse proxy
-├── config/
-│   └── deployer.yaml       # Configuration
-├── data/
-│   ├── deployer.db         # SQLite database
-│   ├── apps/               # App data
-│   └── certs/              # SSL certificates
-├── logs/
-│   └── deployer.log
-├── caddy/
-│   └── Caddyfile           # Generated Caddy config
-└── tmp/                    # Build artifacts
+┌─────────────────────────────────────────────────────────────┐
+│                     Web UI (Nuxt 3)                         │
+│                   http://localhost:3000                     │
+├─────────────────────────────────────────────────────────────┤
+│                     Go API Server                           │
+│                   http://localhost:3000                     │
+├──────────┬──────────┬───────────┬────────────┬─────────────┤
+│   Apps   │  Proxy   │    DNS    │  Templates │   Storage   │
+│  Manager │ (Caddy)  │ (dnsmasq) │  (1-click) │  (SQLite)   │
+├──────────┴──────────┴───────────┴────────────┴─────────────┤
+│                      Podman VM                              │
+│                   (rootless containers)                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Requirements
+## How It Works
 
-### Server (VPS)
-- Linux (Ubuntu 22.04+, Fedora, Debian) or macOS
-- Podman 4.0+
-- 1GB RAM minimum (2GB+ recommended)
-- Domain name with DNS configured
-
-### Local (CLI)
-- Linux or macOS
-- Go 1.25+ (for building from source)
-
-## Development
-
-```bash
-# Clone repository
-git clone https://github.com/deployer/deployer.git
-cd deployer
-
-# Install Go dependencies
-go mod download
-
-# Run server
-go run ./cmd/deployer
-
-# Run CLI
-go run ./cmd/deployerctl
-
-# Build
-make build
-
-# Run web UI (separate terminal)
-cd web
-npm install
-npm run dev
-```
+1. **Create App** - App gets auto-assigned `{name}.pod` domain
+2. **Deploy** - Podman pulls image, creates container with port mapping
+3. **Routing** - Caddy proxies `{name}.pod` to container port
+4. **Access** - Browse to `http://{name}.pod`
 
 ## Comparison with CapRover
 
