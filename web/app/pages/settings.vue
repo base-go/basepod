@@ -20,10 +20,6 @@ const podmanSocket = computed(() => {
 
 <template>
   <div>
-    <template #header>
-      Settings
-    </template>
-
     <div class="max-w-3xl space-y-6">
       <!-- Domain Settings -->
       <UCard>
