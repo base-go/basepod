@@ -947,7 +947,8 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		}
 		if json.NewDecoder(resp.Body).Decode(&release) == nil && release.TagName != "" {
 			latest = strings.TrimPrefix(release.TagName, "v")
-			if latest != current {
+			// Compare versions semantically
+			if compareVersions(latest, current) > 0 {
 				updateAvailable = true
 			}
 		}
@@ -958,6 +959,34 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		"latest":          latest,
 		"updateAvailable": updateAvailable,
 	})
+}
+
+// compareVersions compares two semver strings, returns 1 if a > b, -1 if a < b, 0 if equal
+func compareVersions(a, b string) int {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+
+	maxLen := len(aParts)
+	if len(bParts) > maxLen {
+		maxLen = len(bParts)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var aNum, bNum int
+		if i < len(aParts) {
+			fmt.Sscanf(aParts[i], "%d", &aNum)
+		}
+		if i < len(bParts) {
+			fmt.Sscanf(bParts[i], "%d", &bNum)
+		}
+		if aNum > bNum {
+			return 1
+		}
+		if aNum < bNum {
+			return -1
+		}
+	}
+	return 0
 }
 
 // handleSystemUpdate triggers a self-update
@@ -1026,11 +1055,18 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		os.Remove(tmpPath)
 	}
 
+	// Send response first, then trigger restart in background
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status":  "updated",
-		"message": "Update complete. Restart the service to apply changes.",
-		"command": "systemctl restart deployer",
+		"message": "Update complete. Restarting service...",
 	})
+
+	// Restart in background after response is sent
+	go func() {
+		time.Sleep(1 * time.Second) // Give time for response to be sent
+		cmd := exec.Command("systemctl", "restart", "deployer")
+		cmd.Run()
+	}()
 }
 
 // handleSystemPrune removes unused containers, images, and volumes
