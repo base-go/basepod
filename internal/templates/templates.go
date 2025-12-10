@@ -12,6 +12,7 @@ type Template struct {
 	ImageARM    string            `json:"image_arm,omitempty"` // ARM64 specific image if different
 	Port        int               `json:"port"`
 	Env         map[string]string `json:"env"`
+	Command     []string          `json:"command,omitempty"` // Custom command to run
 	Category    string            `json:"category"`
 	Icon        string            `json:"icon"`
 	Arch        []string          `json:"arch,omitempty"` // Supported architectures: amd64, arm64. Empty means all
@@ -362,6 +363,7 @@ var Templates = []Template{
 		Env: map[string]string{
 			"PASSWORD": "changeme",
 		},
+		Command:  []string{"--bind-addr", "0.0.0.0:8080"},
 		Category: "devtools",
 		Icon:     "i-lucide-code",
 	},

@@ -193,14 +193,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set cookie
+	// Set cookie - check both TLS and X-Forwarded-Proto for HTTPS detection
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "deployer_token",
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteStrictMode,
+		Secure:   isSecure,
+		SameSite: http.SameSiteLaxMode, // Lax allows same-site navigation
 		Expires:  session.ExpiresAt,
 	})
 
@@ -1298,9 +1299,10 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 
 	// Create container with port mapping
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:  "deployer-" + a.Name,
-		Image: image,
-		Env:   a.Env,
+		Name:    "deployer-" + a.Name,
+		Image:   image,
+		Env:     a.Env,
+		Command: tmpl.Command,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1745,8 +1747,13 @@ func (s *Server) proxyToApp(w http.ResponseWriter, r *http.Request, a *app.App) 
 	proxyReq.Header.Set("X-Forwarded-Proto", "https")
 	proxyReq.URL.RawQuery = r.URL.RawQuery
 
-	// Make the request
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Make the request - disable redirect following to properly proxy 302 responses with cookies
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // Don't follow redirects, return the response as-is
+		},
+	}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "Bad Gateway: "+err.Error(), http.StatusBadGateway)
