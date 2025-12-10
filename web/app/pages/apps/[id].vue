@@ -84,8 +84,6 @@ const settingsForm = ref({
 
 // Environment variables management
 const envVars = ref<Array<{ key: string; value: string }>>([])
-const newEnvKey = ref('')
-const newEnvValue = ref('')
 const savingEnv = ref(false)
 const envInitialized = ref(false)
 
@@ -97,11 +95,14 @@ watch(() => app.value, (appData) => {
   }
 }, { immediate: true })
 
-function addEnvVar() {
-  if (!newEnvKey.value.trim()) return
-  envVars.value.push({ key: newEnvKey.value.trim(), value: newEnvValue.value })
-  newEnvKey.value = ''
-  newEnvValue.value = ''
+function addEmptyEnvVar() {
+  envVars.value.push({ key: '', value: '' })
+  // Focus the new input after Vue updates the DOM
+  nextTick(() => {
+    const inputs = document.querySelectorAll('input[placeholder="KEY"]')
+    const lastInput = inputs[inputs.length - 1] as HTMLInputElement
+    lastInput?.focus()
+  })
 }
 
 function removeEnvVar(index: number) {
@@ -312,25 +313,46 @@ async function deleteApp() {
       <template #header>
         <div class="flex items-center justify-between">
           <h3 class="font-semibold">Environment Variables</h3>
-          <UButton :loading="savingEnv" @click="saveEnvVars">
-            Save Changes
-          </UButton>
+          <div class="flex gap-2">
+            <UButton variant="outline" size="sm" @click="addEmptyEnvVar">
+              <UIcon name="i-heroicons-plus" class="w-4 h-4 mr-1" />
+              Add Variable
+            </UButton>
+            <UButton :loading="savingEnv" @click="saveEnvVars">
+              Save Changes
+            </UButton>
+          </div>
         </div>
       </template>
 
-      <div class="space-y-4">
+      <div class="space-y-3">
+        <div v-if="envVars.length === 0" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-key" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>No environment variables configured.</p>
+          <p class="text-sm">Click "Add Variable" to create one.</p>
+        </div>
+
         <!-- Existing Variables -->
-        <div v-for="(envVar, index) in envVars" :key="index" class="flex items-center gap-2">
-          <UInput
+        <div
+          v-for="(envVar, index) in envVars"
+          :key="index"
+          class="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+        >
+          <input
             v-model="envVar.key"
+            type="text"
             placeholder="KEY"
-            class="flex-1 font-mono"
-          />
-          <UInput
+            class="flex-1 px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            @keydown.enter="$event.target.nextElementSibling?.focus()"
+          >
+          <span class="text-gray-400">=</span>
+          <input
             v-model="envVar.value"
+            type="text"
             placeholder="value"
-            class="flex-1 font-mono"
-          />
+            class="flex-[2] px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            @keydown.enter="saveEnvVars"
+          >
           <UButton
             icon="i-heroicons-trash"
             color="error"
@@ -338,31 +360,6 @@ async function deleteApp() {
             size="sm"
             @click="removeEnvVar(index)"
           />
-        </div>
-
-        <!-- Add New Variable -->
-        <div class="flex items-center gap-2 pt-2 border-t border-gray-200 dark:border-gray-700">
-          <UInput
-            v-model="newEnvKey"
-            placeholder="NEW_KEY"
-            class="flex-1 font-mono"
-          />
-          <UInput
-            v-model="newEnvValue"
-            placeholder="new value"
-            class="flex-1 font-mono"
-          />
-          <UButton
-            icon="i-heroicons-plus"
-            color="primary"
-            variant="soft"
-            size="sm"
-            @click="addEnvVar"
-          />
-        </div>
-
-        <div v-if="envVars.length === 0 && !newEnvKey" class="text-center py-4 text-gray-500">
-          <p>No environment variables configured. Add one above.</p>
         </div>
       </div>
     </UCard>
