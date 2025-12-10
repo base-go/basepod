@@ -21,12 +21,12 @@ cd "$PROJECT_DIR/web"
 bun install
 bun run generate
 
-# Copy static files to embedded directory
+# Copy static files to embedded directory (must be 'dist' to match go:embed directive)
 echo ""
 echo "=== Copying static files ==="
-rm -rf "$PROJECT_DIR/internal/web/static"
-mkdir -p "$PROJECT_DIR/internal/web/static"
-cp -r "$PROJECT_DIR/web/.output/public/"* "$PROJECT_DIR/internal/web/static/"
+rm -rf "$PROJECT_DIR/internal/web/dist"
+mkdir -p "$PROJECT_DIR/internal/web/dist"
+cp -r "$PROJECT_DIR/web/.output/public/"* "$PROJECT_DIR/internal/web/dist/"
 echo "Static files copied"
 
 cd "$PROJECT_DIR"

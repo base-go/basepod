@@ -1,1 +1,0 @@
-import{a4 as s,a6 as t,b4 as a,r as u,h as n}from"./CZ2E-hhs.js";function l(r,i){return s(r)?!1:Array.isArray(r)?r.some(e=>t(e,i)):t(r,i)}function f(r){const i=a({dir:u("ltr")});return n(()=>r?.value||i.dir?.value||"ltr")}export{l as i,f as u};
