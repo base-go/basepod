@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "0.1.17"
+	version = "0.1.20"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
@@ -135,8 +135,8 @@ func main() {
 		log.Printf("Caddy connected successfully")
 	}
 
-	// Create API server
-	apiServer := api.NewServer(store, pm, caddyClient)
+	// Create API server with version
+	apiServer := api.NewServerWithVersion(store, pm, caddyClient, version)
 
 	// Override port from flag
 	if *port != 0 {

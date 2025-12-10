@@ -39,6 +39,22 @@ const stats = computed(() => [
 
 <template>
   <div>
+    <!-- Quick Actions -->
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">Dashboard</h2>
+        <p class="text-gray-500 dark:text-gray-400">Overview of your deployment platform</p>
+      </div>
+      <div class="flex gap-2">
+        <UButton to="/apps" variant="outline" icon="i-heroicons-rectangle-stack">
+          View All Apps
+        </UButton>
+        <UButton to="/templates" icon="i-heroicons-plus">
+          Deploy New App
+        </UButton>
+      </div>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       <DashboardStatCard
         v-for="stat in stats"
