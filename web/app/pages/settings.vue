@@ -12,6 +12,48 @@ const settings = ref({
   email: '',
   enableWildcard: true
 })
+
+const passwordForm = ref({
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+const passwordError = ref('')
+const passwordSuccess = ref(false)
+const changingPassword = ref(false)
+
+const changePassword = async () => {
+  passwordError.value = ''
+  passwordSuccess.value = false
+
+  if (passwordForm.value.newPassword !== passwordForm.value.confirmPassword) {
+    passwordError.value = 'Passwords do not match'
+    return
+  }
+
+  if (passwordForm.value.newPassword.length < 8) {
+    passwordError.value = 'Password must be at least 8 characters'
+    return
+  }
+
+  changingPassword.value = true
+  try {
+    await $fetch('/api/auth/change-password', {
+      method: 'POST',
+      body: {
+        currentPassword: passwordForm.value.currentPassword,
+        newPassword: passwordForm.value.newPassword
+      }
+    })
+    passwordSuccess.value = true
+    passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    passwordError.value = err.data?.error || 'Failed to change password'
+  } finally {
+    changingPassword.value = false
+  }
+}
 </script>
 
 <template>
@@ -38,6 +80,57 @@ const settings = ref({
 
           <UButton>Save Domain Settings</UButton>
         </div>
+      </UCard>
+
+      <!-- Change Password -->
+      <UCard>
+        <template #header>
+          <h3 class="font-semibold">Change Password</h3>
+        </template>
+
+        <form class="space-y-4" @submit.prevent="changePassword">
+          <UFormField label="Current Password">
+            <UInput
+              v-model="passwordForm.currentPassword"
+              type="password"
+              placeholder="Enter current password"
+            />
+          </UFormField>
+
+          <UFormField label="New Password">
+            <UInput
+              v-model="passwordForm.newPassword"
+              type="password"
+              placeholder="Enter new password"
+            />
+          </UFormField>
+
+          <UFormField label="Confirm New Password">
+            <UInput
+              v-model="passwordForm.confirmPassword"
+              type="password"
+              placeholder="Confirm new password"
+            />
+          </UFormField>
+
+          <UAlert
+            v-if="passwordError"
+            color="error"
+            variant="soft"
+            :title="passwordError"
+          />
+
+          <UAlert
+            v-if="passwordSuccess"
+            color="success"
+            variant="soft"
+            title="Password changed successfully"
+          />
+
+          <UButton type="submit" :loading="changingPassword">
+            Change Password
+          </UButton>
+        </form>
       </UCard>
 
       <!-- System Status -->

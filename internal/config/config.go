@@ -18,6 +18,9 @@ type Config struct {
 	// Server settings
 	Server ServerConfig `yaml:"server"`
 
+	// Auth settings
+	Auth AuthConfig `yaml:"auth"`
+
 	// Domain settings
 	Domain DomainConfig `yaml:"domain"`
 
@@ -26,6 +29,10 @@ type Config struct {
 
 	// Database settings
 	Database DatabaseConfig `yaml:"database"`
+}
+
+type AuthConfig struct {
+	PasswordHash string `yaml:"password_hash"` // SHA256 hash of the password
 }
 
 type ServerConfig struct {
@@ -37,6 +44,8 @@ type ServerConfig struct {
 
 type DomainConfig struct {
 	Root     string `yaml:"root"`      // e.g., deployer.example.com
+	Base     string `yaml:"base"`      // e.g., common.al (used for app subdomains: appname.common.al)
+	Suffix   string `yaml:"suffix"`    // e.g., .pod for local dev or empty for production
 	Wildcard bool   `yaml:"wildcard"`  // Enable *.deployer.example.com
 	Email    string `yaml:"email"`     // For Let's Encrypt
 }
@@ -130,6 +139,7 @@ func DefaultConfig() *Config {
 			LogLevel: "info",
 		},
 		Domain: DomainConfig{
+			Suffix:   ".pod", // Local development default
 			Wildcard: true,
 		},
 		Podman: PodmanConfig{
@@ -141,14 +151,33 @@ func DefaultConfig() *Config {
 	}
 }
 
+// GetAppDomain generates the domain for an app based on config
+// For local dev: appname.pod
+// For production: appname.basedomain (e.g., myapp.common.al)
+func (c *Config) GetAppDomain(appName string) string {
+	if c.Domain.Base != "" {
+		// Production mode with base domain
+		return appName + "." + c.Domain.Base
+	}
+	// Local development mode with suffix
+	suffix := c.Domain.Suffix
+	if suffix == "" {
+		suffix = ".pod"
+	}
+	return appName + suffix
+}
+
 // Load loads the configuration from file
 func Load() (*Config, error) {
-	paths, err := GetPaths()
-	if err != nil {
-		return nil, err
+	// Check for explicit config file path via environment variable
+	configFile := os.Getenv("DEPLOYER_CONFIG")
+	if configFile == "" {
+		paths, err := GetPaths()
+		if err != nil {
+			return nil, err
+		}
+		configFile = filepath.Join(paths.Config, "deployer.yaml")
 	}
-
-	configFile := filepath.Join(paths.Config, "deployer.yaml")
 
 	// If config doesn't exist, return defaults
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {

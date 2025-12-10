@@ -68,3 +68,22 @@ export interface HealthResponse {
   podman: string
   podman_error?: string
 }
+
+export interface DomainConfig {
+  base: string
+  suffix: string
+  wildcard: boolean
+}
+
+export interface ConfigResponse {
+  domain: DomainConfig
+}
+
+// Helper to generate app domain from config
+export function getAppDomain(appName: string, domainConfig: DomainConfig): string {
+  if (domainConfig.base) {
+    return `${appName}.${domainConfig.base}`
+  }
+  const suffix = domainConfig.suffix || '.pod'
+  return `${appName}${suffix}`
+}

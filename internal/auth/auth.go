@@ -1,0 +1,123 @@
+// Package auth provides authentication for the deployer API.
+package auth
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"sync"
+	"time"
+)
+
+// Session represents an authenticated session
+type Session struct {
+	Token     string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// Manager handles authentication and sessions
+type Manager struct {
+	passwordHash string
+	sessions     map[string]*Session
+	mu           sync.RWMutex
+}
+
+// NewManager creates a new auth manager
+func NewManager(passwordHash string) *Manager {
+	return &Manager{
+		passwordHash: passwordHash,
+		sessions:     make(map[string]*Session),
+	}
+}
+
+// HashPassword hashes a password using SHA256
+func HashPassword(password string) string {
+	hash := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(hash[:])
+}
+
+// ValidatePassword checks if the password matches the stored hash
+func (m *Manager) ValidatePassword(password string) bool {
+	if m.passwordHash == "" {
+		return true // No auth configured
+	}
+	return HashPassword(password) == m.passwordHash
+}
+
+// IsAuthRequired returns true if authentication is configured
+func (m *Manager) IsAuthRequired() bool {
+	return m.passwordHash != ""
+}
+
+// CreateSession creates a new session for authenticated user
+func (m *Manager) CreateSession() (*Session, error) {
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return nil, err
+	}
+
+	session := &Session{
+		Token:     hex.EncodeToString(token),
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hour sessions
+	}
+
+	m.mu.Lock()
+	m.sessions[session.Token] = session
+	m.mu.Unlock()
+
+	return session, nil
+}
+
+// ValidateSession checks if a session token is valid
+func (m *Manager) ValidateSession(token string) bool {
+	if m.passwordHash == "" {
+		return true // No auth configured
+	}
+
+	m.mu.RLock()
+	session, exists := m.sessions[token]
+	m.mu.RUnlock()
+
+	if !exists {
+		return false
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		m.DeleteSession(token)
+		return false
+	}
+
+	return true
+}
+
+// DeleteSession removes a session
+func (m *Manager) DeleteSession(token string) {
+	m.mu.Lock()
+	delete(m.sessions, token)
+	m.mu.Unlock()
+}
+
+// UpdatePassword updates the password hash
+func (m *Manager) UpdatePassword(newPassword string) {
+	m.passwordHash = HashPassword(newPassword)
+}
+
+// GetPasswordHash returns the current password hash
+func (m *Manager) GetPasswordHash() string {
+	return m.passwordHash
+}
+
+// CleanupExpiredSessions removes expired sessions
+func (m *Manager) CleanupExpiredSessions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for token, session := range m.sessions {
+		if now.After(session.ExpiresAt) {
+			delete(m.sessions, token)
+		}
+	}
+}

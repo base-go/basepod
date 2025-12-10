@@ -1,0 +1,1 @@
+import{a1 as s,a3 as t,b1 as a,l as u,h as n}from"./BLG7DAKw.js";function l(r,i){return s(r)?!1:Array.isArray(r)?r.some(e=>t(e,i)):t(r,i)}function f(r){const i=a({dir:u("ltr")});return n(()=>r?.value||i.dir?.value||"ltr")}export{l as i,f as u};

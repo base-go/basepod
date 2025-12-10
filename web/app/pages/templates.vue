@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { TemplatesResponse, Template } from '~/types'
+import type { ConfigResponse } from '~/composables/useApi'
 
 definePageMeta({
   title: 'Templates'
@@ -7,6 +8,7 @@ definePageMeta({
 
 const toast = useToast()
 const { data } = await useApiFetch<TemplatesResponse>('/templates')
+const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
 
 const isDeployModalOpen = ref(false)
 const selectedTemplate = ref<Template | null>(null)
@@ -15,10 +17,27 @@ const deployForm = ref({
   enableSSL: false
 })
 
-// Auto-generate domain from app name
+// Auto-generate domain from app name using config
 const autoDomain = computed(() => {
   if (!deployForm.value.name) return ''
-  return `${deployForm.value.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')}.pod`
+  const name = deployForm.value.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+  if (configData.value?.domain?.base) {
+    return `${name}.${configData.value.domain.base}`
+  }
+  return `${name}${configData.value?.domain?.suffix || '.local'}`
+})
+
+// Domain suffix for placeholder display
+const domainPlaceholder = computed(() => {
+  if (configData.value?.domain?.base) {
+    return `app-name.${configData.value.domain.base}`
+  }
+  return `app-name${configData.value?.domain?.suffix || '.local'}`
+})
+
+// Protocol based on whether we have a real domain
+const protocol = computed(() => {
+  return configData.value?.domain?.base ? 'https://' : 'http://'
 })
 
 const categories = computed(() => {
@@ -149,8 +168,8 @@ async function deployTemplate() {
 
           <UFormField label="Domain">
             <div class="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-md font-mono text-sm">
-              <span class="text-gray-500">http://</span>
-              <span>{{ autoDomain || 'app-name.pod' }}</span>
+              <span class="text-gray-500">{{ protocol }}</span>
+              <span>{{ autoDomain || domainPlaceholder }}</span>
             </div>
             <p class="text-xs text-gray-500 mt-1">Auto-assigned based on app name</p>
           </UFormField>
@@ -164,7 +183,7 @@ async function deployTemplate() {
                 :key="key"
                 class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded font-mono"
               >
-                {{ key }}={{ key === 'url' && autoDomain ? `http://${autoDomain}` : value }}
+                {{ key }}={{ key === 'url' && autoDomain ? `${protocol}${autoDomain}` : value }}
               </div>
             </div>
             <p class="text-xs text-gray-500 mt-2">

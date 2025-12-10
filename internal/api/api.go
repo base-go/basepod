@@ -6,14 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"io/fs"
 	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/deployer/deployer/internal/app"
+	"github.com/deployer/deployer/internal/auth"
 	"github.com/deployer/deployer/internal/caddy"
+	"github.com/deployer/deployer/internal/config"
 	"github.com/deployer/deployer/internal/podman"
 	"github.com/deployer/deployer/internal/storage"
 	"github.com/deployer/deployer/internal/templates"
+	"github.com/deployer/deployer/internal/web"
 	"github.com/google/uuid"
 )
 
@@ -27,19 +36,34 @@ func assignHostPort(appID string) int {
 
 // Server represents the API server
 type Server struct {
-	storage *storage.Storage
-	podman  podman.Client
-	caddy   *caddy.Client
-	router  *http.ServeMux
+	storage   *storage.Storage
+	podman    podman.Client
+	caddy     *caddy.Client
+	config    *config.Config
+	auth      *auth.Manager
+	router    *http.ServeMux
+	staticFS  http.Handler
 }
 
 // NewServer creates a new API server
 func NewServer(store *storage.Storage, pm podman.Client, caddyClient *caddy.Client) *Server {
+	cfg, _ := config.Load()
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+
 	s := &Server{
 		storage: store,
 		podman:  pm,
 		caddy:   caddyClient,
+		config:  cfg,
+		auth:    auth.NewManager(cfg.Auth.PasswordHash),
 		router:  http.NewServeMux(),
+	}
+
+	// Setup embedded static file serving
+	if staticFS, err := web.GetFileSystem(); err == nil {
+		s.staticFS = http.FileServer(http.FS(staticFS))
 	}
 
 	s.setupRoutes()
@@ -48,31 +72,186 @@ func NewServer(store *storage.Storage, pm podman.Client, caddyClient *caddy.Clie
 
 // setupRoutes configures the API routes
 func (s *Server) setupRoutes() {
-	// Health check
+	// Health check (no auth required)
 	s.router.HandleFunc("GET /health", s.handleHealth)
 	s.router.HandleFunc("GET /api/health", s.handleHealth)
 
-	// Apps
-	s.router.HandleFunc("GET /api/apps", s.handleListApps)
-	s.router.HandleFunc("POST /api/apps", s.handleCreateApp)
-	s.router.HandleFunc("GET /api/apps/{id}", s.handleGetApp)
-	s.router.HandleFunc("PUT /api/apps/{id}", s.handleUpdateApp)
-	s.router.HandleFunc("DELETE /api/apps/{id}", s.handleDeleteApp)
+	// Auth routes (no auth required)
+	s.router.HandleFunc("POST /api/auth/login", s.handleLogin)
+	s.router.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	s.router.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.handleChangePassword))
 
-	// App actions
-	s.router.HandleFunc("POST /api/apps/{id}/start", s.handleStartApp)
-	s.router.HandleFunc("POST /api/apps/{id}/stop", s.handleStopApp)
-	s.router.HandleFunc("POST /api/apps/{id}/restart", s.handleRestartApp)
-	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.handleDeployApp)
-	s.router.HandleFunc("GET /api/apps/{id}/logs", s.handleGetAppLogs)
+	// Apps (auth required)
+	s.router.HandleFunc("GET /api/apps", s.requireAuth(s.handleListApps))
+	s.router.HandleFunc("POST /api/apps", s.requireAuth(s.handleCreateApp))
+	s.router.HandleFunc("GET /api/apps/{id}", s.requireAuth(s.handleGetApp))
+	s.router.HandleFunc("PUT /api/apps/{id}", s.requireAuth(s.handleUpdateApp))
+	s.router.HandleFunc("DELETE /api/apps/{id}", s.requireAuth(s.handleDeleteApp))
 
-	// System
-	s.router.HandleFunc("GET /api/system/info", s.handleSystemInfo)
-	s.router.HandleFunc("GET /api/containers", s.handleListContainers)
+	// App actions (auth required)
+	s.router.HandleFunc("POST /api/apps/{id}/start", s.requireAuth(s.handleStartApp))
+	s.router.HandleFunc("POST /api/apps/{id}/stop", s.requireAuth(s.handleStopApp))
+	s.router.HandleFunc("POST /api/apps/{id}/restart", s.requireAuth(s.handleRestartApp))
+	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.requireAuth(s.handleDeployApp))
+	s.router.HandleFunc("GET /api/apps/{id}/logs", s.requireAuth(s.handleGetAppLogs))
 
-	// Templates
-	s.router.HandleFunc("GET /api/templates", s.handleListTemplates)
-	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.handleDeployTemplate)
+	// System (auth required)
+	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
+	s.router.HandleFunc("GET /api/system/config", s.handleGetConfig) // No auth - needed for login page
+	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
+
+	// Templates (auth required)
+	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
+	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.handleDeployTemplate))
+
+	// Caddy on-demand TLS check (no auth - called by Caddy)
+	s.router.HandleFunc("GET /api/caddy/check", s.handleCaddyCheck)
+
+	// Source deploy endpoint (auth required)
+	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
+}
+
+// requireAuth wraps a handler with authentication check
+func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.auth.IsAuthRequired() {
+			handler(w, r)
+			return
+		}
+
+		// Check for token in cookie or Authorization header
+		token := ""
+		if cookie, err := r.Cookie("deployer_token"); err == nil {
+			token = cookie.Value
+		}
+		if token == "" {
+			token = r.Header.Get("Authorization")
+			token = strings.TrimPrefix(token, "Bearer ")
+		}
+
+		if !s.auth.ValidateSession(token) {
+			errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		handler(w, r)
+	}
+}
+
+// handleLogin handles password authentication
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if !s.auth.ValidatePassword(req.Password) {
+		errorResponse(w, http.StatusUnauthorized, "Invalid password")
+		return
+	}
+
+	session, err := s.auth.CreateSession()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create session")
+		return
+	}
+
+	// Set cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "deployer_token",
+		Value:    session.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Expires:  session.ExpiresAt,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"token":     session.Token,
+		"expiresAt": session.ExpiresAt,
+	})
+}
+
+// handleLogout handles logout
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("deployer_token"); err == nil {
+		s.auth.DeleteSession(cookie.Value)
+	}
+
+	// Clear cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "deployer_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// handleAuthStatus returns current auth status
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	authRequired := s.auth.IsAuthRequired()
+	authenticated := false
+
+	if authRequired {
+		token := ""
+		if cookie, err := r.Cookie("deployer_token"); err == nil {
+			token = cookie.Value
+		}
+		if token == "" {
+			token = r.Header.Get("Authorization")
+			token = strings.TrimPrefix(token, "Bearer ")
+		}
+		authenticated = s.auth.ValidateSession(token)
+	} else {
+		authenticated = true
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"authRequired":  authRequired,
+		"authenticated": authenticated,
+	})
+}
+
+// handleChangePassword handles password change
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if !s.auth.ValidatePassword(req.CurrentPassword) {
+		errorResponse(w, http.StatusUnauthorized, "Current password is incorrect")
+		return
+	}
+
+	if len(req.NewPassword) < 8 {
+		errorResponse(w, http.StatusBadRequest, "Password must be at least 8 characters")
+		return
+	}
+
+	// Update password in memory
+	s.auth.UpdatePassword(req.NewPassword)
+
+	// Update config file
+	s.config.Auth.PasswordHash = s.auth.GetPasswordHash()
+	if err := s.config.Save(); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to save config")
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "password changed"})
 }
 
 // ServeHTTP implements the http.Handler interface
@@ -87,7 +266,67 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.router.ServeHTTP(w, r)
+	// Check if this is an app domain and proxy to the app
+	host := r.Host
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// Check if it's an app domain (not the dashboard)
+	dashboardDomain := "d." + s.config.Domain.Base
+	if host != dashboardDomain && s.config.Domain.Base != "" && strings.HasSuffix(host, "."+s.config.Domain.Base) {
+		// Look up app by domain
+		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
+			// Proxy to the app
+			s.proxyToApp(w, r, a)
+			return
+		}
+	}
+
+	// Serve API routes
+	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
+		s.router.ServeHTTP(w, r)
+		return
+	}
+
+	// Serve static files for everything else
+	if s.staticFS != nil {
+		// Try to serve the exact file
+		path := r.URL.Path
+		if path == "/" {
+			path = "/index.html"
+		}
+
+		// Check if file exists
+		if webFS, err := web.GetFileSystem(); err == nil {
+			if _, err := fs.Stat(webFS, strings.TrimPrefix(path, "/")); err == nil {
+				// Set proper MIME type for JS files
+				if strings.HasSuffix(path, ".js") {
+					w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+				} else if strings.HasSuffix(path, ".css") {
+					w.Header().Set("Content-Type", "text/css; charset=utf-8")
+				} else if strings.HasSuffix(path, ".json") {
+					w.Header().Set("Content-Type", "application/json")
+				} else if strings.HasSuffix(path, ".svg") {
+					w.Header().Set("Content-Type", "image/svg+xml")
+				}
+				s.staticFS.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// For SPA routing, serve index.html for non-existent paths
+		r.URL.Path = "/"
+		s.staticFS.ServeHTTP(w, r)
+		return
+	}
+
+	// No static files embedded, return API info
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"name":    "Deployer API",
+		"version": "0.1.0",
+		"message": "Web UI not available. Use API endpoints at /api/*",
+	})
 }
 
 // Response helpers
@@ -152,7 +391,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if app already exists
+	// Check if app already exists by name
 	existing, _ := s.storage.GetAppByName(req.Name)
 	if existing != nil {
 		errorResponse(w, http.StatusConflict, "App with this name already exists")
@@ -165,10 +404,17 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		port = 8080
 	}
 
-	// Auto-assign .pod domain if not specified
+	// Auto-assign domain from config if not specified
 	domain := req.Domain
 	if domain == "" {
-		domain = req.Name + ".pod"
+		domain = s.config.GetAppDomain(req.Name)
+	}
+
+	// Check if domain is already taken
+	existingByDomain, _ := s.storage.GetAppByDomain(domain)
+	if existingByDomain != nil {
+		errorResponse(w, http.StatusConflict, "Domain already in use by another app")
+		return
 	}
 
 	newApp := &app.App{
@@ -621,6 +867,18 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, info)
 }
 
+// handleGetConfig returns domain configuration for frontend
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := map[string]interface{}{
+		"domain": map[string]interface{}{
+			"base":     s.config.Domain.Base,
+			"suffix":   s.config.Domain.Suffix,
+			"wildcard": s.config.Domain.Wildcard,
+		},
+	}
+	jsonResponse(w, http.StatusOK, cfg)
+}
+
 // handleListContainers lists all containers
 func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -742,7 +1000,7 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		name = fmt.Sprintf("%s-%s", tmpl.ID, uuid.New().String()[:8])
 	}
 
-	// Check if app already exists
+	// Check if app already exists by name
 	existing, _ := s.storage.GetAppByName(name)
 	if existing != nil {
 		errorResponse(w, http.StatusConflict, "App with this name already exists")
@@ -758,10 +1016,17 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		env[k] = v
 	}
 
-	// Auto-assign .pod domain if not specified
+	// Auto-assign domain from config if not specified
 	domain := req.Domain
 	if domain == "" {
-		domain = name + ".pod"
+		domain = s.config.GetAppDomain(name)
+	}
+
+	// Check if domain is already taken
+	existingByDomain, _ := s.storage.GetAppByDomain(domain)
+	if existingByDomain != nil {
+		errorResponse(w, http.StatusConflict, "Domain already in use by another app")
+		return
 	}
 
 	// Override url env var for apps that need it (e.g., Ghost)
@@ -865,4 +1130,430 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 			EnableSSL: a.SSL.Enabled,
 		})
 	}
+}
+
+// handleCaddyCheck handles Caddy on-demand TLS certificate checks
+// Returns 200 if domain is allowed, 404 otherwise
+func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Get base domain from config
+	baseDomain := s.config.Domain.Base
+	if baseDomain == "" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	// Allow dashboard subdomain
+	if domain == "d."+baseDomain {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Check if it's a valid subdomain of our base domain
+	if !strings.HasSuffix(domain, "."+baseDomain) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	// Check if an app exists with this domain
+	apps, _ := s.storage.ListApps()
+	for _, a := range apps {
+		if a.Domain == domain {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	// Also allow any subdomain of our base domain (for future apps)
+	w.WriteHeader(http.StatusOK)
+}
+
+// SourceDeployConfig represents the config sent by the CLI
+type SourceDeployConfig struct {
+	Name    string            `json:"name"`
+	Domain  string            `json:"domain,omitempty"`
+	Port    int               `json:"port,omitempty"`
+	Build   BuildConfig       `json:"build,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Volumes []string          `json:"volumes,omitempty"`
+}
+
+// BuildConfig contains build configuration
+type BuildConfig struct {
+	Dockerfile string `json:"dockerfile,omitempty"`
+	Context    string `json:"context,omitempty"`
+}
+
+// handleSourceDeploy handles source code deployments from the CLI
+func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse multipart form
+	if err := r.ParseMultipartForm(500 << 20); err != nil { // 500MB max
+		errorResponse(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+		return
+	}
+
+	// Get config JSON
+	configStr := r.FormValue("config")
+	if configStr == "" {
+		errorResponse(w, http.StatusBadRequest, "Missing config")
+		return
+	}
+
+	var deployConfig SourceDeployConfig
+	if err := json.Unmarshal([]byte(configStr), &deployConfig); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid config JSON: "+err.Error())
+		return
+	}
+
+	if deployConfig.Name == "" {
+		errorResponse(w, http.StatusBadRequest, "App name is required")
+		return
+	}
+
+	// Get source tarball
+	file, _, err := r.FormFile("source")
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, "Missing source tarball: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	// Set response headers for streaming output
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		errorResponse(w, http.StatusInternalServerError, "Streaming not supported")
+		return
+	}
+
+	writeLine := func(msg string) {
+		fmt.Fprintf(w, "%s\n", msg)
+		flusher.Flush()
+	}
+
+	writeLine("Received source deploy request for: " + deployConfig.Name)
+
+	// Check if app exists, create if not
+	a, _ := s.storage.GetAppByName(deployConfig.Name)
+	if a == nil {
+		writeLine("Creating new app: " + deployConfig.Name)
+
+		// Auto-assign domain from config if not specified
+		domain := deployConfig.Domain
+		if domain == "" {
+			domain = s.config.GetAppDomain(deployConfig.Name)
+		}
+
+		port := deployConfig.Port
+		if port == 0 {
+			port = 8080
+		}
+
+		a = &app.App{
+			ID:     uuid.New().String(),
+			Name:   deployConfig.Name,
+			Domain: domain,
+			Status: app.StatusPending,
+			Env:    deployConfig.Env,
+			Ports: app.PortConfig{
+				ContainerPort: port,
+				Protocol:      "http",
+			},
+			Resources: app.ResourceConfig{
+				Replicas: 1,
+			},
+			SSL: app.SSLConfig{
+				Enabled:   true,
+				AutoRenew: true,
+			},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		if a.Env == nil {
+			a.Env = make(map[string]string)
+		}
+
+		if err := s.storage.CreateApp(a); err != nil {
+			writeLine("ERROR: Failed to create app: " + err.Error())
+			return
+		}
+		writeLine("App created with ID: " + a.ID)
+	} else {
+		writeLine("Updating existing app: " + a.Name)
+		// Update config if provided
+		if deployConfig.Port > 0 {
+			a.Ports.ContainerPort = deployConfig.Port
+		}
+		if deployConfig.Domain != "" {
+			a.Domain = deployConfig.Domain
+		}
+		if deployConfig.Env != nil {
+			for k, v := range deployConfig.Env {
+				a.Env[k] = v
+			}
+		}
+	}
+
+	// Save source tarball to temp file
+	paths, _ := config.GetPaths()
+	buildDir := fmt.Sprintf("%s/builds/%s", paths.Base, a.ID)
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		writeLine("ERROR: Failed to create build directory: " + err.Error())
+		return
+	}
+
+	tarballPath := buildDir + "/source.tar.gz"
+	tarFile, err := os.Create(tarballPath)
+	if err != nil {
+		writeLine("ERROR: Failed to create tarball file: " + err.Error())
+		return
+	}
+	if _, err := io.Copy(tarFile, file); err != nil {
+		tarFile.Close()
+		writeLine("ERROR: Failed to save tarball: " + err.Error())
+		return
+	}
+	tarFile.Close()
+	writeLine("Source tarball saved")
+
+	// Extract tarball
+	writeLine("Extracting source...")
+	sourceDir := buildDir + "/source"
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		writeLine("ERROR: Failed to create source directory: " + err.Error())
+		return
+	}
+
+	// Use tar command to extract (simpler than Go tar library)
+	extractCmd := fmt.Sprintf("tar -xzf %s -C %s", tarballPath, sourceDir)
+	if output, err := execCommand(ctx, "sh", "-c", extractCmd); err != nil {
+		writeLine("ERROR: Failed to extract tarball: " + err.Error())
+		writeLine(output)
+		return
+	}
+	writeLine("Source extracted")
+
+	// Determine Dockerfile path
+	dockerfile := "Dockerfile"
+	if deployConfig.Build.Dockerfile != "" {
+		dockerfile = deployConfig.Build.Dockerfile
+	}
+	dockerfilePath := sourceDir + "/" + dockerfile
+
+	// Check if Dockerfile exists
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		writeLine("ERROR: Dockerfile not found at " + dockerfilePath)
+		writeLine("Please create a Dockerfile in your project")
+		return
+	}
+
+	// Build image using Podman
+	imageName := fmt.Sprintf("deployer/%s:latest", a.Name)
+	writeLine("Building image: " + imageName)
+
+	a.Status = app.StatusDeploying
+	s.storage.UpdateApp(a)
+
+	// Build using podman build
+	buildCmd := fmt.Sprintf("cd %s && podman build -t %s -f %s .", sourceDir, imageName, dockerfile)
+	output, err := execCommandStream(ctx, "sh", []string{"-c", buildCmd}, writeLine)
+	if err != nil {
+		writeLine("ERROR: Build failed: " + err.Error())
+		writeLine(output)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+	writeLine("Image built successfully")
+
+	// Remove old container if exists
+	containerName := "deployer-" + a.Name
+	if a.ContainerID != "" {
+		writeLine("Stopping old container...")
+		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	}
+	_ = s.podman.StopContainer(ctx, containerName, 10)
+	_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+	// Assign a host port if not set
+	if a.Ports.HostPort == 0 {
+		a.Ports.HostPort = assignHostPort(a.ID)
+	}
+
+	writeLine(fmt.Sprintf("Creating container with port mapping %d -> %d...", a.Ports.ContainerPort, a.Ports.HostPort))
+
+	// Create new container
+	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+		Name:  containerName,
+		Image: imageName,
+		Env:   a.Env,
+		Ports: map[string]string{
+			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+		},
+		Labels: map[string]string{
+			"deployer.app":    a.Name,
+			"deployer.app.id": a.ID,
+		},
+	})
+	if err != nil {
+		writeLine("ERROR: Failed to create container: " + err.Error())
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Start container
+	writeLine("Starting container...")
+	if err := s.podman.StartContainer(ctx, containerID); err != nil {
+		writeLine("ERROR: Failed to start container: " + err.Error())
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Update app record
+	a.ContainerID = containerID
+	a.Image = imageName
+	a.Status = app.StatusRunning
+	a.UpdatedAt = time.Now()
+	s.storage.UpdateApp(a)
+
+	// Configure Caddy if domain is set
+	if a.Domain != "" && s.caddy != nil {
+		writeLine("Configuring routing for: " + a.Domain)
+		_ = s.caddy.AddRoute(caddy.Route{
+			ID:        "deployer-" + a.Name,
+			Domain:    a.Domain,
+			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
+			EnableSSL: a.SSL.Enabled,
+		})
+	}
+
+	writeLine("")
+	writeLine("Deploy complete!")
+	writeLine("App: " + a.Name)
+	if a.Domain != "" {
+		writeLine("URL: https://" + a.Domain)
+	}
+}
+
+// execCommand executes a command and returns output
+func execCommand(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// execCommandStream executes a command and streams output
+func execCommandStream(ctx context.Context, name string, args []string, writeLine func(string)) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	// Read output line by line
+	var output strings.Builder
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				line := string(buf[:n])
+				output.WriteString(line)
+				writeLine(strings.TrimRight(line, "\n"))
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				line := string(buf[:n])
+				output.WriteString(line)
+				writeLine(strings.TrimRight(line, "\n"))
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	err = cmd.Wait()
+	return output.String(), err
+}
+
+// proxyToApp proxies the request to the app's container
+func (s *Server) proxyToApp(w http.ResponseWriter, r *http.Request, a *app.App) {
+	// Build the upstream URL
+	upstream := fmt.Sprintf("http://localhost:%d", a.Ports.HostPort)
+	target, err := url.Parse(upstream)
+	if err != nil {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Create the proxy request
+	proxyReq, err := http.NewRequest(r.Method, target.String()+r.URL.Path, r.Body)
+	if err != nil {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Copy headers
+	for key, values := range r.Header {
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
+		}
+	}
+
+	// Set forwarding headers
+	proxyReq.Header.Set("X-Forwarded-For", r.RemoteAddr)
+	proxyReq.Header.Set("X-Forwarded-Host", r.Host)
+	proxyReq.Header.Set("X-Forwarded-Proto", "https")
+	proxyReq.URL.RawQuery = r.URL.RawQuery
+
+	// Make the request
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "Bad Gateway: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Write status code and body
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
