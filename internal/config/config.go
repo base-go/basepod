@@ -231,11 +231,18 @@ func GetPodmanSocket() string {
 
 	switch runtime.GOOS {
 	case "linux":
+		// Check for rootful podman socket first (running as root)
+		if os.Getuid() == 0 {
+			rootfulSocket := "/run/podman/podman.sock"
+			if _, err := os.Stat(rootfulSocket); err == nil {
+				return rootfulSocket
+			}
+		}
 		// Linux: Check XDG_RUNTIME_DIR first, then fallback
 		if xdgRuntime := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntime != "" {
 			return filepath.Join(xdgRuntime, "podman", "podman.sock")
 		}
-		// Fallback for Linux
+		// Fallback for Linux (rootless)
 		uid := os.Getuid()
 		return fmt.Sprintf("/run/user/%d/podman/podman.sock", uid)
 
