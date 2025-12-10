@@ -343,7 +343,7 @@ async function deleteApp() {
             type="text"
             placeholder="KEY"
             class="flex-1 px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-            @keydown.enter="$event.target.nextElementSibling?.focus()"
+            @keydown.enter="(($event.target as HTMLElement)?.nextElementSibling?.nextElementSibling as HTMLElement)?.focus()"
           >
           <span class="text-gray-400">=</span>
           <input

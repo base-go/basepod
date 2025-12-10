@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "0.1.24"
+	version = "0.1.25"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
@@ -410,7 +410,10 @@ func runUpdate() {
 	os.Remove(backupPath)
 
 	fmt.Printf("Successfully updated to %s\n", latestVersion)
-	fmt.Println("Run 'systemctl restart deployer' to use the new version.")
+	fmt.Println("Restarting service...")
+
+	// Auto-restart the service
+	runRestart()
 }
 
 // runRestart restarts the deployer service based on OS
