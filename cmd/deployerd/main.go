@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "0.1.21"
+	version = "0.1.22"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
@@ -410,12 +410,12 @@ func runUpdate() {
 	os.Remove(backupPath)
 
 	fmt.Printf("Successfully updated to %s\n", latestVersion)
-	fmt.Println("Run 'deployerd restart' to use the new version.")
+	fmt.Println("Run 'systemctl restart deployer' to use the new version.")
 }
 
-// runRestart restarts the deployerd service based on OS
+// runRestart restarts the deployer service based on OS
 func runRestart() {
-	fmt.Println("Restarting deployerd...")
+	fmt.Println("Restarting deployer...")
 
 	if runtime.GOOS == "darwin" {
 		// macOS: Try launchctl first, then suggest manual restart
@@ -430,25 +430,30 @@ func runRestart() {
 				os.Exit(0)
 			}
 		}
-		fmt.Println("Deployerd restarted successfully.")
+		fmt.Println("Deployer restarted successfully.")
 		return
 	}
 
-	// Linux: Use systemctl
-	cmd := exec.Command("systemctl", "restart", "deployerd")
+	// Linux: Use systemctl - try 'deployer' first, then 'deployerd'
+	cmd := exec.Command("systemctl", "restart", "deployer")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// Try user-level systemd
-		cmd = exec.Command("systemctl", "--user", "restart", "deployerd")
+		// Try deployerd service name
+		cmd = exec.Command("systemctl", "restart", "deployerd")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("Error: failed to restart deployerd service: %v\n", err)
-			fmt.Println("You may need to run with sudo: sudo deployerd restart")
-			fmt.Println("Or restart manually: sudo systemctl restart deployerd")
-			os.Exit(1)
+			// Try user-level systemd
+			cmd = exec.Command("systemctl", "--user", "restart", "deployer")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				fmt.Printf("Error: failed to restart deployer service: %v\n", err)
+				fmt.Println("You may need to run with sudo: sudo systemctl restart deployer")
+				os.Exit(1)
+			}
 		}
 	}
-	fmt.Println("Deployerd restarted successfully.")
+	fmt.Println("Deployer restarted successfully.")
 }
