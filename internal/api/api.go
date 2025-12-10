@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -43,10 +44,16 @@ type Server struct {
 	auth      *auth.Manager
 	router    *http.ServeMux
 	staticFS  http.Handler
+	version   string
 }
 
 // NewServer creates a new API server
 func NewServer(store *storage.Storage, pm podman.Client, caddyClient *caddy.Client) *Server {
+	return NewServerWithVersion(store, pm, caddyClient, "0.1.0")
+}
+
+// NewServerWithVersion creates a new API server with version
+func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient *caddy.Client, version string) *Server {
 	cfg, _ := config.Load()
 	if cfg == nil {
 		cfg = config.DefaultConfig()
@@ -59,6 +66,7 @@ func NewServer(store *storage.Storage, pm podman.Client, caddyClient *caddy.Clie
 		config:  cfg,
 		auth:    auth.NewManager(cfg.Auth.PasswordHash),
 		router:  http.NewServeMux(),
+		version: version,
 	}
 
 	// Setup embedded static file serving
@@ -99,6 +107,9 @@ func (s *Server) setupRoutes() {
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
 	s.router.HandleFunc("GET /api/system/config", s.handleGetConfig) // No auth - needed for login page
+	s.router.HandleFunc("GET /api/system/version", s.requireAuth(s.handleGetVersion))
+	s.router.HandleFunc("POST /api/system/update", s.requireAuth(s.handleSystemUpdate))
+	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 
 	// Templates (auth required)
@@ -877,6 +888,127 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	jsonResponse(w, http.StatusOK, cfg)
+}
+
+// handleGetVersion returns current and latest version
+func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
+	current := s.version
+
+	// Fetch latest version from GitHub releases
+	latest := current
+	updateAvailable := false
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/base-go/dr/releases/latest")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var release struct {
+			TagName string `json:"tag_name"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&release) == nil && release.TagName != "" {
+			latest = strings.TrimPrefix(release.TagName, "v")
+			if latest != current {
+				updateAvailable = true
+			}
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"current":         current,
+		"latest":          latest,
+		"updateAvailable": updateAvailable,
+	})
+}
+
+// handleSystemUpdate triggers a self-update
+func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
+	// Determine binary path and architecture
+	execPath, err := os.Executable()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Cannot determine executable path")
+		return
+	}
+
+	// Use runtime architecture
+	arch := runtime.GOARCH
+	if arch == "" {
+		arch = "amd64"
+	}
+
+	// Download URL
+	downloadURL := fmt.Sprintf("https://github.com/base-go/dr/releases/latest/download/deployerd-linux-%s", arch)
+
+	// Download new binary to temp file
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(downloadURL)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to download update: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Download failed with status: %d", resp.StatusCode))
+		return
+	}
+
+	// Write to temp file
+	tmpFile, err := os.CreateTemp("", "deployerd-update-*")
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create temp file: "+err.Error())
+		return
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		errorResponse(w, http.StatusInternalServerError, "Failed to write update: "+err.Error())
+		return
+	}
+	tmpFile.Close()
+
+	// Make executable
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		errorResponse(w, http.StatusInternalServerError, "Failed to set permissions: "+err.Error())
+		return
+	}
+
+	// Replace current binary (atomic move)
+	if err := os.Rename(tmpPath, execPath); err != nil {
+		// Try copy if rename fails (cross-device)
+		srcFile, _ := os.Open(tmpPath)
+		dstFile, _ := os.Create(execPath)
+		io.Copy(dstFile, srcFile)
+		srcFile.Close()
+		dstFile.Close()
+		os.Remove(tmpPath)
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status":  "updated",
+		"message": "Update complete. Restart the service to apply changes.",
+		"command": "systemctl restart deployer",
+	})
+}
+
+// handleSystemPrune removes unused containers, images, and volumes
+func (s *Server) handleSystemPrune(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Run podman system prune
+	cmd := exec.CommandContext(ctx, "podman", "system", "prune", "-af", "--volumes")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Prune failed: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status": "pruned",
+		"output": string(output),
+	})
 }
 
 // handleListContainers lists all containers

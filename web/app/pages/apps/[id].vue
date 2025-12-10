@@ -82,6 +82,52 @@ const settingsForm = ref({
   enableSSL: false
 })
 
+// Environment variables management
+const envVars = ref<Array<{ key: string; value: string }>>([])
+const newEnvKey = ref('')
+const newEnvValue = ref('')
+const savingEnv = ref(false)
+
+// Initialize env vars when app data loads
+watch(() => app.value, (appData) => {
+  if (appData?.env) {
+    envVars.value = Object.entries(appData.env).map(([key, value]) => ({ key, value }))
+  }
+}, { immediate: true })
+
+function addEnvVar() {
+  if (!newEnvKey.value.trim()) return
+  envVars.value.push({ key: newEnvKey.value.trim(), value: newEnvValue.value })
+  newEnvKey.value = ''
+  newEnvValue.value = ''
+}
+
+function removeEnvVar(index: number) {
+  envVars.value.splice(index, 1)
+}
+
+async function saveEnvVars() {
+  savingEnv.value = true
+  try {
+    const envObject: Record<string, string> = {}
+    for (const { key, value } of envVars.value) {
+      if (key.trim()) {
+        envObject[key.trim()] = value
+      }
+    }
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: { env: envObject }
+    })
+    toast.add({ title: 'Environment variables saved', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingEnv.value = false
+  }
+}
+
 // Initialize settings form when app data loads
 watch(() => app.value, (appData) => {
   if (appData) {
@@ -263,26 +309,58 @@ async function deleteApp() {
       <template #header>
         <div class="flex items-center justify-between">
           <h3 class="font-semibold">Environment Variables</h3>
-          <UButton variant="outline" size="sm" icon="i-heroicons-plus">
-            Add Variable
+          <UButton :loading="savingEnv" @click="saveEnvVars">
+            Save Changes
           </UButton>
         </div>
       </template>
 
-      <div v-if="app.env && Object.keys(app.env).length" class="space-y-2">
-        <div
-          v-for="(value, key) in app.env"
-          :key="key"
-          class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800"
-        >
-          <code class="font-mono text-sm">{{ key }}</code>
-          <code class="font-mono text-sm text-gray-500">{{ value }}</code>
+      <div class="space-y-4">
+        <!-- Existing Variables -->
+        <div v-for="(envVar, index) in envVars" :key="index" class="flex items-center gap-2">
+          <UInput
+            v-model="envVar.key"
+            placeholder="KEY"
+            class="flex-1 font-mono"
+          />
+          <UInput
+            v-model="envVar.value"
+            placeholder="value"
+            class="flex-1 font-mono"
+          />
+          <UButton
+            icon="i-heroicons-trash"
+            color="error"
+            variant="ghost"
+            size="sm"
+            @click="removeEnvVar(index)"
+          />
         </div>
-      </div>
 
-      <div v-else class="text-center py-8 text-gray-500">
-        <UIcon name="i-heroicons-key" class="w-12 h-12 mx-auto mb-2 opacity-50" />
-        <p>No environment variables configured</p>
+        <!-- Add New Variable -->
+        <div class="flex items-center gap-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+          <UInput
+            v-model="newEnvKey"
+            placeholder="NEW_KEY"
+            class="flex-1 font-mono"
+          />
+          <UInput
+            v-model="newEnvValue"
+            placeholder="new value"
+            class="flex-1 font-mono"
+          />
+          <UButton
+            icon="i-heroicons-plus"
+            color="primary"
+            variant="soft"
+            size="sm"
+            @click="addEnvVar"
+          />
+        </div>
+
+        <div v-if="envVars.length === 0 && !newEnvKey" class="text-center py-4 text-gray-500">
+          <p>No environment variables configured. Add one above.</p>
+        </div>
       </div>
     </UCard>
 

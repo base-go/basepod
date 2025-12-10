@@ -1,11 +1,61 @@
 <script setup lang="ts">
 import type { HealthResponse } from '~/types'
 
+interface VersionInfo {
+  current: string
+  latest: string
+  updateAvailable: boolean
+}
+
 definePageMeta({
   title: 'Settings'
 })
 
 const { data: health } = await useApiFetch<HealthResponse>('/health')
+
+// Version info
+const version = ref<VersionInfo | null>(null)
+const checkingVersion = ref(false)
+const updating = ref(false)
+const updateMessage = ref('')
+const updateError = ref('')
+
+const checkVersion = async () => {
+  checkingVersion.value = true
+  updateError.value = ''
+  try {
+    version.value = await $fetch<VersionInfo>('/api/system/version')
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    updateError.value = err.data?.error || 'Failed to check version'
+  } finally {
+    checkingVersion.value = false
+  }
+}
+
+const performUpdate = async () => {
+  updating.value = true
+  updateMessage.value = ''
+  updateError.value = ''
+  try {
+    const result = await $fetch<{ status: string; message: string }>('/api/system/update', {
+      method: 'POST'
+    })
+    updateMessage.value = result.message
+    // Refresh version after update
+    await checkVersion()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    updateError.value = err.data?.error || 'Update failed'
+  } finally {
+    updating.value = false
+  }
+}
+
+// Check version on load
+onMounted(() => {
+  checkVersion()
+})
 
 const settings = ref({
   domain: '',
@@ -54,11 +104,100 @@ const changePassword = async () => {
     changingPassword.value = false
   }
 }
+
+// Prune resources
+const pruning = ref(false)
+const pruneResult = ref('')
+const pruneError = ref('')
+
+const pruneResources = async () => {
+  if (!confirm('This will remove all unused containers, images, and volumes. Continue?')) {
+    return
+  }
+
+  pruning.value = true
+  pruneResult.value = ''
+  pruneError.value = ''
+  try {
+    const result = await $fetch<{ status: string; output: string }>('/api/system/prune', {
+      method: 'POST'
+    })
+    pruneResult.value = result.output || 'Prune completed successfully'
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    pruneError.value = err.data?.error || 'Prune failed'
+  } finally {
+    pruning.value = false
+  }
+}
 </script>
 
 <template>
   <div>
     <div class="max-w-3xl space-y-6">
+      <!-- System Update -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">System Update</h3>
+            <UBadge v-if="version?.updateAvailable" color="warning">Update Available</UBadge>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <p class="font-medium">Current Version</p>
+              <p class="text-2xl font-mono">v{{ version?.current || '...' }}</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm text-gray-500">Latest Version</p>
+              <p class="text-xl font-mono">v{{ version?.latest || '...' }}</p>
+            </div>
+          </div>
+
+          <UAlert
+            v-if="version?.updateAvailable"
+            color="info"
+            variant="soft"
+            title="A new version is available"
+            description="Click 'Update Now' to download and install the latest version."
+          />
+
+          <UAlert
+            v-if="updateMessage"
+            color="success"
+            variant="soft"
+            :title="updateMessage"
+          />
+
+          <UAlert
+            v-if="updateError"
+            color="error"
+            variant="soft"
+            :title="updateError"
+          />
+
+          <div class="flex gap-2">
+            <UButton
+              variant="soft"
+              :loading="checkingVersion"
+              @click="checkVersion"
+            >
+              Check for Updates
+            </UButton>
+            <UButton
+              v-if="version?.updateAvailable"
+              color="primary"
+              :loading="updating"
+              @click="performUpdate"
+            >
+              Update Now
+            </UButton>
+          </div>
+        </div>
+      </UCard>
+
       <!-- Domain Settings -->
       <UCard>
         <template #header>
@@ -180,20 +319,30 @@ const changePassword = async () => {
         </template>
 
         <div class="space-y-4">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="font-medium">Reset Configuration</p>
-              <p class="text-sm text-gray-500">Reset all settings to defaults</p>
-            </div>
-            <UButton color="error" variant="soft">Reset</UButton>
-          </div>
+          <UAlert
+            v-if="pruneResult"
+            color="success"
+            variant="soft"
+            title="Prune completed"
+          >
+            <pre class="text-xs mt-2 whitespace-pre-wrap">{{ pruneResult }}</pre>
+          </UAlert>
+
+          <UAlert
+            v-if="pruneError"
+            color="error"
+            variant="soft"
+            :title="pruneError"
+          />
 
           <div class="flex items-center justify-between">
             <div>
               <p class="font-medium">Prune Unused Resources</p>
               <p class="text-sm text-gray-500">Remove unused containers, images, and volumes</p>
             </div>
-            <UButton color="error" variant="soft">Prune</UButton>
+            <UButton color="error" variant="soft" :loading="pruning" @click="pruneResources">
+              Prune
+            </UButton>
           </div>
         </div>
       </UCard>
