@@ -7,12 +7,12 @@ bin/
 *.so
 *.dylib
 
-# Built binaries
-deployer
-deployerd
-deployer-*
-deployerd-*
-deployer-cli
+# Built binaries (root level only)
+/deployer
+/deployerd
+/deployer-*
+/deployerd-*
+/deployer-cli
 
 # Test binary, built with `go test -c`
 *.test
