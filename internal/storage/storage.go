@@ -50,7 +50,7 @@ func (s *Storage) migrate() error {
 		`CREATE TABLE IF NOT EXISTS apps (
 			id TEXT PRIMARY KEY,
 			name TEXT UNIQUE NOT NULL,
-			domain TEXT,
+			domain TEXT UNIQUE,
 			container_id TEXT,
 			image TEXT,
 			status TEXT NOT NULL DEFAULT 'pending',

@@ -63,3 +63,8 @@ export interface TemplatesResponse {
     platform: string
   }
 }
+
+export interface AuthStatusResponse {
+  authRequired: boolean
+  authenticated: boolean
+}

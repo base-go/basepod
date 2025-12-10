@@ -23,6 +23,15 @@ const navigation = [
     to: '/settings'
   }
 ]
+
+const logout = async () => {
+  try {
+    await $fetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // Ignore errors
+  }
+  navigateTo('/login')
+}
 </script>
 
 <template>
@@ -77,8 +86,12 @@ const navigation = [
           </template>
           <template #trailing>
             <div class="flex items-center gap-2">
-              <UButton icon="i-heroicons-bell" variant="ghost" color="neutral" />
-              <UAvatar text="U" size="sm" />
+              <UButton
+                icon="i-heroicons-arrow-right-on-rectangle"
+                variant="ghost"
+                color="neutral"
+                @click="logout"
+              />
             </div>
           </template>
         </UDashboardNavbar>

@@ -21,9 +21,12 @@ export default defineNuxtConfig({
     }
   },
 
+  // Use SPA mode for static build (no SSR/prerendering)
+  ssr: false,
+
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:3000/api'
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api'
     }
   },
 
