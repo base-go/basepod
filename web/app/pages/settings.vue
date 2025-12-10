@@ -24,7 +24,7 @@ const checkVersion = async () => {
   checkingVersion.value = true
   updateError.value = ''
   try {
-    version.value = await $fetch<VersionInfo>('/api/system/version')
+    version.value = await $api<VersionInfo>('/system/version')
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     updateError.value = err.data?.error || 'Failed to check version'
@@ -38,7 +38,7 @@ const performUpdate = async () => {
   updateMessage.value = ''
   updateError.value = ''
   try {
-    const result = await $fetch<{ status: string; message: string }>('/api/system/update', {
+    const result = await $api<{ status: string; message: string }>('/system/update', {
       method: 'POST'
     })
     updateMessage.value = result.message
@@ -88,7 +88,7 @@ const changePassword = async () => {
 
   changingPassword.value = true
   try {
-    await $fetch('/api/auth/change-password', {
+    await $api('/auth/change-password', {
       method: 'POST',
       body: {
         currentPassword: passwordForm.value.currentPassword,
@@ -119,7 +119,7 @@ const pruneResources = async () => {
   pruneResult.value = ''
   pruneError.value = ''
   try {
-    const result = await $fetch<{ status: string; output: string }>('/api/system/prune', {
+    const result = await $api<{ status: string; output: string }>('/system/prune', {
       method: 'POST'
     })
     pruneResult.value = result.output || 'Prune completed successfully'

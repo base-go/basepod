@@ -5,20 +5,24 @@ export function useApiBase() {
   return config.public.apiBase as string
 }
 
+// SSR-safe fetch with auth credentials
 export function useApiFetch<T>(path: string, options?: { server?: boolean }) {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase as string
   return useFetch<T>(path, {
     baseURL,
+    credentials: 'include',
     ...options
   } as object)
 }
 
+// Client-side fetch with auth credentials
 export async function $api<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase as string
   return await $fetch<T>(path, {
     baseURL,
+    credentials: 'include',
     ...options
   } as object)
 }
