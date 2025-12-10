@@ -4,161 +4,166 @@ A self-hosted Platform as a Service (PaaS) built with **Go**, **Podman**, and **
 
 ## Features
 
-- **Easy Deployments** - Deploy from Docker images or Git repositories
+- **Easy Deployments** - Deploy from Docker images or source code (Dockerfile)
 - **Automatic SSL** - Free HTTPS via Let's Encrypt with Caddy
 - **Rootless Containers** - Powered by Podman, no root required
 - **Modern Web UI** - Built with Nuxt 4 and Nuxt UI 4
-- **Powerful CLI** - Full control from the command line
-- **OS Agnostic** - Works on Linux and macOS
+- **Multi-Server CLI** - Deploy to multiple servers with context switching
+- **One-Click Apps** - Pre-configured templates for popular services
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Frontend                             │
-│              Nuxt 4 + Nuxt UI 4 (Vue 3)                    │
-├─────────────────────────────────────────────────────────────┤
-│                        REST API                             │
-│                    Deployer (Go)                            │
-├──────────┬──────────┬───────────┬────────────┬─────────────┤
-│   Apps   │  Proxy   │    SSL    │   Deploy   │   Storage   │
-│  Manager │ (Caddy)  │  (ACME)   │   Engine   │  (SQLite)   │
-├──────────┴──────────┴───────────┴────────────┴─────────────┤
-│                      Podman                                 │
-└─────────────────────────────────────────────────────────────┘
++---------------------------------------------------------+
+|                     Clients                              |
+|        deployer CLI (macOS/Linux)                       |
++---------------------------------------------------------+
+                          |
+                          v
++---------------------------------------------------------+
+|                  Deployer Server                         |
+|              (deployerd on VPS)                         |
++--------+--------+-----------+------------+--------------+
+|  Apps  | Proxy  |    SSL    |   Deploy   |   Storage    |
+| Manager| (Caddy)|   (ACME)  |   Engine   |   (SQLite)   |
++--------+--------+-----------+------------+--------------+
+|                      Podman                              |
++----------------------------------------------------------+
 ```
 
-## Quick Install (VPS/Linux)
+---
 
-One-line install on any Linux VPS:
+## Server Install (VPS/Linux)
+
+Install Deployer on your Linux VPS with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
 ```
 
-With a custom domain (enables automatic SSL):
+With a custom domain (recommended - enables automatic SSL):
 
 ```bash
-DEPLOYER_DOMAIN=deploy.example.com curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
+DEPLOYER_DOMAIN=example.com curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
 ```
 
-Supported: Ubuntu, Debian, Fedora, CentOS, Rocky, Alma, Arch
+### What Gets Installed
 
-After install:
-- Dashboard: `http://your-server-ip:3000`
-- Apps get domains: `appname.deploy.example.com`
-- SSL is automatic via Let's Encrypt
+- **deployerd** - The server binary at `/opt/deployer/bin/deployer`
+- **Podman** - Container runtime (rootless)
+- **Caddy** - Reverse proxy with automatic SSL
+- **SQLite** - App database at `/opt/deployer/data/`
 
-## Quick Start (macOS)
+### After Install
 
-Complete setup for local development with `*.pod` domains.
+| Item | Location |
+|------|----------|
+| Dashboard | `https://d.example.com` |
+| Apps | `https://appname.example.com` |
+| Config | `/opt/deployer/config/deployer.yaml` |
+| Logs | `journalctl -u deployer -f` |
 
-### Step 1: Install Dependencies
+**Save the password shown after install - it won't be displayed again.**
+
+### DNS Setup
+
+Point a wildcard DNS record to your server:
+
+```
+*.example.com  ->  YOUR_SERVER_IP
+```
+
+Or for specific subdomains:
+```
+d.example.com     ->  YOUR_SERVER_IP  (dashboard)
+myapp.example.com ->  YOUR_SERVER_IP  (apps)
+```
+
+### Supported OS
+
+Ubuntu, Debian, Fedora, CentOS, Rocky Linux, Alma Linux, Arch Linux
+
+---
+
+## Client Install (CLI)
+
+The `deployer` CLI lets you deploy from your local machine to any Deployer server.
+
+### macOS
 
 ```bash
-# Install Homebrew packages
-brew install podman caddy dnsmasq
+# Using Homebrew (coming soon)
+brew install base-go/tap/deployer
 
-# Initialize Podman VM
-podman machine init
-podman machine start
+# Or download manually
+curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-darwin-arm64 -o /usr/local/bin/deployer
+chmod +x /usr/local/bin/deployer
 ```
 
-### Step 2: Setup Local DNS and Port Forwarding
-
-This enables wildcard `*.pod` domains (e.g., `nginx.pod`, `mysql.pod`).
+### Linux
 
 ```bash
-# Configure dnsmasq
-echo -e "address=/pod/127.0.0.2\nlisten-address=127.0.0.2\nport=53" | sudo tee /opt/homebrew/etc/dnsmasq.conf
+# AMD64
+curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-linux-amd64 -o /usr/local/bin/deployer
+chmod +x /usr/local/bin/deployer
 
-# Create loopback alias for 127.0.0.2
-sudo ifconfig lo0 alias 127.0.0.2
-
-# Setup macOS resolver
-sudo mkdir -p /etc/resolver
-sudo bash -c 'echo "nameserver 127.0.0.2" > /etc/resolver/pod'
-
-# Start dnsmasq
-sudo /opt/homebrew/sbin/dnsmasq
-
-# Forward port 80 to 8080 (so you can use http://app.pod instead of :8080)
-echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
-
-# Verify DNS works
-ping -c 1 test.pod
-# Should show: PING test.pod (127.0.0.2)
+# ARM64
+curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-linux-arm64 -o /usr/local/bin/deployer
+chmod +x /usr/local/bin/deployer
 ```
 
-### Step 3: Build and Run
+### CLI Commands
 
 ```bash
-# Clone and build
-git clone https://github.com/deployer/deployer.git
-cd deployer
-go build -o deployer ./cmd/deployer
+# Login to a server (saves token for future use)
+deployer login d.example.com
 
-# Start the server (auto-starts Podman & Caddy)
-./deployer
+# List configured servers
+deployer context
 
-# In a new terminal, start the web UI
-cd web
-bun install
-bun dev
+# Switch active server
+deployer context use production
+
+# Deploy current directory (requires Dockerfile)
+deployer push myapp
+
+# Deploy to specific server
+deployer push myapp --server d.example.com
 ```
 
-### Step 4: Access Dashboard
+### Project Configuration
 
-Open http://localhost:3000
+Create `deployer.yaml` in your project root:
 
-- Create apps manually or use **One-Click Apps**
-- Apps automatically get `{name}.pod` domains
-- Access apps at `http://nginx.pod`, `http://ghost.pod`, etc.
+```yaml
+# Optional: specify which server to deploy to
+server: d.example.com
 
-### After Reboot
+# App settings (optional)
+name: myapp
+port: 3000
+```
 
-The loopback alias, dnsmasq, and port forwarding don't persist. Run on each boot:
+### Deploy Workflow
 
 ```bash
-sudo ifconfig lo0 alias 127.0.0.2
-sudo /opt/homebrew/sbin/dnsmasq
-echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
+# 1. Login once
+deployer login d.example.com
+# Enter password when prompted
+
+# 2. Create Dockerfile in your project
+# 3. Deploy
+cd myproject
+deployer push myapp
+
+# Your app will be live at https://myapp.example.com
 ```
 
-Or create a startup script at `~/deployer-start.sh`:
-
-```bash
-#!/bin/bash
-sudo ifconfig lo0 alias 127.0.0.2
-sudo /opt/homebrew/sbin/dnsmasq
-echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
-cd ~/Base/deployer && ./deployer
-```
-
-### Troubleshooting
-
-**Cloudflare WARP conflict:** WARP uses port 53. Disable it when developing locally.
-
-**dnsmasq won't start:** Check if something else is using port 53:
-```bash
-sudo lsof -i :53
-```
-
-**Podman not connecting:** Restart the machine:
-```bash
-podman machine stop
-podman machine start
-```
-
-**DNS not resolving:** Flush cache:
-```bash
-sudo dscacheutil -flushcache
-sudo killall -HUP mDNSResponder
-```
+---
 
 ## One-Click Apps
 
-Pre-configured templates available:
+Pre-configured templates available from the dashboard:
 
 | Category | Apps |
 |----------|------|
@@ -166,53 +171,80 @@ Pre-configured templates available:
 | Admin Tools | phpMyAdmin, Adminer, pgAdmin |
 | Web Servers | Nginx, Apache, Caddy |
 | CMS | WordPress, Ghost |
-| Dev Tools | Gitea, Portainer, Uptime Kuma |
+| Dev Tools | Gitea, Portainer, Code Server, Uptime Kuma |
+| Analytics | Grafana, Plausible Analytics |
+| Storage | MinIO, File Browser |
 | Automation | n8n |
+
+---
 
 ## REST API
 
+All endpoints require authentication (token from login).
+
 ```bash
 # List apps
-curl http://localhost:3000/api/apps
+curl -H "Authorization: Bearer TOKEN" https://d.example.com/api/apps
 
-# Create app
-curl -X POST http://localhost:3000/api/apps \
+# Create app from image
+curl -X POST https://d.example.com/api/apps \
+  -H "Authorization: Bearer TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name": "myapp"}'
+  -d '{"name": "myapp", "image": "nginx:latest"}'
 
-# Deploy
-curl -X POST http://localhost:3000/api/apps/{id}/deploy \
+# Deploy from template
+curl -X POST https://d.example.com/api/apps/from-template \
+  -H "Authorization: Bearer TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"image": "nginx:latest"}'
+  -d '{"template_id": "postgres", "name": "mydb"}'
 
 # Get templates
-curl http://localhost:3000/api/templates
+curl https://d.example.com/api/templates
 ```
 
-## Architecture
+---
 
+## Local Development (macOS)
+
+For developing Deployer itself or testing locally with `*.pod` domains.
+
+### Setup
+
+```bash
+# Install dependencies
+brew install podman caddy dnsmasq
+
+# Initialize Podman
+podman machine init
+podman machine start
+
+# Configure local DNS for *.pod domains
+echo -e "address=/pod/127.0.0.2\nlisten-address=127.0.0.2\nport=53" | sudo tee /opt/homebrew/etc/dnsmasq.conf
+sudo ifconfig lo0 alias 127.0.0.2
+sudo mkdir -p /etc/resolver
+sudo bash -c 'echo "nameserver 127.0.0.2" > /etc/resolver/pod'
+sudo /opt/homebrew/sbin/dnsmasq
+
+# Port forward 80 to 8080
+echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Web UI (Nuxt 3)                         │
-│                   http://localhost:3000                     │
-├─────────────────────────────────────────────────────────────┤
-│                     Go API Server                           │
-│                   http://localhost:3000                     │
-├──────────┬──────────┬───────────┬────────────┬─────────────┤
-│   Apps   │  Proxy   │    DNS    │  Templates │   Storage   │
-│  Manager │ (Caddy)  │ (dnsmasq) │  (1-click) │  (SQLite)   │
-├──────────┴──────────┴───────────┴────────────┴─────────────┤
-│                      Podman VM                              │
-│                   (rootless containers)                     │
-└─────────────────────────────────────────────────────────────┘
+
+### Build and Run
+
+```bash
+# Backend
+go build -o deployer ./cmd/deployer
+./deployer
+
+# Frontend (in another terminal)
+cd web
+bun install
+bun dev
 ```
 
-## How It Works
+Access at http://localhost:3000. Apps get `*.pod` domains locally.
 
-1. **Create App** - App gets auto-assigned `{name}.pod` domain
-2. **Deploy** - Podman pulls image, creates container with port mapping
-3. **Routing** - Caddy proxies `{name}.pod` to container port
-4. **Access** - Browse to `http://{name}.pod`
+---
 
 ## Comparison with CapRover
 
@@ -221,26 +253,28 @@ curl http://localhost:3000/api/templates
 | Container Runtime | Podman (rootless) | Docker (root) |
 | Reverse Proxy | Caddy | Nginx |
 | Language | Go | Node.js |
-| Installation | User-space (~/) | System-wide |
-| SSL | Auto (built-in) | Auto (Let's Encrypt) |
+| SSL | Auto (Caddy/ACME) | Auto (Let's Encrypt) |
+| Multi-server CLI | Yes | No |
 | Web UI | Nuxt 4 | React |
-| Multi-node | Planned | Docker Swarm |
 
-## Roadmap
+---
 
-- [ ] Git push deployments
-- [ ] Dockerfile builds
-- [ ] Environment variable encryption
-- [ ] App templates (one-click deploys)
-- [ ] Multi-node support
-- [ ] Backup & restore
-- [ ] Metrics & monitoring
-- [ ] Authentication & RBAC
+## Upgrade
+
+```bash
+# On the server
+curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/upgrade.sh | sudo bash
+```
+
+## Uninstall
+
+```bash
+# On the server
+curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash -s -- --uninstall
+```
+
+---
 
 ## License
 
 MIT License - see [LICENSE](LICENSE)
-
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) first.
