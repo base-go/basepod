@@ -37,14 +37,15 @@ func assignHostPort(appID string) int {
 
 // Server represents the API server
 type Server struct {
-	storage   *storage.Storage
-	podman    podman.Client
-	caddy     *caddy.Client
-	config    *config.Config
-	auth      *auth.Manager
-	router    *http.ServeMux
-	staticFS  http.Handler
-	version   string
+	storage      *storage.Storage
+	podman       podman.Client
+	caddy        *caddy.Client
+	config       *config.Config
+	auth         *auth.Manager
+	router       *http.ServeMux
+	staticFS     http.Handler
+	staticDir    string // Path to static files on disk (preferred over embedded)
+	version      string
 }
 
 // NewServer creates a new API server
@@ -69,9 +70,30 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 		version: version,
 	}
 
-	// Setup embedded static file serving
-	if staticFS, err := web.GetFileSystem(); err == nil {
-		s.staticFS = http.FileServer(http.FS(staticFS))
+	// Setup static file serving - prefer disk over embedded
+	// Check /opt/deployer/web first, then embedded files
+	staticPaths := []string{
+		"/opt/deployer/web",
+		os.Getenv("DEPLOYER_WEB_DIR"),
+	}
+	for _, dir := range staticPaths {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			// Check if index.html exists
+			if _, err := os.Stat(dir + "/index.html"); err == nil {
+				s.staticDir = dir
+				s.staticFS = http.FileServer(http.Dir(dir))
+				break
+			}
+		}
+	}
+	// Fall back to embedded files
+	if s.staticFS == nil {
+		if staticFS, err := web.GetFileSystem(); err == nil {
+			s.staticFS = http.FileServer(http.FS(staticFS))
+		}
 	}
 
 	s.setupRoutes()
@@ -308,25 +330,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			path = "/index.html"
 		}
 
-		// Check if file exists
-		if webFS, err := web.GetFileSystem(); err == nil {
+		// Check if file exists (disk or embedded)
+		fileExists := false
+		if s.staticDir != "" {
+			// Check disk
+			if _, err := os.Stat(s.staticDir + path); err == nil {
+				fileExists = true
+			}
+		} else if webFS, err := web.GetFileSystem(); err == nil {
+			// Check embedded
 			if _, err := fs.Stat(webFS, strings.TrimPrefix(path, "/")); err == nil {
-				// Set proper MIME type for JS files
-				if strings.HasSuffix(path, ".js") {
-					w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-				} else if strings.HasSuffix(path, ".css") {
-					w.Header().Set("Content-Type", "text/css; charset=utf-8")
-				} else if strings.HasSuffix(path, ".json") {
-					w.Header().Set("Content-Type", "application/json")
-				} else if strings.HasSuffix(path, ".svg") {
-					w.Header().Set("Content-Type", "image/svg+xml")
-				}
-				s.staticFS.ServeHTTP(w, r)
-				return
+				fileExists = true
 			}
 		}
 
+		if fileExists {
+			// Set proper MIME type for JS files
+			if strings.HasSuffix(path, ".js") {
+				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			} else if strings.HasSuffix(path, ".css") {
+				w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			} else if strings.HasSuffix(path, ".json") {
+				w.Header().Set("Content-Type", "application/json")
+			} else if strings.HasSuffix(path, ".svg") {
+				w.Header().Set("Content-Type", "image/svg+xml")
+			}
+			// Cache hashed assets forever, don't cache HTML
+			if strings.Contains(path, "/_nuxt/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if strings.HasSuffix(path, ".html") || path == "/" {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			}
+			s.staticFS.ServeHTTP(w, r)
+			return
+		}
+
 		// For SPA routing, serve index.html for non-existent paths
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		r.URL.Path = "/"
 		s.staticFS.ServeHTTP(w, r)
 		return
