@@ -87,11 +87,13 @@ const envVars = ref<Array<{ key: string; value: string }>>([])
 const newEnvKey = ref('')
 const newEnvValue = ref('')
 const savingEnv = ref(false)
+const envInitialized = ref(false)
 
-// Initialize env vars when app data loads
+// Initialize env vars when app data loads (only once)
 watch(() => app.value, (appData) => {
-  if (appData?.env) {
+  if (appData?.env && !envInitialized.value) {
     envVars.value = Object.entries(appData.env).map(([key, value]) => ({ key, value }))
+    envInitialized.value = true
   }
 }, { immediate: true })
 
@@ -120,7 +122,8 @@ async function saveEnvVars() {
       body: { env: envObject }
     })
     toast.add({ title: 'Environment variables saved', color: 'success' })
-    refresh()
+    // Sync local state with what we just saved
+    envVars.value = Object.entries(envObject).map(([key, value]) => ({ key, value }))
   } catch (error) {
     toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
   } finally {
