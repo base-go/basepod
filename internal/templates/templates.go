@@ -361,9 +361,10 @@ var Templates = []Template{
 		Image:       "codercom/code-server:latest",
 		Port:        8080,
 		Env: map[string]string{
-			"PASSWORD": "changeme",
+			"PASSWORD":          "changeme",
+			"CS_DISABLE_TELEMETRY": "true", // Set to "false" to enable telemetry
 		},
-		Command:  []string{"--bind-addr", "0.0.0.0:8080"},
+		Command:  []string{"--bind-addr", "0.0.0.0:8080", "--disable-telemetry"},
 		Category: "devtools",
 		Icon:     "i-lucide-code",
 	},
