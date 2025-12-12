@@ -8,10 +8,12 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/deployer/deployer/internal/auth"
 	"github.com/deployer/deployer/internal/caddy"
 	"github.com/deployer/deployer/internal/config"
+	"github.com/deployer/deployer/internal/mlx"
 	"github.com/deployer/deployer/internal/podman"
 	"github.com/deployer/deployer/internal/storage"
 	"github.com/deployer/deployer/internal/templates"
@@ -40,6 +43,7 @@ type Server struct {
 	storage      *storage.Storage
 	podman       podman.Client
 	caddy        *caddy.Client
+	mlx          *mlx.Manager
 	config       *config.Config
 	auth         *auth.Manager
 	router       *http.ServeMux
@@ -64,6 +68,7 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 		storage: store,
 		podman:  pm,
 		caddy:   caddyClient,
+		mlx:     mlx.NewManager(""),
 		config:  cfg,
 		auth:    auth.NewManager(cfg.Auth.PasswordHash),
 		router:  http.NewServeMux(),
@@ -71,9 +76,9 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 
 	// Setup static file serving - prefer disk over embedded
-	// Check /opt/deployer/web first, then embedded files
+	// Check /opt/deployer/web/dist first, then embedded files
 	staticPaths := []string{
-		"/opt/deployer/web",
+		"/opt/deployer/web/dist",
 		os.Getenv("DEPLOYER_WEB_DIR"),
 	}
 	for _, dir := range staticPaths {
@@ -91,7 +96,8 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 	// Fall back to embedded files
 	if s.staticFS == nil {
-		if staticFS, err := web.GetFileSystem(); err == nil {
+		if staticFS, source, err := web.GetFileSystem(); err == nil {
+			log.Printf("Serving static files from: %s", source)
 			s.staticFS = http.FileServer(http.FS(staticFS))
 		}
 	}
@@ -129,14 +135,23 @@ func (s *Server) setupRoutes() {
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
 	s.router.HandleFunc("GET /api/system/config", s.handleGetConfig) // No auth - needed for login page
+	s.router.HandleFunc("PUT /api/system/config", s.requireAuth(s.handleUpdateConfig))
 	s.router.HandleFunc("GET /api/system/version", s.requireAuth(s.handleGetVersion))
 	s.router.HandleFunc("POST /api/system/update", s.requireAuth(s.handleSystemUpdate))
 	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
+	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 
 	// Templates (auth required)
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
 	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.handleDeployTemplate))
+
+	// MLX LLM models (auth required)
+	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
+	s.router.HandleFunc("GET /api/mlx/status", s.requireAuth(s.handleMLXStatus))
+
+	// Image tags (auth required)
+	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
 
 	// Caddy on-demand TLS check (no auth - called by Caddy)
 	s.router.HandleFunc("GET /api/caddy/check", s.handleCaddyCheck)
@@ -338,7 +353,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, err := os.Stat(s.staticDir + path); err == nil {
 				fileExists = true
 			}
-		} else if webFS, err := web.GetFileSystem(); err == nil {
+		} else if webFS, _, err := web.GetFileSystem(); err == nil {
 			// Check embedded
 			if _, err := fs.Stat(webFS, strings.TrimPrefix(path, "/")); err == nil {
 				fileExists = true
@@ -456,6 +471,24 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		port = 8080
 	}
 
+	// Determine app type
+	appType := req.Type
+	if appType == "" {
+		appType = app.AppTypeContainer
+	}
+
+	// Validate MLX apps
+	if appType == app.AppTypeMLX {
+		if !mlx.IsSupported() {
+			errorResponse(w, http.StatusBadRequest, "MLX apps require macOS with Apple Silicon")
+			return
+		}
+		if req.Model == "" {
+			errorResponse(w, http.StatusBadRequest, "Model is required for MLX apps")
+			return
+		}
+	}
+
 	// Auto-assign domain from config if not specified
 	domain := req.Domain
 	if domain == "" {
@@ -472,10 +505,12 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	newApp := &app.App{
 		ID:        uuid.New().String(),
 		Name:      req.Name,
+		Type:      appType,
 		Domain:    domain,
 		Image:     req.Image,
 		Status:    app.StatusPending,
 		Env:       req.Env,
+		Volumes:   req.Volumes,
 		Ports: app.PortConfig{
 			ContainerPort: port,
 			Protocol:      "http",
@@ -493,6 +528,17 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now(),
 	}
 
+	// Setup MLX config if MLX app
+	if appType == app.AppTypeMLX {
+		newApp.MLX = &app.MLXConfig{
+			Model:       req.Model,
+			MaxTokens:   4096,
+			ContextSize: 8192,
+			Temperature: 0.7,
+		}
+		newApp.Image = "mlx:" + req.Model // Display in UI
+	}
+
 	if newApp.Env == nil {
 		newApp.Env = make(map[string]string)
 	}
@@ -502,13 +548,24 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-deploy with placeholder image
-	go s.deployPlaceholder(newApp)
+	// Auto-deploy based on type
+	if appType == app.AppTypeMLX {
+		go s.deployMLXApp(newApp)
+	} else {
+		go s.deployPlaceholder(newApp)
+	}
 
 	jsonResponse(w, http.StatusCreated, newApp)
 }
 
 // handleGetApp retrieves an app by ID
+// AppResponse extends App with computed connection info
+type AppResponse struct {
+	*app.App
+	InternalHost string `json:"internal_host"` // e.g., "deployer-mysql"
+	ExternalHost string `json:"external_host"` // e.g., "d.common.al:31234"
+}
+
 func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -532,7 +589,20 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, a)
+	// Build response with computed fields
+	response := AppResponse{
+		App:          a,
+		InternalHost: "deployer-" + a.Name,
+	}
+
+	// Compute external host from domain config
+	if s.config != nil && s.config.Domain.Base != "" {
+		response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Base, a.Ports.HostPort)
+	} else {
+		response.ExternalHost = fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+	}
+
+	jsonResponse(w, http.StatusOK, response)
 }
 
 // handleUpdateApp updates an app
@@ -556,8 +626,20 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply updates
+	if req.Name != nil && *req.Name != a.Name {
+		// Check if new name is already taken
+		existing, _ := s.storage.GetAppByName(*req.Name)
+		if existing != nil {
+			errorResponse(w, http.StatusConflict, "App with this name already exists")
+			return
+		}
+		a.Name = *req.Name
+	}
 	if req.Domain != nil {
 		a.Domain = *req.Domain
+	}
+	if req.Image != nil {
+		a.Image = *req.Image
 	}
 	if req.Env != nil {
 		a.Env = *req.Env
@@ -573,6 +655,9 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EnableSSL != nil {
 		a.SSL.Enabled = *req.EnableSSL
+	}
+	if req.ExposeExternal != nil {
+		a.Ports.ExposeExternal = *req.ExposeExternal
 	}
 
 	if err := s.storage.UpdateApp(a); err != nil {
@@ -598,10 +683,17 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop and remove container if exists
-	if a.ContainerID != "" {
-		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
-		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	// Handle MLX apps differently
+	if a.Type == app.AppTypeMLX {
+		if err := s.deleteMLXApp(a); err != nil {
+			log.Printf("Warning: failed to cleanup MLX app: %v", err)
+		}
+	} else {
+		// Stop and remove container if exists
+		if a.ContainerID != "" {
+			_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+			_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+		}
 	}
 
 	// Remove Caddy route
@@ -629,6 +721,16 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	// Handle MLX apps differently
+	if a.Type == app.AppTypeMLX {
+		if err := s.startMLXApp(a); err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonResponse(w, http.StatusOK, a)
 		return
 	}
 
@@ -663,6 +765,16 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle MLX apps differently
+	if a.Type == app.AppTypeMLX {
+		if err := s.stopMLXApp(a); err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonResponse(w, http.StatusOK, a)
+		return
+	}
+
 	if a.ContainerID == "" {
 		errorResponse(w, http.StatusBadRequest, "App has not been deployed yet")
 		return
@@ -679,7 +791,7 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, a)
 }
 
-// handleRestartApp restarts an app
+// handleRestartApp restarts an app by recreating the container
 func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := r.PathValue("id")
@@ -694,18 +806,57 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.ContainerID == "" {
+	if a.ContainerID == "" && a.Image == "" {
 		errorResponse(w, http.StatusBadRequest, "App has not been deployed yet")
 		return
 	}
 
-	// Stop then start
-	_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
-	if err := s.podman.StartContainer(ctx, a.ContainerID); err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
+	// Stop and remove old container
+	containerName := "deployer-" + a.Name
+	if a.ContainerID != "" {
+		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	}
+	// Also try by name in case container ID is stale
+	_ = s.podman.StopContainer(ctx, containerName, 10)
+	_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+	// Build volume mounts from app record
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		if v.HostPath != "" && v.ContainerPath != "" {
+			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+		}
+	}
+
+	// Create new container with current settings
+	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+		Name:           containerName,
+		Image:          a.Image,
+		Env:            a.Env,
+		Networks:       []string{"deployer"},
+		ExposeExternal: a.Ports.ExposeExternal,
+		Volumes:        volumeMounts,
+		Ports: map[string]string{
+			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+		},
+		Labels: map[string]string{
+			"deployer.app":    a.Name,
+			"deployer.app.id": a.ID,
+		},
+	})
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create container: "+err.Error())
 		return
 	}
 
+	// Start the new container
+	if err := s.podman.StartContainer(ctx, containerID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to start container: "+err.Error())
+		return
+	}
+
+	a.ContainerID = containerID
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 
@@ -770,11 +921,13 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 		a.Ports.HostPort = assignHostPort(a.ID)
 	}
 
-	// Create new container with port mapping
+	// Create new container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:  "deployer-" + a.Name,
-		Image: image,
-		Env:   a.Env,
+		Name:           "deployer-" + a.Name,
+		Image:          image,
+		Env:            a.Env,
+		Networks:       []string{"deployer"},
+		ExposeExternal: a.Ports.ExposeExternal,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -894,7 +1047,7 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	info := map[string]interface{}{
-		"version": "0.1.0",
+		"version": s.version,
 		"status":  "running",
 	}
 
@@ -929,6 +1082,38 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	jsonResponse(w, http.StatusOK, cfg)
+}
+
+// handleUpdateConfig updates domain configuration
+func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain struct {
+			Base     string `json:"base"`
+			Wildcard bool   `json:"wildcard"`
+		} `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Update config
+	s.config.Domain.Base = req.Domain.Base
+	s.config.Domain.Wildcard = req.Domain.Wildcard
+
+	// Save to file
+	if err := s.config.Save(); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to save config: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status": "updated",
+		"domain": map[string]interface{}{
+			"base":     s.config.Domain.Base,
+			"wildcard": s.config.Domain.Wildcard,
+		},
+	})
 }
 
 // handleGetVersion returns current and latest version
@@ -1062,11 +1247,10 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		"message": "Update complete. Restarting service...",
 	})
 
-	// Restart in background after response is sent
+	// Exit process after response is sent - systemd will restart us automatically
 	go func() {
 		time.Sleep(1 * time.Second) // Give time for response to be sent
-		cmd := exec.Command("systemctl", "restart", "deployer")
-		cmd.Run()
+		os.Exit(0)
 	}()
 }
 
@@ -1086,6 +1270,52 @@ func (s *Server) handleSystemPrune(w http.ResponseWriter, r *http.Request) {
 		"status": "pruned",
 		"output": string(output),
 	})
+}
+
+// handleServiceRestart restarts a system service
+func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
+	service := r.PathValue("service")
+
+	switch service {
+	case "podman":
+		// For podman, we restart the podman socket service
+		cmd := exec.Command("systemctl", "restart", "podman.socket")
+		if err := cmd.Run(); err != nil {
+			// Try alternative: just reconnect by restarting deployer
+			errorResponse(w, http.StatusInternalServerError, "Failed to restart Podman: "+err.Error())
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"status":  "restarted",
+			"service": "podman",
+		})
+
+	case "caddy":
+		// Restart caddy service
+		cmd := exec.Command("systemctl", "restart", "caddy")
+		if err := cmd.Run(); err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to restart Caddy: "+err.Error())
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"status":  "restarted",
+			"service": "caddy",
+		})
+
+	case "deployer":
+		// Send response first, then exit to trigger systemd restart
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"status":  "restarting",
+			"service": "deployer",
+		})
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			os.Exit(0)
+		}()
+
+	default:
+		errorResponse(w, http.StatusBadRequest, "Unknown service: "+service)
+	}
 }
 
 // handleListContainers lists all containers
@@ -1124,11 +1354,13 @@ func (s *Server) deployPlaceholder(a *app.App) {
 		a.Ports.HostPort = assignHostPort(a.ID)
 	}
 
-	// Create container with port mapping
+	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:  "deployer-" + a.Name,
-		Image: placeholderImage,
-		Env:   a.Env,
+		Name:           "deployer-" + a.Name,
+		Image:          placeholderImage,
+		Env:            a.Env,
+		Networks:       []string{"deployer"},
+		ExposeExternal: a.Ports.ExposeExternal,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1193,15 +1425,21 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name      string            `json:"name"`
-		Domain    string            `json:"domain"`
-		Env       map[string]string `json:"env"`
-		EnableSSL bool              `json:"enableSSL"`
+		Name           string            `json:"name"`
+		Domain         string            `json:"domain"`
+		Env            map[string]string `json:"env"`
+		EnableSSL      bool              `json:"enableSSL"`
+		Version        string            `json:"version"`
+		UseAlpine      bool              `json:"useAlpine"`
+		ExposeExternal bool              `json:"exposeExternal"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+
+	// Build image with version and alpine preference
+	image := tmpl.BuildImage(req.Version, req.UseAlpine)
 
 	// Generate name if not provided
 	name := req.Name
@@ -1225,34 +1463,40 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		env[k] = v
 	}
 
-	// Auto-assign domain from config if not specified
+	// For non-database templates, assign domain; for databases, skip domain
 	domain := req.Domain
-	if domain == "" {
-		domain = s.config.GetAppDomain(name)
-	}
+	if tmpl.Category != "database" {
+		if domain == "" {
+			domain = s.config.GetAppDomain(name)
+		}
 
-	// Check if domain is already taken
-	existingByDomain, _ := s.storage.GetAppByDomain(domain)
-	if existingByDomain != nil {
-		errorResponse(w, http.StatusConflict, "Domain already in use by another app")
-		return
-	}
+		// Check if domain is already taken
+		existingByDomain, _ := s.storage.GetAppByDomain(domain)
+		if existingByDomain != nil {
+			errorResponse(w, http.StatusConflict, "Domain already in use by another app")
+			return
+		}
 
-	// Override url env var for apps that need it (e.g., Ghost)
-	if _, hasURL := env["url"]; hasURL {
-		env["url"] = "http://" + domain
+		// Override url env var for apps that need it (e.g., Ghost)
+		if _, hasURL := env["url"]; hasURL {
+			env["url"] = "http://" + domain
+		}
+	} else {
+		// No domain for database apps
+		domain = ""
 	}
 
 	newApp := &app.App{
 		ID:     uuid.New().String(),
 		Name:   name,
 		Domain: domain,
-		Image:  tmpl.GetImage(),
+		Image:  image,
 		Status: app.StatusPending,
 		Env:    env,
 		Ports: app.PortConfig{
-			ContainerPort: tmpl.Port,
-			Protocol:      "http",
+			ContainerPort:  tmpl.Port,
+			Protocol:       "http",
+			ExposeExternal: req.ExposeExternal,
 		},
 		Resources: app.ResourceConfig{
 			Replicas: 1,
@@ -1279,7 +1523,7 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 // deployFromTemplate deploys an app using a template's image
 func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 	ctx := context.Background()
-	image := tmpl.GetImage()
+	image := a.Image // Use image from app record (already selected based on alpine preference)
 
 	// Update status
 	a.Status = app.StatusDeploying
@@ -1297,12 +1541,33 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 		a.Ports.HostPort = assignHostPort(a.ID)
 	}
 
-	// Create container with port mapping
+	// Create volume mounts from template
+	volumeMounts := []string{}
+	volumeDir := filepath.Join("/opt/deployer/volumes", a.Name)
+	for _, v := range tmpl.Volumes {
+		hostPath := filepath.Join(volumeDir, v.Name)
+		// Create directory on host
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			// Log but don't fail - volume dir creation is best effort
+		}
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", hostPath, v.ContainerPath))
+		// Store in app record
+		a.Volumes = append(a.Volumes, app.VolumeMount{
+			Name:          v.Name,
+			HostPath:      hostPath,
+			ContainerPath: v.ContainerPath,
+		})
+	}
+
+	// Create container with port mapping, network and volumes
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:    "deployer-" + a.Name,
-		Image:   image,
-		Env:     a.Env,
-		Command: tmpl.Command,
+		Name:           "deployer-" + a.Name,
+		Image:          image,
+		Env:            a.Env,
+		Command:        tmpl.Command,
+		Networks:       []string{"deployer"},
+		ExposeExternal: a.Ports.ExposeExternal,
+		Volumes:        volumeMounts,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1602,11 +1867,13 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 
 	writeLine(fmt.Sprintf("Creating container with port mapping %d -> %d...", a.Ports.ContainerPort, a.Ports.HostPort))
 
-	// Create new container
+	// Create new container with network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:  containerName,
-		Image: imageName,
-		Env:   a.Env,
+		Name:           containerName,
+		Image:          imageName,
+		Env:            a.Env,
+		Networks:       []string{"deployer"},
+		ExposeExternal: a.Ports.ExposeExternal,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1717,6 +1984,35 @@ func execCommandStream(ctx context.Context, name string, args []string, writeLin
 	return output.String(), err
 }
 
+// handleImageTags returns cached tags for an image
+func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
+	image := r.URL.Query().Get("image")
+	if image == "" {
+		errorResponse(w, http.StatusBadRequest, "image parameter required")
+		return
+	}
+
+	// Get tags from storage (cached)
+	tags, _, err := s.storage.GetImageTags(image)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to get tags: "+err.Error())
+		return
+	}
+
+	// If no cached tags, return the template's default versions
+	if len(tags) == 0 {
+		tmpl := templates.GetTemplateByImage(image)
+		if tmpl != nil && len(tmpl.Versions) > 0 {
+			tags = tmpl.Versions
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"image": image,
+		"tags":  tags,
+	})
+}
+
 // proxyToApp proxies the request to the app's container
 func (s *Server) proxyToApp(w http.ResponseWriter, r *http.Request, a *app.App) {
 	// Build the upstream URL
@@ -1771,4 +2067,148 @@ func (s *Server) proxyToApp(w http.ResponseWriter, r *http.Request, a *app.App) 
 	// Write status code and body
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// ============================================
+// MLX LLM Handlers
+// ============================================
+
+// handleListMLXModels returns available MLX models
+func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
+	models := mlx.ListModels()
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"models":    models,
+		"supported": mlx.IsSupported(),
+	})
+}
+
+// handleMLXStatus returns MLX system status
+func (s *Server) handleMLXStatus(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"supported": mlx.IsSupported(),
+		"platform":  runtime.GOOS + "/" + runtime.GOARCH,
+	})
+}
+
+// deployMLXApp sets up and starts an MLX LLM app
+func (s *Server) deployMLXApp(a *app.App) {
+	if a.MLX == nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Update status to building (setting up venv)
+	a.Status = app.StatusBuilding
+	s.storage.UpdateApp(a)
+
+	// Setup venv and download model
+	if err := s.mlx.SetupApp(a.ID, a.MLX.Model); err != nil {
+		log.Printf("Failed to setup MLX app %s: %v", a.Name, err)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Update status to deploying
+	a.Status = app.StatusDeploying
+	s.storage.UpdateApp(a)
+
+	// Start the MLX server
+	port := assignHostPort(a.ID)
+	proc, err := s.mlx.Start(a.ID, a.MLX.Model, port)
+	if err != nil {
+		log.Printf("Failed to start MLX app %s: %v", a.Name, err)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Update app with port and PID
+	a.Ports.HostPort = port
+	a.Ports.ContainerPort = port
+	a.MLX.PID = proc.PID
+	a.Status = app.StatusRunning
+	a.UpdatedAt = time.Now()
+	s.storage.UpdateApp(a)
+
+	// Setup Caddy route if domain configured
+	if a.Domain != "" && s.caddy != nil {
+		s.caddy.AddRoute(caddy.Route{
+			ID:        "deployer-" + a.Name,
+			Domain:    a.Domain,
+			Upstream:  fmt.Sprintf("localhost:%d", port),
+			EnableSSL: a.SSL.Enabled,
+		})
+	}
+
+	log.Printf("MLX app %s started on port %d (PID: %d)", a.Name, port, proc.PID)
+}
+
+// startMLXApp starts an existing MLX app
+func (s *Server) startMLXApp(a *app.App) error {
+	if a.MLX == nil {
+		return fmt.Errorf("not an MLX app")
+	}
+
+	port := a.Ports.HostPort
+	if port == 0 {
+		port = assignHostPort(a.ID)
+	}
+
+	proc, err := s.mlx.Start(a.ID, a.MLX.Model, port)
+	if err != nil {
+		return err
+	}
+
+	a.Ports.HostPort = port
+	a.MLX.PID = proc.PID
+	a.Status = app.StatusRunning
+	a.UpdatedAt = time.Now()
+	s.storage.UpdateApp(a)
+
+	// Setup Caddy route
+	if a.Domain != "" && s.caddy != nil {
+		s.caddy.AddRoute(caddy.Route{
+			ID:        "deployer-" + a.Name,
+			Domain:    a.Domain,
+			Upstream:  fmt.Sprintf("localhost:%d", port),
+			EnableSSL: a.SSL.Enabled,
+		})
+	}
+
+	return nil
+}
+
+// stopMLXApp stops an MLX app
+func (s *Server) stopMLXApp(a *app.App) error {
+	if err := s.mlx.Stop(a.ID); err != nil {
+		return err
+	}
+
+	a.Status = app.StatusStopped
+	a.MLX.PID = 0
+	a.UpdatedAt = time.Now()
+	s.storage.UpdateApp(a)
+
+	// Remove Caddy route
+	if a.Domain != "" {
+		s.caddy.RemoveRoute(a.Domain)
+	}
+
+	return nil
+}
+
+// deleteMLXApp cleans up an MLX app
+func (s *Server) deleteMLXApp(a *app.App) error {
+	// Stop first
+	s.mlx.Stop(a.ID)
+
+	// Remove Caddy route
+	if a.Domain != "" {
+		s.caddy.RemoveRoute(a.Domain)
+	}
+
+	// Cleanup files
+	return s.mlx.Cleanup(a.ID)
 }
