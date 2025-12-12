@@ -48,17 +48,18 @@ type Client interface {
 
 // CreateContainerOpts holds options for creating a container
 type CreateContainerOpts struct {
-	Name       string
-	Image      string
-	Env        map[string]string
-	Ports      map[string]string // container:host
-	Volumes    []string          // host:container or volume:container
-	Networks   []string
-	Command    []string
-	WorkingDir string
-	Labels     map[string]string
-	Memory     int64 // Memory limit in bytes
-	CPUs       float64
+	Name           string
+	Image          string
+	Env            map[string]string
+	Ports          map[string]string // container:host
+	ExposeExternal bool              // If true, bind to 0.0.0.0; if false, bind to 127.0.0.1
+	Volumes        []string          // host:container or volume:container
+	Networks       []string
+	Command        []string
+	WorkingDir     string
+	Labels         map[string]string
+	Memory         int64 // Memory limit in bytes
+	CPUs           float64
 }
 
 // Container represents a Podman container
@@ -238,6 +239,11 @@ func (c *client) Ping(ctx context.Context) error {
 // CreateContainer creates a new container
 func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) (string, error) {
 	// Convert port mappings
+	// If ExposeExternal is true, bind to 0.0.0.0 (public), otherwise 127.0.0.1 (localhost only)
+	hostIP := "127.0.0.1"
+	if opts.ExposeExternal {
+		hostIP = "0.0.0.0"
+	}
 	portMappings := make([]map[string]interface{}, 0)
 	for containerPort, hostPort := range opts.Ports {
 		cPort, _ := strconv.Atoi(containerPort)
@@ -245,7 +251,22 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		portMappings = append(portMappings, map[string]interface{}{
 			"container_port": cPort,
 			"host_port":      hPort,
+			"host_ip":        hostIP,
 		})
+	}
+
+	// Convert volume strings to mount objects for bind mounts
+	mounts := make([]map[string]interface{}, 0)
+	for _, vol := range opts.Volumes {
+		parts := strings.Split(vol, ":")
+		if len(parts) >= 2 {
+			mounts = append(mounts, map[string]interface{}{
+				"destination": parts[1],
+				"source":      parts[0],
+				"type":        "bind",
+				"options":     []string{"rbind"},
+			})
+		}
 	}
 
 	spec := map[string]interface{}{
@@ -253,7 +274,7 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		"image":        opts.Image,
 		"env":          opts.Env,
 		"portmappings": portMappings,
-		"volumes":      opts.Volumes,
+		"mounts":       mounts,
 		"netns":        map[string]interface{}{"nsmode": "bridge"},
 		"command":      opts.Command,
 		"working_dir":  opts.WorkingDir,
@@ -261,7 +282,12 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 	}
 
 	if len(opts.Networks) > 0 {
-		spec["networks"] = opts.Networks
+		// Podman API expects networks as a map, not an array
+		networksMap := make(map[string]interface{})
+		for _, network := range opts.Networks {
+			networksMap[network] = map[string]interface{}{}
+		}
+		spec["networks"] = networksMap
 	}
 
 	if opts.Memory > 0 {

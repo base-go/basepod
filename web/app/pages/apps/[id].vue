@@ -12,6 +12,7 @@ const activeTab = ref('overview')
 const tabs = [
   { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
   { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
+  { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
   { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
   { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' }
 ]
@@ -77,10 +78,15 @@ async function restartApp() {
 
 // Settings form
 const settingsForm = ref({
+  name: '',
   domain: '',
+  image: '',
   port: 8080,
-  enableSSL: false
+  memory: 0,
+  cpus: 0,
+  exposeExternal: false
 })
+const savingSettings = ref(false)
 
 // Environment variables management
 const envVars = ref<Array<{ key: string; value: string }>>([])
@@ -94,6 +100,59 @@ watch(() => app.value, (appData) => {
     envInitialized.value = true
   }
 }, { immediate: true })
+
+// Database credentials detection
+const dbCredentials = computed(() => {
+  if (!app.value?.env) return null
+  const env = app.value.env
+
+  // PostgreSQL
+  if (env.POSTGRES_PASSWORD) {
+    return {
+      type: 'PostgreSQL',
+      username: env.POSTGRES_USER || 'postgres',
+      password: env.POSTGRES_PASSWORD,
+      database: env.POSTGRES_DB || 'postgres'
+    }
+  }
+  // MySQL
+  if (env.MYSQL_ROOT_PASSWORD) {
+    return {
+      type: 'MySQL',
+      username: 'root',
+      password: env.MYSQL_ROOT_PASSWORD,
+      database: env.MYSQL_DATABASE || ''
+    }
+  }
+  // MariaDB
+  if (env.MARIADB_ROOT_PASSWORD) {
+    return {
+      type: 'MariaDB',
+      username: 'root',
+      password: env.MARIADB_ROOT_PASSWORD,
+      database: env.MARIADB_DATABASE || ''
+    }
+  }
+  // MongoDB
+  if (env.MONGO_INITDB_ROOT_PASSWORD) {
+    return {
+      type: 'MongoDB',
+      username: env.MONGO_INITDB_ROOT_USERNAME || 'admin',
+      password: env.MONGO_INITDB_ROOT_PASSWORD,
+      database: ''
+    }
+  }
+  // Redis (no auth by default, but check for password)
+  if (app.value?.image?.includes('redis')) {
+    return {
+      type: 'Redis',
+      username: '',
+      password: env.REDIS_PASSWORD || '',
+      database: ''
+    }
+  }
+  return null
+})
 
 function addEmptyEnvVar() {
   envVars.value.push({ key: '', value: '' })
@@ -136,33 +195,53 @@ async function saveEnvVars() {
 watch(() => app.value, (appData) => {
   if (appData) {
     settingsForm.value = {
+      name: appData.name || '',
       domain: appData.domain || '',
+      image: appData.image || '',
       port: appData.ports?.container_port || 8080,
-      enableSSL: appData.ssl?.enabled || false
+      memory: appData.resources?.memory || 0,
+      cpus: appData.resources?.cpus || 0,
+      exposeExternal: appData.ports?.expose_external || false
     }
   }
 }, { immediate: true })
 
 async function saveSettings() {
+  savingSettings.value = true
+  const exposeExternalChanged = settingsForm.value.exposeExternal !== (app.value?.ports?.expose_external || false)
   try {
     await $api(`/apps/${appId}`, {
       method: 'PUT',
       body: {
+        name: settingsForm.value.name,
         domain: settingsForm.value.domain,
+        image: settingsForm.value.image || null,
         port: settingsForm.value.port,
-        enable_ssl: settingsForm.value.enableSSL
+        memory: settingsForm.value.memory || null,
+        cpus: settingsForm.value.cpus || null,
+        expose_external: settingsForm.value.exposeExternal
       }
     })
     toast.add({ title: 'Settings saved', color: 'success' })
     refresh()
+    // Show restart reminder if external access setting changed
+    if (exposeExternalChanged) {
+      showRestartModal.value = true
+    }
   } catch (error) {
     toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingSettings.value = false
   }
 }
 
-async function deleteApp() {
-  if (!confirm(`Are you sure you want to delete ${app.value?.name}? This cannot be undone.`)) return
+// Restart reminder modal (shown when external access setting changes)
+const showRestartModal = ref(false)
 
+// Delete confirmation modal
+const showDeleteModal = ref(false)
+
+async function deleteApp() {
   try {
     await $api(`/apps/${appId}`, { method: 'DELETE' })
     toast.add({ title: 'App deleted', color: 'success' })
@@ -174,7 +253,8 @@ async function deleteApp() {
 </script>
 
 <template>
-  <div v-if="app">
+  <div>
+    <div v-if="app">
     <!-- App Header -->
     <div class="flex items-start justify-between mb-6">
       <div class="flex items-center gap-4">
@@ -186,7 +266,7 @@ async function deleteApp() {
         </div>
         <div>
           <h1 class="text-2xl font-bold">{{ app.name }}</h1>
-          <p v-if="app.domain" class="text-gray-500">
+          <p v-if="app.domain && !app.ports?.expose_external" class="text-gray-500">
             <a :href="`https://${app.domain}`" target="_blank" class="hover:text-primary-500">
               {{ app.domain }}
             </a>
@@ -203,29 +283,42 @@ async function deleteApp() {
         </UBadge>
 
         <div class="flex gap-2">
+          <!-- Show Deploy button if app has no container yet -->
           <UButton
-            v-if="app.status !== 'running'"
-            icon="i-heroicons-play"
-            color="success"
-            @click="startApp"
+            v-if="!app.container_id"
+            icon="i-heroicons-rocket-launch"
+            color="primary"
+            :to="`/apps/${app.id}/deploy`"
           >
-            Start
+            Deploy
           </UButton>
-          <UButton
-            v-if="app.status === 'running'"
-            icon="i-heroicons-stop"
-            color="warning"
-            @click="stopApp"
-          >
-            Stop
-          </UButton>
-          <UButton
-            icon="i-heroicons-arrow-path"
-            variant="outline"
-            @click="restartApp"
-          >
-            Restart
-          </UButton>
+
+          <!-- Show Start/Stop/Restart buttons only if app has been deployed -->
+          <template v-else>
+            <UButton
+              v-if="app.status !== 'running'"
+              icon="i-heroicons-play"
+              color="success"
+              @click="startApp"
+            >
+              Start
+            </UButton>
+            <UButton
+              v-if="app.status === 'running'"
+              icon="i-heroicons-stop"
+              color="warning"
+              @click="stopApp"
+            >
+              Stop
+            </UButton>
+            <UButton
+              icon="i-heroicons-arrow-path"
+              variant="outline"
+              @click="restartApp"
+            >
+              Restart
+            </UButton>
+          </template>
         </div>
       </div>
     </div>
@@ -266,6 +359,50 @@ async function deleteApp() {
 
       <UCard>
         <template #header>
+          <h3 class="font-semibold">Connection Info</h3>
+        </template>
+
+        <dl class="space-y-3">
+          <div v-if="app.internal_host" class="flex justify-between items-center">
+            <dt class="text-gray-500">Internal Host</dt>
+            <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.internal_host }}:{{ app.ports?.container_port || 8080 }}</dd>
+          </div>
+          <div v-if="app.ports?.expose_external && app.external_host" class="flex justify-between items-center">
+            <dt class="text-gray-500">External Host</dt>
+            <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.external_host }}</dd>
+          </div>
+          <div v-if="app.ports?.expose_external && app.ports?.host_port" class="flex justify-between items-center">
+            <dt class="text-gray-500">Host Port</dt>
+            <dd class="font-mono text-sm">{{ app.ports.host_port }}</dd>
+          </div>
+
+          <!-- Database Credentials -->
+          <template v-if="dbCredentials">
+            <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+              <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">{{ dbCredentials.type }} Credentials</div>
+            </div>
+            <div v-if="dbCredentials.username" class="flex justify-between items-center">
+              <dt class="text-gray-500">Username</dt>
+              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.username }}</dd>
+            </div>
+            <div v-if="dbCredentials.password" class="flex justify-between items-center">
+              <dt class="text-gray-500">Password</dt>
+              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.password }}</dd>
+            </div>
+            <div v-if="dbCredentials.database" class="flex justify-between items-center">
+              <dt class="text-gray-500">Database</dt>
+              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.database }}</dd>
+            </div>
+          </template>
+
+          <div v-if="!app.internal_host && !app.external_host && !dbCredentials" class="text-gray-500 text-sm">
+            Connection info not available
+          </div>
+        </dl>
+      </UCard>
+
+      <UCard>
+        <template #header>
           <h3 class="font-semibold">Resources</h3>
         </template>
 
@@ -276,14 +413,12 @@ async function deleteApp() {
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">CPU Limit</dt>
-            <dd>{{ app.resources?.cpus || 'Unlimited' }}</dd>
+            <dd>{{ app.resources?.cpus ? `${app.resources.cpus} cores` : 'Unlimited' }}</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">SSL</dt>
             <dd>
-              <UBadge :color="app.ssl?.enabled ? 'success' : 'neutral'">
-                {{ app.ssl?.enabled ? 'Enabled' : 'Disabled' }}
-              </UBadge>
+              <UBadge color="success">Auto (Caddy)</UBadge>
             </dd>
           </div>
         </dl>
@@ -308,6 +443,42 @@ async function deleteApp() {
       <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
     </UCard>
 
+    <!-- Volumes Tab -->
+    <UCard v-if="activeTab === 'volumes'">
+      <template #header>
+        <h3 class="font-semibold">Persistent Volumes</h3>
+      </template>
+
+      <div v-if="!app.volumes || app.volumes.length === 0" class="text-center py-8 text-gray-500">
+        <UIcon name="i-heroicons-circle-stack" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>No volumes configured</p>
+        <p class="text-sm">Data will not persist across container restarts</p>
+      </div>
+
+      <div v-else class="space-y-3">
+        <div
+          v-for="volume in app.volumes"
+          :key="volume.name"
+          class="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+        >
+          <div class="flex items-center justify-between mb-2">
+            <span class="font-medium">{{ volume.name }}</span>
+            <UBadge v-if="volume.read_only" color="warning" size="xs">Read Only</UBadge>
+          </div>
+          <dl class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+            <div>
+              <dt class="text-gray-500">Host Path</dt>
+              <dd class="font-mono text-xs bg-gray-100 dark:bg-gray-900 px-2 py-1 rounded mt-1 break-all">{{ volume.host_path }}</dd>
+            </div>
+            <div>
+              <dt class="text-gray-500">Container Path</dt>
+              <dd class="font-mono text-xs bg-gray-100 dark:bg-gray-900 px-2 py-1 rounded mt-1 break-all">{{ volume.container_path }}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </UCard>
+
     <!-- Environment Tab -->
     <UCard v-if="activeTab === 'env'">
       <template #header>
@@ -319,7 +490,7 @@ async function deleteApp() {
               Add Variable
             </UButton>
             <UButton :loading="savingEnv" @click="saveEnvVars">
-              Save Changes
+              Save and Restart
             </UButton>
           </div>
         </div>
@@ -350,7 +521,7 @@ async function deleteApp() {
             v-model="envVar.value"
             type="text"
             placeholder="value"
-            class="flex-[2] px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            class="flex-2 px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
             @keydown.enter="saveEnvVars"
           >
           <UButton
@@ -365,35 +536,159 @@ async function deleteApp() {
     </UCard>
 
     <!-- Settings Tab -->
-    <UCard v-if="activeTab === 'settings'">
-      <template #header>
-        <h3 class="font-semibold">App Settings</h3>
-      </template>
+    <div v-if="activeTab === 'settings'" class="space-y-6">
+      <!-- General Settings -->
+      <UCard>
+        <template #header>
+          <h3 class="font-semibold">General</h3>
+        </template>
 
-      <div class="space-y-4 max-w-md">
-        <UFormField label="Domain">
-          <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
-        </UFormField>
+        <div class="space-y-4 max-w-lg">
+          <UFormField label="App Name" hint="Unique identifier for your app">
+            <UInput v-model="settingsForm.name" placeholder="my-app" />
+          </UFormField>
 
-        <UFormField label="Container Port">
-          <UInput v-model.number="settingsForm.port" type="number" />
-        </UFormField>
-
-        <UFormField>
-          <UCheckbox v-model="settingsForm.enableSSL" label="Enable SSL" />
-        </UFormField>
-
-        <div class="flex gap-2 pt-4">
-          <UButton @click="saveSettings">Save Changes</UButton>
-          <UButton color="error" variant="outline" @click="deleteApp">Delete App</UButton>
+          <UFormField label="Domain" hint="Custom domain for your app">
+            <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
+          </UFormField>
         </div>
-      </div>
-    </UCard>
-  </div>
+      </UCard>
 
-  <div v-else class="text-center py-12">
-    <UIcon name="i-heroicons-exclamation-circle" class="w-16 h-16 mx-auto mb-4 text-gray-300" />
-    <h3 class="text-lg font-medium">App not found</h3>
-    <UButton to="/apps" variant="soft" class="mt-4">Back to Apps</UButton>
+      <!-- Container Settings -->
+      <UCard>
+        <template #header>
+          <h3 class="font-semibold">Container</h3>
+        </template>
+
+        <div class="space-y-4 max-w-lg">
+          <UFormField label="Image" hint="Docker image to deploy (changes require redeploy)">
+            <UInput v-model="settingsForm.image" placeholder="nginx:latest" />
+          </UFormField>
+
+          <UFormField label="Container Port" hint="Port your application listens on">
+            <UInput v-model.number="settingsForm.port" type="number" placeholder="8080" />
+          </UFormField>
+
+          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div>
+              <div class="font-medium">External Access</div>
+              <div class="text-sm text-gray-500">Allow direct TCP connections from outside (e.g., MySQL clients)</div>
+            </div>
+            <USwitch v-model="settingsForm.exposeExternal" />
+          </div>
+
+          <div v-if="settingsForm.exposeExternal && app?.ports?.host_port" class="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 text-yellow-500 shrink-0.5" />
+              <div>
+                <strong class="text-yellow-700 dark:text-yellow-300">Security Warning:</strong>
+                <span class="text-yellow-600 dark:text-yellow-400"> Port {{ app.ports.host_port }} is accessible from the internet. Ensure your app has proper authentication.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="text-sm text-gray-500">
+            <strong>Container ID:</strong>
+            <code class="ml-2 px-2 py-0.5 bg-gray-100 dark:bg-gray-800 rounded">{{ app?.container_id ? app.container_id.slice(0, 12) : 'Not deployed' }}</code>
+          </div>
+        </div>
+      </UCard>
+
+      <!-- Resource Limits -->
+      <UCard>
+        <template #header>
+          <h3 class="font-semibold">Resource Limits</h3>
+        </template>
+
+        <div class="space-y-4 max-w-lg">
+          <UFormField label="Memory Limit (MB)" hint="0 for unlimited">
+            <UInput v-model.number="settingsForm.memory" type="number" placeholder="512" />
+          </UFormField>
+
+          <UFormField label="CPU Limit (cores)" hint="0 for unlimited">
+            <UInput v-model.number="settingsForm.cpus" type="number" step="0.1" placeholder="1.0" />
+          </UFormField>
+
+          <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+              <div>
+                <strong class="text-blue-700 dark:text-blue-300">SSL:</strong>
+                <span class="text-blue-600 dark:text-blue-400"> Automatically managed by Caddy. All domains get HTTPS certificates on-demand.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </UCard>
+
+      <!-- Save Button -->
+      <div class="flex justify-end">
+        <UButton :loading="savingSettings" @click="saveSettings">
+          Save All Changes
+        </UButton>
+      </div>
+
+      <!-- Danger Zone -->
+      <UCard class="border-red-200 dark:border-red-800">
+        <template #header>
+          <h3 class="font-semibold text-red-600 dark:text-red-400">Danger Zone</h3>
+        </template>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-4 border border-red-200 dark:border-red-800 rounded-lg">
+            <div>
+              <h4 class="font-medium">Delete this app</h4>
+              <p class="text-sm text-gray-500">Once deleted, this app and all its data will be permanently removed.</p>
+            </div>
+            <UButton color="error" variant="outline" @click="showDeleteModal = true">
+              Delete App
+            </UButton>
+          </div>
+        </div>
+      </UCard>
+    </div>
+    </div>
+
+    <div v-else class="text-center py-12">
+      <UIcon name="i-heroicons-exclamation-circle" class="w-16 h-16 mx-auto mb-4 text-gray-300" />
+      <h3 class="text-lg font-medium">App not found</h3>
+      <UButton to="/apps" variant="soft" class="mt-4">Back to Apps</UButton>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <ConfirmationModal
+      v-model:open="showDeleteModal"
+      title="Delete App"
+      :message="`Are you sure you want to delete ${app?.name}? This cannot be undone.`"
+      confirm-text="Delete"
+      confirm-color="error"
+      icon="i-heroicons-trash"
+      @confirm="deleteApp"
+    />
+
+    <!-- Restart Reminder Modal -->
+    <UModal v-model:open="showRestartModal">
+      <template #content>
+        <div class="p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="flex items-center justify-center w-10 h-10 rounded-full bg-yellow-100 dark:bg-yellow-900/30">
+              <UIcon name="i-heroicons-arrow-path" class="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
+            </div>
+            <h3 class="text-lg font-semibold">Restart Required</h3>
+          </div>
+          <p class="text-gray-600 dark:text-gray-400 mb-6">
+            External access setting has been saved. You need to <strong>restart the app</strong> for the change to take effect.
+          </p>
+          <div class="flex justify-end gap-3">
+            <UButton variant="outline" @click="showRestartModal = false">
+              Later
+            </UButton>
+            <UButton color="primary" @click="showRestartModal = false; restartApp()">
+              Restart Now
+            </UButton>
+          </div>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

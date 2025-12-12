@@ -20,12 +20,14 @@ import (
 	"github.com/deployer/deployer/internal/api"
 	"github.com/deployer/deployer/internal/caddy"
 	"github.com/deployer/deployer/internal/config"
+	"github.com/deployer/deployer/internal/imagesync"
 	"github.com/deployer/deployer/internal/podman"
 	"github.com/deployer/deployer/internal/storage"
+	"github.com/deployer/deployer/internal/web"
 )
 
 var (
-	version = "0.1.30"
+	version = "0.1.46"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
@@ -82,12 +84,23 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Configure WebUI path if set in config
+	if cfg.WebUI.Path != "" {
+		web.SetWebUIPath(cfg.WebUI.Path)
+		log.Printf("WebUI path set to: %s", cfg.WebUI.Path)
+	}
+
 	// Initialize storage
 	store, err := storage.New()
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
+
+	// Start image tag syncer (syncs Docker Hub tags for templates)
+	tagSyncer := imagesync.NewSyncer(store)
+	tagSyncer.Start()
+	defer tagSyncer.Stop()
 
 	// Initialize Podman client (auto-start if needed)
 	log.Printf("Connecting to Podman...")
@@ -108,6 +121,18 @@ func main() {
 			log.Printf("Podman connected successfully")
 		}
 		cancel()
+
+		// Ensure deployer network exists for inter-container communication
+		networkCtx, networkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := pm.CreateNetwork(networkCtx, "deployer"); err != nil {
+			// Ignore "already exists" error
+			if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "network already exists") {
+				log.Printf("Warning: Failed to create deployer network: %v", err)
+			}
+		} else {
+			log.Printf("Deployer network created")
+		}
+		networkCancel()
 	}
 
 	// Initialize Caddy client (auto-start if needed)
@@ -332,8 +357,8 @@ func runUpdate() {
 		os.Exit(1)
 	}
 
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	currentVersion := strings.TrimPrefix(version, "v")
+	latestVersion := normalizeVersion(strings.TrimPrefix(release.TagName, "v"))
+	currentVersion := normalizeVersion(strings.TrimPrefix(version, "v"))
 
 	fmt.Printf("Current version: %s\n", currentVersion)
 	fmt.Printf("Latest version:  %s\n", latestVersion)
@@ -342,6 +367,12 @@ func runUpdate() {
 	if latestVersion == currentVersion {
 		fmt.Println("You are already running the latest version.")
 		return
+	}
+
+	// Validate version format
+	if !isValidVersion(latestVersion) {
+		fmt.Printf("Error: invalid version format: %s\n", latestVersion)
+		os.Exit(1)
 	}
 
 	fmt.Println("Downloading update...")
@@ -459,4 +490,57 @@ func runRestart() {
 		}
 	}
 	fmt.Println("Deployer restarted successfully.")
+}
+
+// normalizeVersion converts version to x.x.x format
+// "1" -> "1.0.0", "1.2" -> "1.2.0", "1.2.3" -> "1.2.3"
+func normalizeVersion(v string) string {
+	v = strings.TrimPrefix(v, "v")
+	parts := strings.Split(v, ".")
+
+	// Filter out non-numeric parts
+	var numericParts []string
+	for _, p := range parts {
+		if isNumeric(p) {
+			numericParts = append(numericParts, p)
+		}
+	}
+
+	if len(numericParts) == 0 {
+		return "0.0.0"
+	}
+
+	// Pad to 3 parts
+	for len(numericParts) < 3 {
+		numericParts = append(numericParts, "0")
+	}
+
+	return strings.Join(numericParts[:3], ".")
+}
+
+// isValidVersion checks if version matches x.x.x format
+func isValidVersion(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if !isNumeric(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// isNumeric checks if string contains only digits
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

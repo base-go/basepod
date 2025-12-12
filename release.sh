@@ -10,19 +10,68 @@ cd "$(dirname "$0")"
 RELEASES_DIR="${RELEASES_DIR:-../deployer-releases}"
 GO_VERSION="1.25"
 
+# Validate version format (x.x.x where x is a number)
+validate_version() {
+    if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Normalize version to x.x.x format
+normalize_version() {
+    local v="$1"
+    v="${v#v}"  # Remove leading 'v' if present
+
+    # Split by dots and filter numeric parts
+    IFS='.' read -ra parts <<< "$v"
+    local major="${parts[0]:-0}"
+    local minor="${parts[1]:-0}"
+    local patch="${parts[2]:-0}"
+
+    # Ensure each part is numeric
+    [[ "$major" =~ ^[0-9]+$ ]] || major=0
+    [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+    [[ "$patch" =~ ^[0-9]+$ ]] || patch=0
+
+    echo "$major.$minor.$patch"
+}
+
 # Get current version from deployerd (server)
-CURRENT_VERSION=$(grep 'version = "' cmd/deployerd/main.go | sed 's/.*"\(.*\)".*/\1/')
+RAW_VERSION=$(grep 'version = "' cmd/deployerd/main.go | sed 's/.*"\(.*\)".*/\1/')
+CURRENT_VERSION=$(normalize_version "$RAW_VERSION")
 echo "Current version: $CURRENT_VERSION"
+
+# Auto-increment function
+increment_version() {
+    IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+    patch=$((patch + 1))
+    echo "$major.$minor.$patch"
+}
 
 # Set new version
 if [ -n "$1" ]; then
-    NEW_VERSION="$1"
+    # Check if provided version is valid
+    if validate_version "$1"; then
+        NEW_VERSION="$1"
+    else
+        echo "Error: Invalid version format '$1'. Must be x.x.x (e.g., 0.1.32)"
+        NEXT_VERSION=$(increment_version)
+        echo ""
+        read -p "Do you want to release $NEXT_VERSION instead? [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            NEW_VERSION="$NEXT_VERSION"
+        else
+            echo "Aborted."
+            exit 1
+        fi
+    fi
 else
     # Auto-increment patch
-    IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
-    patch=$((patch + 1))
-    NEW_VERSION="$major.$minor.$patch"
+    NEW_VERSION=$(increment_version)
 fi
+
 echo "New version: $NEW_VERSION"
 
 # Update version in both main.go files
