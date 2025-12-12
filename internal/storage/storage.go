@@ -90,15 +90,43 @@ func (s *Storage) migrate() error {
 		)`,
 		// Fix empty domain strings to NULL (for database apps)
 		`UPDATE apps SET domain = NULL WHERE domain = ''`,
+		// Add type column for MLX support
+		`ALTER TABLE apps ADD COLUMN type TEXT DEFAULT 'container'`,
+		// Add mlx config column for MLX apps
+		`ALTER TABLE apps ADD COLUMN mlx TEXT`,
 	}
 
 	for _, migration := range migrations {
-		if _, err := s.db.Exec(migration); err != nil {
+		_, err := s.db.Exec(migration)
+		// Ignore "duplicate column" errors for ALTER TABLE migrations
+		if err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// isDuplicateColumnError checks if the error is a duplicate column error (safe to ignore)
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "duplicate column") || contains(errStr, "already exists")
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateApp creates a new app in the database
@@ -109,6 +137,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 	resourcesJSON, _ := json.Marshal(a.Resources)
 	deploymentJSON, _ := json.Marshal(a.Deployment)
 	sslJSON, _ := json.Marshal(a.SSL)
+	mlxJSON, _ := json.Marshal(a.MLX)
 
 	// Convert empty domain to NULL (for database apps without domains)
 	var domain interface{} = a.Domain
@@ -116,12 +145,19 @@ func (s *Storage) CreateApp(a *app.App) error {
 		domain = nil
 	}
 
+	// Default type to container if not set
+	appType := string(a.Type)
+	if appType == "" {
+		appType = "container"
+	}
+
 	_, err := s.db.Exec(`
-		INSERT INTO apps (id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO apps (id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.ID, a.Name, domain, a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
+		appType, string(mlxJSON),
 		a.CreatedAt, a.UpdatedAt)
 
 	if err != nil {
@@ -134,7 +170,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 // GetApp retrieves an app by ID
 func (s *Storage) GetApp(id string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at
+		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE id = ?
 	`, id)
 
@@ -144,7 +180,7 @@ func (s *Storage) GetApp(id string) (*app.App, error) {
 // GetAppByName retrieves an app by name
 func (s *Storage) GetAppByName(name string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at
+		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE name = ?
 	`, name)
 
@@ -154,7 +190,7 @@ func (s *Storage) GetAppByName(name string) (*app.App, error) {
 // GetAppByDomain retrieves an app by domain
 func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at
+		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE domain = ?
 	`, domain)
 
@@ -165,11 +201,12 @@ func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	var a app.App
 	var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-	var domain, containerID, image sql.NullString
+	var domain, containerID, image, appType, mlxJSON sql.NullString
 
 	err := row.Scan(
 		&a.ID, &a.Name, &domain, &containerID, &image, &a.Status,
 		&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &sslJSON,
+		&appType, &mlxJSON,
 		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -182,6 +219,10 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	a.Domain = domain.String
 	a.ContainerID = containerID.String
 	a.Image = image.String
+	a.Type = app.AppType(appType.String)
+	if a.Type == "" {
+		a.Type = app.AppTypeContainer
+	}
 
 	json.Unmarshal([]byte(envJSON), &a.Env)
 	json.Unmarshal([]byte(portsJSON), &a.Ports)
@@ -189,6 +230,9 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	json.Unmarshal([]byte(resourcesJSON), &a.Resources)
 	json.Unmarshal([]byte(deploymentJSON), &a.Deployment)
 	json.Unmarshal([]byte(sslJSON), &a.SSL)
+	if mlxJSON.Valid && mlxJSON.String != "" {
+		json.Unmarshal([]byte(mlxJSON.String), &a.MLX)
+	}
 
 	return &a, nil
 }
@@ -196,7 +240,7 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 // ListApps retrieves all apps
 func (s *Storage) ListApps() ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at
+		SELECT id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
 		FROM apps ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -208,11 +252,12 @@ func (s *Storage) ListApps() ([]app.App, error) {
 	for rows.Next() {
 		var a app.App
 		var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-		var domain, containerID, image sql.NullString
+		var domain, containerID, image, appType, mlxJSON sql.NullString
 
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &containerID, &image, &a.Status,
 			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &sslJSON,
+			&appType, &mlxJSON,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
 		if err != nil {
@@ -222,6 +267,10 @@ func (s *Storage) ListApps() ([]app.App, error) {
 		a.Domain = domain.String
 		a.ContainerID = containerID.String
 		a.Image = image.String
+		a.Type = app.AppType(appType.String)
+		if a.Type == "" {
+			a.Type = app.AppTypeContainer
+		}
 
 		json.Unmarshal([]byte(envJSON), &a.Env)
 		json.Unmarshal([]byte(portsJSON), &a.Ports)
@@ -229,6 +278,9 @@ func (s *Storage) ListApps() ([]app.App, error) {
 		json.Unmarshal([]byte(resourcesJSON), &a.Resources)
 		json.Unmarshal([]byte(deploymentJSON), &a.Deployment)
 		json.Unmarshal([]byte(sslJSON), &a.SSL)
+		if mlxJSON.Valid && mlxJSON.String != "" {
+			json.Unmarshal([]byte(mlxJSON.String), &a.MLX)
+		}
 
 		apps = append(apps, a)
 	}
@@ -246,6 +298,7 @@ func (s *Storage) UpdateApp(a *app.App) error {
 	resourcesJSON, _ := json.Marshal(a.Resources)
 	deploymentJSON, _ := json.Marshal(a.Deployment)
 	sslJSON, _ := json.Marshal(a.SSL)
+	mlxJSON, _ := json.Marshal(a.MLX)
 
 	// Convert empty domain to NULL (for database apps without domains)
 	var domain interface{} = a.Domain
@@ -253,15 +306,23 @@ func (s *Storage) UpdateApp(a *app.App) error {
 		domain = nil
 	}
 
+	// Default type to container if not set
+	appType := string(a.Type)
+	if appType == "" {
+		appType = "container"
+	}
+
 	_, err := s.db.Exec(`
 		UPDATE apps SET
 			name = ?, domain = ?, container_id = ?, image = ?, status = ?,
 			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, ssl = ?,
+			type = ?, mlx = ?,
 			updated_at = ?
 		WHERE id = ?
 	`, a.Name, domain, a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
+		appType, string(mlxJSON),
 		a.UpdatedAt, a.ID)
 
 	if err != nil {

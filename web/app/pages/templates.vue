@@ -170,6 +170,7 @@ async function deployTemplate() {
     toast.add({ title: 'Failed to deploy', description: message, color: 'error' })
   }
 }
+
 </script>
 
 <template>

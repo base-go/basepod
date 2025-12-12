@@ -104,15 +104,24 @@ export interface MLXModel {
   id: string
   name: string
   size: string
-  description: string
+  description?: string
+  downloaded: boolean
+  downloaded_at?: string
 }
 
 export interface MLXModelsResponse {
   models: MLXModel[]
   supported: boolean
+  running: boolean
+  port: number
+  active_model: string
 }
 
 export interface MLXStatusResponse {
   supported: boolean
   platform: string
+  running: boolean
+  port: number
+  pid: number
+  active_model: string
 }

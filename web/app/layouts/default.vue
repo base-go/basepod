@@ -19,6 +19,11 @@ const navigation = [
     label: 'One-Click Apps',
     icon: 'i-heroicons-squares-plus',
     to: '/templates'
+  },
+  {
+    label: 'One-Click LLMs',
+    icon: 'i-heroicons-cpu-chip',
+    to: '/llms'
   }
 ]
 

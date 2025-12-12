@@ -43,7 +43,6 @@ type Server struct {
 	storage      *storage.Storage
 	podman       podman.Client
 	caddy        *caddy.Client
-	mlx          *mlx.Manager
 	config       *config.Config
 	auth         *auth.Manager
 	router       *http.ServeMux
@@ -68,7 +67,6 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 		storage: store,
 		podman:  pm,
 		caddy:   caddyClient,
-		mlx:     mlx.NewManager(""),
 		config:  cfg,
 		auth:    auth.NewManager(cfg.Auth.PasswordHash),
 		router:  http.NewServeMux(),
@@ -149,9 +147,13 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
 	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.handleDeployTemplate))
 
-	// MLX LLM models (auth required)
-	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
+	// MLX LLM service (auth required) - Ollama-like API
 	s.router.HandleFunc("GET /api/mlx/status", s.requireAuth(s.handleMLXStatus))
+	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
+	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.handleMLXPull))
+	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.handleMLXRun))
+	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.handleMLXStop))
+	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
 
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
@@ -809,6 +811,19 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle MLX apps differently
+	if a.Type == app.AppTypeMLX {
+		if err := s.stopMLXApp(a); err != nil {
+			log.Printf("Failed to stop MLX app: %v", err)
+		}
+		if err := s.startMLXApp(a); err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonResponse(w, http.StatusOK, a)
+		return
+	}
+
 	if a.ContainerID == "" && a.Image == "" {
 		errorResponse(w, http.StatusBadRequest, "App has not been deployed yet")
 		return
@@ -878,6 +893,16 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	// Handle MLX apps differently - they don't need container deployment
+	if a.Type == app.AppTypeMLX {
+		go s.deployMLXApp(a)
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"status":  "deploying",
+			"message": "MLX app deployment started",
+		})
 		return
 	}
 
@@ -2076,142 +2101,153 @@ func (s *Server) proxyToApp(w http.ResponseWriter, r *http.Request, a *app.App) 
 // MLX LLM Handlers
 // ============================================
 
-// handleListMLXModels returns available MLX models
+// handleListMLXModels returns available MLX models with download status
 func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
-	models := mlx.ListModels()
+	svc := mlx.GetService()
+	models := svc.ListModels()
+	status := svc.GetStatus()
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"models":    models,
-		"supported": mlx.IsSupported(),
+		"models":       models,
+		"supported":    mlx.IsSupported(),
+		"active_model": status.ActiveModel,
+		"running":      status.Running,
+		"port":         status.Port,
 	})
 }
 
-// handleMLXStatus returns MLX system status
+// handleMLXStatus returns MLX service status
 func (s *Server) handleMLXStatus(w http.ResponseWriter, r *http.Request) {
+	svc := mlx.GetService()
+	status := svc.GetStatus()
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"supported": mlx.IsSupported(),
-		"platform":  runtime.GOOS + "/" + runtime.GOARCH,
+		"supported":    mlx.IsSupported(),
+		"platform":     runtime.GOOS + "/" + runtime.GOARCH,
+		"running":      status.Running,
+		"port":         status.Port,
+		"pid":          status.PID,
+		"active_model": status.ActiveModel,
 	})
 }
 
-// deployMLXApp sets up and starts an MLX LLM app
+// handleMLXPull downloads a model
+func (s *Server) handleMLXPull(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Model == "" {
+		errorResponse(w, http.StatusBadRequest, "Model is required")
+		return
+	}
+
+	svc := mlx.GetService()
+
+	// Run pull in background
+	go func() {
+		log.Printf("Pulling model: %s", req.Model)
+		if err := svc.PullModel(req.Model, func(msg string) {
+			log.Printf("Pull progress: %s", msg)
+		}); err != nil {
+			log.Printf("Failed to pull model %s: %v", req.Model, err)
+		} else {
+			log.Printf("Model %s pulled successfully", req.Model)
+		}
+	}()
+
+	jsonResponse(w, http.StatusAccepted, map[string]string{
+		"status":  "pulling",
+		"message": "Model download started",
+	})
+}
+
+// handleMLXRun starts the MLX server with a model
+func (s *Server) handleMLXRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Model == "" {
+		errorResponse(w, http.StatusBadRequest, "Model is required")
+		return
+	}
+
+	svc := mlx.GetService()
+	if err := svc.Run(req.Model); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	status := svc.GetStatus()
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status":       "running",
+		"model":        req.Model,
+		"port":         status.Port,
+		"pid":          status.PID,
+	})
+}
+
+// handleMLXStop stops the MLX server
+func (s *Server) handleMLXStop(w http.ResponseWriter, r *http.Request) {
+	svc := mlx.GetService()
+	if err := svc.Stop(); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"status": "stopped",
+	})
+}
+
+// handleMLXDeleteModel removes a downloaded model
+func (s *Server) handleMLXDeleteModel(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("id")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "Model ID is required")
+		return
+	}
+
+	svc := mlx.GetService()
+	if err := svc.DeleteModel(modelID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"status": "deleted",
+	})
+}
+
+// deployMLXApp - DEPRECATED: MLX now uses singleton service, not apps
+// Kept for backwards compatibility with existing MLX apps
 func (s *Server) deployMLXApp(a *app.App) {
-	if a.MLX == nil {
-		a.Status = app.StatusFailed
-		s.storage.UpdateApp(a)
-		return
-	}
-
-	// Update status to building (setting up venv)
-	a.Status = app.StatusBuilding
+	// Mark as failed - use /llms page instead
+	a.Status = app.StatusFailed
 	s.storage.UpdateApp(a)
-
-	// Setup venv and download model
-	if err := s.mlx.SetupApp(a.ID, a.MLX.Model); err != nil {
-		log.Printf("Failed to setup MLX app %s: %v", a.Name, err)
-		a.Status = app.StatusFailed
-		s.storage.UpdateApp(a)
-		return
-	}
-
-	// Update status to deploying
-	a.Status = app.StatusDeploying
-	s.storage.UpdateApp(a)
-
-	// Start the MLX server
-	port := assignHostPort(a.ID)
-	proc, err := s.mlx.Start(a.ID, a.MLX.Model, port)
-	if err != nil {
-		log.Printf("Failed to start MLX app %s: %v", a.Name, err)
-		a.Status = app.StatusFailed
-		s.storage.UpdateApp(a)
-		return
-	}
-
-	// Update app with port and PID
-	a.Ports.HostPort = port
-	a.Ports.ContainerPort = port
-	a.MLX.PID = proc.PID
-	a.Status = app.StatusRunning
-	a.UpdatedAt = time.Now()
-	s.storage.UpdateApp(a)
-
-	// Setup Caddy route if domain configured
-	if a.Domain != "" && s.caddy != nil {
-		s.caddy.AddRoute(caddy.Route{
-			ID:        "deployer-" + a.Name,
-			Domain:    a.Domain,
-			Upstream:  fmt.Sprintf("localhost:%d", port),
-			EnableSSL: a.SSL.Enabled,
-		})
-	}
-
-	log.Printf("MLX app %s started on port %d (PID: %d)", a.Name, port, proc.PID)
+	log.Printf("MLX apps deprecated - use LLMs page instead")
 }
 
-// startMLXApp starts an existing MLX app
+// startMLXApp - DEPRECATED
 func (s *Server) startMLXApp(a *app.App) error {
-	if a.MLX == nil {
-		return fmt.Errorf("not an MLX app")
-	}
-
-	port := a.Ports.HostPort
-	if port == 0 {
-		port = assignHostPort(a.ID)
-	}
-
-	proc, err := s.mlx.Start(a.ID, a.MLX.Model, port)
-	if err != nil {
-		return err
-	}
-
-	a.Ports.HostPort = port
-	a.MLX.PID = proc.PID
-	a.Status = app.StatusRunning
-	a.UpdatedAt = time.Now()
-	s.storage.UpdateApp(a)
-
-	// Setup Caddy route
-	if a.Domain != "" && s.caddy != nil {
-		s.caddy.AddRoute(caddy.Route{
-			ID:        "deployer-" + a.Name,
-			Domain:    a.Domain,
-			Upstream:  fmt.Sprintf("localhost:%d", port),
-			EnableSSL: a.SSL.Enabled,
-		})
-	}
-
-	return nil
+	return fmt.Errorf("MLX apps deprecated - use LLMs page instead")
 }
 
-// stopMLXApp stops an MLX app
+// stopMLXApp - DEPRECATED
 func (s *Server) stopMLXApp(a *app.App) error {
-	if err := s.mlx.Stop(a.ID); err != nil {
-		return err
-	}
-
 	a.Status = app.StatusStopped
-	a.MLX.PID = 0
-	a.UpdatedAt = time.Now()
 	s.storage.UpdateApp(a)
-
-	// Remove Caddy route
-	if a.Domain != "" {
-		s.caddy.RemoveRoute(a.Domain)
-	}
-
 	return nil
 }
 
-// deleteMLXApp cleans up an MLX app
+// deleteMLXApp - DEPRECATED
 func (s *Server) deleteMLXApp(a *app.App) error {
-	// Stop first
-	s.mlx.Stop(a.ID)
-
-	// Remove Caddy route
-	if a.Domain != "" {
-		s.caddy.RemoveRoute(a.Domain)
-	}
-
-	// Cleanup files
-	return s.mlx.Cleanup(a.ID)
+	return nil
 }

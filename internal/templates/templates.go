@@ -700,12 +700,12 @@ var Templates = []Template{
 	{
 		ID:          "openwebui",
 		Name:        "Open WebUI",
-		Description: "ChatGPT-like interface for Ollama",
+		Description: "ChatGPT-like interface for local LLMs",
 		Image:       "ghcr.io/open-webui/open-webui",
 		Versions:    []string{"latest", "main"},
 		Port:        8080,
 		Env: map[string]string{
-			"OLLAMA_BASE_URL": "http://deployer-ollama:11434",
+			"OLLAMA_BASE_URL": "http://host.containers.internal:11434",
 		},
 		Volumes: []VolumeConfig{
 			{Name: "data", ContainerPath: "/app/backend/data"},
