@@ -55,3 +55,4 @@ dist/
 
 # Air (hot reload)
 tmp/
+production/

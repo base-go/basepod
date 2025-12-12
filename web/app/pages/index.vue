@@ -13,25 +13,29 @@ const stats = computed(() => [
   {
     label: 'Total Apps',
     value: apps.value?.total || 0,
+    description: 'Apps managed by Deployer',
     icon: 'i-heroicons-cube',
     color: 'primary' as const
   },
   {
     label: 'Running',
     value: apps.value?.apps?.filter(a => a.status === 'running').length || 0,
+    description: 'Currently active apps',
     icon: 'i-heroicons-play-circle',
     color: 'success' as const
   },
   {
-    label: 'Containers',
-    value: systemInfo.value?.containers || 0,
-    icon: 'i-heroicons-server',
-    color: 'info' as const
+    label: 'Stopped',
+    value: apps.value?.apps?.filter(a => a.status !== 'running').length || 0,
+    description: 'Inactive apps',
+    icon: 'i-heroicons-stop-circle',
+    color: 'neutral' as const
   },
   {
     label: 'Images',
     value: systemInfo.value?.images || 0,
-    icon: 'i-heroicons-photo',
+    description: 'Docker images on system',
+    icon: 'i-heroicons-archive-box-arrow-down',
     color: 'warning' as const
   }
 ])

@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import type { SystemInfoResponse } from '~/types'
+
 const colorMode = useColorMode()
+const { data: systemInfo } = await useApiFetch<SystemInfoResponse>('/system/info')
 
 const navigation = [
   {
@@ -16,6 +19,14 @@ const navigation = [
     label: 'One-Click Apps',
     icon: 'i-heroicons-squares-plus',
     to: '/templates'
+  }
+]
+
+const bottomNavigation = [
+  {
+    label: 'Documentation',
+    icon: 'i-heroicons-book-open',
+    to: '/docs'
   },
   {
     label: 'Settings',
@@ -45,18 +56,28 @@ const logout = async () => {
       </template>
 
       <template #default="{ collapsed = false }">
-        <UNavigationMenu
-          :items="navigation"
-          orientation="vertical"
-          :collapsed="collapsed"
-          highlight
-          color="primary"
-        />
+        <div class="flex flex-col h-full">
+          <UNavigationMenu
+            :items="navigation"
+            orientation="vertical"
+            :collapsed="collapsed"
+            highlight
+            color="primary"
+          />
+          <div class="flex-1" />
+          <UNavigationMenu
+            :items="bottomNavigation"
+            orientation="vertical"
+            :collapsed="collapsed"
+            highlight
+            color="primary"
+          />
+        </div>
       </template>
 
       <template #footer="{ collapsed = false }">
         <div class="flex items-center" :class="collapsed ? 'justify-center' : 'justify-between'">
-          <span v-if="!collapsed" class="text-sm text-muted">v0.1.0</span>
+          <span v-if="!collapsed" class="text-sm text-muted">{{ systemInfo?.version || 'v0.0.0' }}</span>
           <ClientOnly>
             <UButton
               :icon="colorMode.value === 'dark' ? 'i-heroicons-sun' : 'i-heroicons-moon'"

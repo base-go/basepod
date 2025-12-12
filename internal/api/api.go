@@ -76,20 +76,23 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 
 	// Setup static file serving - prefer disk over embedded
-	// Check /opt/deployer/web/dist first, then embedded files
+	// Check various paths for static files
 	staticPaths := []string{
-		"/opt/deployer/web/dist",
 		os.Getenv("DEPLOYER_WEB_DIR"),
+		"./dist",                       // Relative to binary
+		"/opt/deployer/web/dist",       // Linux production
+		"/usr/local/deployer/web/dist", // macOS production
 	}
 	for _, dir := range staticPaths {
 		if dir == "" {
 			continue
 		}
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			// Check if index.html exists
-			if _, err := os.Stat(dir + "/index.html"); err == nil {
+			// Check if _nuxt folder exists (Nuxt SPA build)
+			if _, err := os.Stat(dir + "/_nuxt"); err == nil {
 				s.staticDir = dir
 				s.staticFS = http.FileServer(http.Dir(dir))
+				log.Printf("Serving static files from: %s", dir)
 				break
 			}
 		}

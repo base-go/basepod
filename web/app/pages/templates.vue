@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TemplatesResponse, Template } from '~/types'
+import type { TemplatesResponse, Template, ImageTagsResponse } from '~/types'
 import type { ConfigResponse } from '~/composables/useApi'
 
 definePageMeta({
@@ -14,7 +14,39 @@ const isDeployModalOpen = ref(false)
 const selectedTemplate = ref<Template | null>(null)
 const deployForm = ref({
   name: '',
-  enableSSL: false
+  enableSSL: false,
+  version: '',
+  useAlpine: true, // Default to alpine when available
+  exposeExternal: false // Whether to expose port externally (for databases)
+})
+
+// Check if template is a database (no HTTP domain needed)
+const isDatabase = computed(() => {
+  return selectedTemplate.value?.category === 'database'
+})
+const envVars = ref<Record<string, string>>({})
+
+// Dynamic tags from API
+const availableTags = ref<string[]>([])
+const loadingTags = ref(false)
+const tagSearchQuery = ref('')
+
+// Filtered tags based on search and alpine toggle
+const filteredTags = computed(() => {
+  let tags = availableTags.value.length > 0 ? availableTags.value : (selectedTemplate.value?.versions || [])
+
+  // Filter by alpine toggle
+  if (deployForm.value.useAlpine && selectedTemplate.value?.has_alpine) {
+    tags = tags.filter(tag => tag.toLowerCase().includes('alpine'))
+  }
+
+  // Filter by search query
+  if (tagSearchQuery.value) {
+    const query = tagSearchQuery.value.toLowerCase()
+    tags = tags.filter(tag => tag.toLowerCase().includes(query))
+  }
+
+  return tags
 })
 
 // Auto-generate domain from app name using config
@@ -38,6 +70,19 @@ const domainPlaceholder = computed(() => {
 // Protocol based on whether we have a real domain
 const protocol = computed(() => {
   return configData.value?.domain?.base ? 'https://' : 'http://'
+})
+
+// Build the selected image tag based on selected version
+const selectedImage = computed(() => {
+  if (!selectedTemplate.value) return ''
+  const tmpl = selectedTemplate.value
+  const version = deployForm.value.version || tmpl.default_version || (tmpl.versions?.[0] ?? '')
+
+  // If no versions defined, return base image
+  if (!version) return tmpl.image
+
+  // Just use the selected tag directly - alpine filtering is done in the dropdown
+  return `${tmpl.image}:${version}`
 })
 
 const categories = computed(() => {
@@ -70,13 +115,34 @@ const categoryLabels: Record<string, string> = {
   framework: 'Frameworks'
 }
 
-function openDeployModal(template: Template) {
+async function openDeployModal(template: Template) {
   selectedTemplate.value = template
   deployForm.value = {
     name: template.id,
-    enableSSL: false
+    enableSSL: false,
+    version: template.default_version || (template.versions?.[0] ?? ''),
+    useAlpine: template.has_alpine ?? false, // Default to alpine if available
+    exposeExternal: false // Database external access disabled by default
   }
+  // Copy template env vars so they can be edited
+  envVars.value = { ...template.env }
+  tagSearchQuery.value = ''
   isDeployModalOpen.value = true
+
+  // Fetch tags from API
+  loadingTags.value = true
+  try {
+    const { data: tagsData } = await useApiFetch<ImageTagsResponse>(`/images/tags?image=${template.image}`)
+    if (tagsData.value?.tags?.length) {
+      availableTags.value = tagsData.value.tags
+    } else {
+      availableTags.value = template.versions || []
+    }
+  } catch {
+    availableTags.value = template.versions || []
+  } finally {
+    loadingTags.value = false
+  }
 }
 
 async function deployTemplate() {
@@ -85,10 +151,17 @@ async function deployTemplate() {
   try {
     await $api(`/templates/${selectedTemplate.value.id}/deploy`, {
       method: 'POST',
-      body: deployForm.value
+      body: {
+        name: deployForm.value.name,
+        enableSSL: deployForm.value.enableSSL,
+        version: deployForm.value.version,
+        useAlpine: deployForm.value.useAlpine,
+        exposeExternal: deployForm.value.exposeExternal,
+        env: envVars.value
+      }
     })
     isDeployModalOpen.value = false
-    toast.add({ title: `${selectedTemplate.value.name} deployed`, color: 'success' })
+    toast.add({ title: `Created ${selectedTemplate.value.name}`, description: 'Please wait up to 60 seconds for the app to start', color: 'success' })
     navigateTo('/apps')
   } catch (error) {
     const message = error && typeof error === 'object' && 'data' in error
@@ -151,14 +224,41 @@ async function deployTemplate() {
     </div>
 
     <!-- Deploy Modal -->
-    <UModal v-model:open="isDeployModalOpen" :title="`Deploy ${selectedTemplate?.name}`">
+    <UModal v-model:open="isDeployModalOpen" :title="`Create ${selectedTemplate?.name}`">
       <template #body>
         <div class="space-y-4">
-          <div v-if="selectedTemplate" class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-            <UIcon :name="selectedTemplate.icon" class="w-8 h-8 text-primary-500" />
-            <div>
-              <div class="font-medium">{{ selectedTemplate.name }}</div>
-              <div class="text-sm text-gray-500">{{ selectedTemplate.image }}</div>
+          <div v-if="selectedTemplate" class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg space-y-3">
+            <div class="flex items-center gap-3">
+              <UIcon :name="selectedTemplate.icon" class="w-8 h-8 text-primary-500" />
+              <div class="flex-1">
+                <div class="font-medium">{{ selectedTemplate.name }}</div>
+                <code class="text-xs text-gray-500">{{ selectedImage }}</code>
+              </div>
+            </div>
+            <!-- Version and Alpine controls -->
+            <div class="flex items-center gap-4">
+              <!-- Version dropdown with search -->
+              <div class="flex items-center gap-2 flex-1">
+                <span class="text-xs text-gray-500 shrink-0">Version:</span>
+                <USelectMenu
+                  v-model="deployForm.version"
+                  v-model:search-term="tagSearchQuery"
+                  :items="filteredTags"
+                  :loading="loadingTags"
+                  searchable
+                  :search-input-placeholder="loadingTags ? 'Loading tags...' : 'Search tags...'"
+                  class="w-40"
+                  size="sm"
+                />
+                <span v-if="availableTags.length > 0" class="text-xs text-gray-400">
+                  ({{ availableTags.length }} tags)
+                </span>
+              </div>
+              <!-- Alpine toggle -->
+              <div v-if="selectedTemplate.has_alpine" class="flex items-center gap-2">
+                <USwitch v-model="deployForm.useAlpine" size="sm" />
+                <span class="text-xs text-gray-500">Alpine</span>
+              </div>
             </div>
           </div>
 
@@ -166,7 +266,8 @@ async function deployTemplate() {
             <UInput v-model="deployForm.name" placeholder="my-app" />
           </UFormField>
 
-          <UFormField label="Domain">
+          <!-- Domain for web apps -->
+          <UFormField v-if="!isDatabase" label="Domain">
             <div class="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-md font-mono text-sm">
               <span class="text-gray-500">{{ protocol }}</span>
               <span>{{ autoDomain || domainPlaceholder }}</span>
@@ -174,20 +275,46 @@ async function deployTemplate() {
             <p class="text-xs text-gray-500 mt-1">Auto-assigned based on app name</p>
           </UFormField>
 
-          <!-- Show default environment variables -->
+          <!-- Connection info for databases -->
+          <div v-if="isDatabase" class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium">External Access</span>
+              <USwitch v-model="deployForm.exposeExternal" size="sm" />
+            </div>
+            <div class="p-3 bg-gray-100 dark:bg-gray-800 rounded-md space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-gray-500">Internal (container-to-container)</span>
+                <code class="text-xs">deployer-{{ deployForm.name }}:{{ selectedTemplate?.port }}</code>
+              </div>
+              <div v-if="deployForm.exposeExternal" class="flex items-center justify-between">
+                <span class="text-xs text-gray-500">External (after deploy)</span>
+                <code class="text-xs">{{ configData?.domain?.base || 'localhost' }}:PORT</code>
+              </div>
+            </div>
+            <p class="text-xs text-gray-500">
+              {{ deployForm.exposeExternal ? 'Port will be assigned after deployment' : 'Only accessible from other containers' }}
+            </p>
+          </div>
+
+          <!-- Editable environment variables -->
           <div v-if="selectedTemplate && Object.keys(selectedTemplate.env).length">
-            <div class="text-sm font-medium mb-2">Default Environment Variables</div>
-            <div class="space-y-1">
+            <div class="text-sm font-medium mb-2">Environment Variables</div>
+            <div class="space-y-2">
               <div
-                v-for="(value, key) in selectedTemplate.env"
+                v-for="(_, key) in selectedTemplate.env"
                 :key="key"
-                class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded font-mono"
+                class="flex items-center gap-2"
               >
-                {{ key }}={{ key === 'url' && autoDomain ? `${protocol}${autoDomain}` : value }}
+                <label class="w-40 text-sm font-mono text-gray-600 dark:text-gray-400 shrink-0">{{ key }}</label>
+                <UInput
+                  v-model="envVars[key]"
+                  class="flex-1"
+                  :placeholder="selectedTemplate.env[key]"
+                />
               </div>
             </div>
             <p class="text-xs text-gray-500 mt-2">
-              You can modify these in the app settings after deployment
+              You can also modify these in the app settings after deployment
             </p>
           </div>
         </div>
@@ -196,7 +323,7 @@ async function deployTemplate() {
       <template #footer>
         <div class="flex justify-end gap-2">
           <UButton variant="ghost" @click="isDeployModalOpen = false">Cancel</UButton>
-          <UButton @click="deployTemplate">Deploy</UButton>
+          <UButton @click="deployTemplate">Create</UButton>
         </div>
       </template>
     </UModal>

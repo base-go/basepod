@@ -29,6 +29,14 @@ type Config struct {
 
 	// Database settings
 	Database DatabaseConfig `yaml:"database"`
+
+	// WebUI settings
+	WebUI WebUIConfig `yaml:"webui"`
+}
+
+type WebUIConfig struct {
+	// Path to serve static files from disk (empty = use embedded)
+	Path string `yaml:"path"`
 }
 
 type AuthConfig struct {

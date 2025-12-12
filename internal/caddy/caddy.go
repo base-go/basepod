@@ -56,7 +56,7 @@ func (c *Client) AddRoute(route Route) error {
 	// Remove existing route with same ID first (ignore errors - route may not exist)
 	c.RemoveRoute(route.ID)
 
-	// Build the route configuration
+	// Build the route configuration with proper headers for reverse proxy
 	routeConfig := map[string]interface{}{
 		"@id": route.ID,
 		"match": []map[string]interface{}{
@@ -68,6 +68,16 @@ func (c *Client) AddRoute(route Route) error {
 				"upstreams": []map[string]string{
 					{"dial": route.Upstream},
 				},
+				"headers": map[string]interface{}{
+					"request": map[string]interface{}{
+						"set": map[string][]string{
+							"Host":             {"{http.request.host}"},
+							"X-Forwarded-Host": {"{http.request.host}"},
+							"X-Forwarded-Proto": {"{http.request.scheme}"},
+							"X-Real-IP":        {"{http.request.remote.host}"},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -77,9 +87,9 @@ func (c *Client) AddRoute(route Route) error {
 		return fmt.Errorf("failed to marshal route config: %w", err)
 	}
 
-	// Try to add to existing routes
-	url := c.adminURL + "/config/apps/http/servers/deployer/routes"
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	// Add to main server (srv0) routes - prepend to take priority over wildcard
+	url := c.adminURL + "/config/apps/http/servers/srv0/routes/0"
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -90,11 +100,6 @@ func (c *Client) AddRoute(route Route) error {
 		return fmt.Errorf("failed to add route: %w", err)
 	}
 	defer resp.Body.Close()
-
-	// If server doesn't exist, create it
-	if resp.StatusCode == http.StatusNotFound {
-		return c.initializeServer(route)
-	}
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to add route (status %d)", resp.StatusCode)
@@ -219,7 +224,7 @@ func (c *Client) RemoveRoute(routeID string) error {
 
 // GetRoutes returns all configured routes
 func (c *Client) GetRoutes() ([]Route, error) {
-	resp, err := c.httpClient.Get(c.adminURL + "/config/apps/http/servers/deployer/routes")
+	resp, err := c.httpClient.Get(c.adminURL + "/config/apps/http/servers/srv0/routes")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}

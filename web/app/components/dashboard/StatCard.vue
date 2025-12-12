@@ -3,11 +3,13 @@ interface Props {
   label: string
   value: number | string
   icon: string
+  description?: string
   color?: 'primary' | 'success' | 'warning' | 'error' | 'info' | 'neutral'
 }
 
 withDefaults(defineProps<Props>(), {
-  color: 'primary'
+  color: 'primary',
+  description: undefined
 })
 </script>
 
@@ -27,6 +29,7 @@ withDefaults(defineProps<Props>(), {
       <div>
         <p class="text-sm text-gray-500 dark:text-gray-400">{{ label }}</p>
         <p class="text-2xl font-bold">{{ value }}</p>
+        <p v-if="description" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{{ description }}</p>
       </div>
     </div>
   </UCard>

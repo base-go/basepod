@@ -83,6 +83,13 @@ func (s *Storage) migrate() error {
 			value TEXT NOT NULL,
 			updated_at DATETIME NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS image_tags (
+			image TEXT PRIMARY KEY,
+			tags TEXT NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		// Fix empty domain strings to NULL (for database apps)
+		`UPDATE apps SET domain = NULL WHERE domain = ''`,
 	}
 
 	for _, migration := range migrations {
@@ -103,10 +110,16 @@ func (s *Storage) CreateApp(a *app.App) error {
 	deploymentJSON, _ := json.Marshal(a.Deployment)
 	sslJSON, _ := json.Marshal(a.SSL)
 
+	// Convert empty domain to NULL (for database apps without domains)
+	var domain interface{} = a.Domain
+	if a.Domain == "" {
+		domain = nil
+	}
+
 	_, err := s.db.Exec(`
 		INSERT INTO apps (id, name, domain, container_id, image, status, env, ports, volumes, resources, deployment, ssl, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.ID, a.Name, a.Domain, a.ContainerID, a.Image, a.Status,
+	`, a.ID, a.Name, domain, a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
 		a.CreatedAt, a.UpdatedAt)
@@ -234,13 +247,19 @@ func (s *Storage) UpdateApp(a *app.App) error {
 	deploymentJSON, _ := json.Marshal(a.Deployment)
 	sslJSON, _ := json.Marshal(a.SSL)
 
+	// Convert empty domain to NULL (for database apps without domains)
+	var domain interface{} = a.Domain
+	if a.Domain == "" {
+		domain = nil
+	}
+
 	_, err := s.db.Exec(`
 		UPDATE apps SET
 			name = ?, domain = ?, container_id = ?, image = ?, status = ?,
 			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, ssl = ?,
 			updated_at = ?
 		WHERE id = ?
-	`, a.Name, a.Domain, a.ContainerID, a.Image, a.Status,
+	`, a.Name, domain, a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
 		a.UpdatedAt, a.ID)
@@ -284,4 +303,63 @@ func (s *Storage) SetSetting(key, value string) error {
 		return fmt.Errorf("failed to set setting: %w", err)
 	}
 	return nil
+}
+
+// GetImageTags retrieves cached tags for an image
+func (s *Storage) GetImageTags(image string) ([]string, time.Time, error) {
+	var tagsJSON string
+	var updatedAt time.Time
+	err := s.db.QueryRow("SELECT tags, updated_at FROM image_tags WHERE image = ?", image).Scan(&tagsJSON, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, time.Time{}, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("failed to get image tags: %w", err)
+	}
+
+	var tags []string
+	if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+		return nil, time.Time{}, fmt.Errorf("failed to unmarshal tags: %w", err)
+	}
+	return tags, updatedAt, nil
+}
+
+// SaveImageTags saves tags for an image
+func (s *Storage) SaveImageTags(image string, tags []string) error {
+	tagsJSON, err := json.Marshal(tags)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tags: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO image_tags (image, tags, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(image) DO UPDATE SET tags = ?, updated_at = ?
+	`, image, string(tagsJSON), time.Now(), string(tagsJSON), time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to save image tags: %w", err)
+	}
+	return nil
+}
+
+// GetAllImageTags retrieves all cached image tags
+func (s *Storage) GetAllImageTags() (map[string][]string, error) {
+	rows, err := s.db.Query("SELECT image, tags FROM image_tags")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query image tags: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var image, tagsJSON string
+		if err := rows.Scan(&image, &tagsJSON); err != nil {
+			continue
+		}
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue
+		}
+		result[image] = tags
+	}
+	return result, nil
 }

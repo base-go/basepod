@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { HealthResponse } from '~/types'
+import type { ConfigResponse } from '~/composables/useApi'
 
 interface VersionInfo {
   current: string
@@ -11,7 +12,9 @@ definePageMeta({
   title: 'Settings'
 })
 
-const { data: health } = await useApiFetch<HealthResponse>('/health')
+const toast = useToast()
+const { data: health, refresh: refreshHealth } = await useApiFetch<HealthResponse>('/health')
+const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
 
 // Version info
 const version = ref<VersionInfo | null>(null)
@@ -33,6 +36,19 @@ const checkVersion = async () => {
   }
 }
 
+const waitForServer = async (maxAttempts = 10, delayMs = 2000): Promise<boolean> => {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+    try {
+      await $api('/health')
+      return true
+    } catch {
+      // Server not ready yet
+    }
+  }
+  return false
+}
+
 const performUpdate = async () => {
   updating.value = true
   updateMessage.value = ''
@@ -42,11 +58,39 @@ const performUpdate = async () => {
       method: 'POST'
     })
     updateMessage.value = result.message
-    // Refresh version after update
-    await checkVersion()
+
+    // If server is restarting, wait for it to come back
+    if (result.message?.includes('Restarting')) {
+      updateMessage.value = 'Update complete. Restarting service...'
+      const serverReady = await waitForServer()
+      if (serverReady) {
+        updateMessage.value = 'Update successful! Refreshing...'
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        window.location.reload()
+      } else {
+        updateError.value = 'Server did not restart in time. Please refresh manually.'
+      }
+    } else {
+      // Refresh version after update
+      await checkVersion()
+    }
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
-    updateError.value = err.data?.error || 'Update failed'
+    // Connection error during restart is expected
+    if (err.data?.error) {
+      updateError.value = err.data.error
+    } else {
+      // Assume restart in progress, wait for server
+      updateMessage.value = 'Update complete. Restarting service...'
+      const serverReady = await waitForServer()
+      if (serverReady) {
+        updateMessage.value = 'Update successful! Refreshing...'
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        window.location.reload()
+      } else {
+        updateError.value = 'Server did not restart in time. Please refresh manually.'
+      }
+    }
   } finally {
     updating.value = false
   }
@@ -55,6 +99,11 @@ const performUpdate = async () => {
 // Check version on load
 onMounted(() => {
   checkVersion()
+  // Load domain settings from config
+  if (configData.value?.domain) {
+    settings.value.domain = configData.value.domain.base || ''
+    settings.value.enableWildcard = configData.value.domain.wildcard ?? true
+  }
 })
 
 const settings = ref({
@@ -62,6 +111,62 @@ const settings = ref({
   email: '',
   enableWildcard: true
 })
+
+// Domain settings
+const savingDomain = ref(false)
+const domainSuccess = ref(false)
+const domainError = ref('')
+
+const saveDomainSettings = async () => {
+  savingDomain.value = true
+  domainError.value = ''
+  domainSuccess.value = false
+  try {
+    await $api('/system/config', {
+      method: 'PUT',
+      body: {
+        domain: {
+          base: settings.value.domain,
+          wildcard: settings.value.enableWildcard
+        }
+      }
+    })
+    domainSuccess.value = true
+    toast.add({ title: 'Domain settings saved', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    domainError.value = err.data?.error || 'Failed to save domain settings'
+  } finally {
+    savingDomain.value = false
+  }
+}
+
+// Service restart
+const restartingService = ref<string | null>(null)
+
+const restartService = async (service: string) => {
+  restartingService.value = service
+  try {
+    await $api(`/system/restart/${service}`, { method: 'POST' })
+    toast.add({ title: `${service} restarted`, color: 'success' })
+    // If restarting deployer, wait and refresh
+    if (service === 'deployer') {
+      toast.add({ title: 'Waiting for server...', color: 'info' })
+      const ready = await waitForServer()
+      if (ready) {
+        window.location.reload()
+      }
+    } else {
+      // Refresh health status
+      await refreshHealth()
+    }
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: `Failed to restart ${service}`, description: err.data?.error, color: 'error' })
+  } finally {
+    restartingService.value = null
+  }
+}
 
 const passwordForm = ref({
   currentPassword: '',
@@ -204,21 +309,33 @@ const pruneResources = async () => {
           <h3 class="font-semibold">Domain Settings</h3>
         </template>
 
-        <div class="space-y-4">
-          <UFormField label="Root Domain" help="The main domain for your deployer instance">
-            <UInput v-model="settings.domain" placeholder="deployer.example.com" />
-          </UFormField>
-
-          <UFormField label="Email" help="Used for Let's Encrypt SSL certificates">
-            <UInput v-model="settings.email" type="email" placeholder="admin@example.com" />
+        <form class="space-y-4" @submit.prevent="saveDomainSettings">
+          <UFormField label="Root Domain" help="The base domain for your apps (e.g., example.com)">
+            <UInput v-model="settings.domain" placeholder="example.com" />
           </UFormField>
 
           <UFormField>
             <UCheckbox v-model="settings.enableWildcard" label="Enable wildcard subdomains" />
           </UFormField>
 
-          <UButton>Save Domain Settings</UButton>
-        </div>
+          <UAlert
+            v-if="domainError"
+            color="error"
+            variant="soft"
+            :title="domainError"
+          />
+
+          <UAlert
+            v-if="domainSuccess"
+            color="success"
+            variant="soft"
+            title="Domain settings saved successfully"
+          />
+
+          <UButton type="submit" :loading="savingDomain">
+            Save Domain Settings
+          </UButton>
+        </form>
       </UCard>
 
       <!-- Change Password -->
@@ -284,22 +401,58 @@ const pruneResources = async () => {
               <p class="font-medium">Podman</p>
               <p class="text-sm text-gray-500">Container runtime</p>
             </div>
-            <div class="text-right">
+            <div class="flex items-center gap-2">
               <UBadge :color="health?.podman === 'connected' ? 'success' : 'error'">
                 {{ health?.podman === 'connected' ? 'Connected' : 'Disconnected' }}
               </UBadge>
-              <p v-if="health?.podman !== 'connected'" class="text-xs text-red-500 mt-1">
-                {{ health?.podman_error }}
-              </p>
+              <UButton
+                size="xs"
+                variant="soft"
+                :loading="restartingService === 'podman'"
+                @click="restartService('podman')"
+              >
+                Restart
+              </UButton>
             </div>
           </div>
+          <p v-if="health?.podman !== 'connected'" class="text-xs text-red-500 -mt-2">
+            {{ health?.podman_error }}
+          </p>
 
           <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
             <div>
               <p class="font-medium">Caddy</p>
               <p class="text-sm text-gray-500">Reverse proxy</p>
             </div>
-            <UBadge color="success">Running</UBadge>
+            <div class="flex items-center gap-2">
+              <UBadge color="success">Running</UBadge>
+              <UButton
+                size="xs"
+                variant="soft"
+                :loading="restartingService === 'caddy'"
+                @click="restartService('caddy')"
+              >
+                Restart
+              </UButton>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
+            <div>
+              <p class="font-medium">Deployer</p>
+              <p class="text-sm text-gray-500">API Server</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <UBadge color="success">Running</UBadge>
+              <UButton
+                size="xs"
+                variant="soft"
+                :loading="restartingService === 'deployer'"
+                @click="restartService('deployer')"
+              >
+                Restart
+              </UButton>
+            </div>
           </div>
 
           <div class="flex items-center justify-between py-2">
