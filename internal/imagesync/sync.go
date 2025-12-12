@@ -95,8 +95,17 @@ type DockerHubTagsResponse struct {
 	Next string `json:"next"`
 }
 
-// fetchTagsFromDockerHub fetches tags from Docker Hub API
+// fetchTagsFromDockerHub fetches tags from Docker Hub API or other registries
 func (s *Syncer) fetchTagsFromDockerHub(image string) ([]string, error) {
+	// Handle different registries
+	if strings.HasPrefix(image, "ghcr.io/") {
+		return s.fetchTagsFromGHCR(image)
+	}
+	if strings.HasPrefix(image, "quay.io/") {
+		// Skip quay.io for now - would need different API
+		return nil, nil
+	}
+
 	// Docker Hub API uses library/ prefix for official images
 	repoName := image
 	if !strings.Contains(image, "/") {
@@ -202,4 +211,120 @@ func (s *Syncer) GetTags(image string) ([]string, error) {
 	}
 
 	return freshTags, nil
+}
+
+// GHCRTagsResponse represents the GitHub Container Registry API response
+type GHCRTagsResponse struct {
+	Tags []string `json:"tags"`
+}
+
+// fetchTagsFromGHCR fetches tags from GitHub Container Registry
+func (s *Syncer) fetchTagsFromGHCR(image string) ([]string, error) {
+	// ghcr.io/owner/repo -> owner/repo
+	repoName := strings.TrimPrefix(image, "ghcr.io/")
+
+	// GHCR uses Docker Registry v2 API
+	url := fmt.Sprintf("https://ghcr.io/v2/%s/tags/list", repoName)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// GHCR requires accepting the manifest types
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch GHCR tags: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// GHCR returns 401 for public repos without token, but we can still try
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Try to get anonymous token
+		return s.fetchTagsFromGHCRWithToken(repoName)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GHCR returned status %d", resp.StatusCode)
+	}
+
+	var data GHCRTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode GHCR response: %w", err)
+	}
+
+	// Sort tags
+	sort.Slice(data.Tags, func(i, j int) bool {
+		return tagPriority(data.Tags[i]) < tagPriority(data.Tags[j])
+	})
+
+	// Limit to 100 tags
+	if len(data.Tags) > 100 {
+		data.Tags = data.Tags[:100]
+	}
+
+	return data.Tags, nil
+}
+
+// GHCRTokenResponse represents the GHCR token response
+type GHCRTokenResponse struct {
+	Token string `json:"token"`
+}
+
+// fetchTagsFromGHCRWithToken fetches tags using anonymous token
+func (s *Syncer) fetchTagsFromGHCRWithToken(repoName string) ([]string, error) {
+	// Get anonymous token
+	tokenURL := fmt.Sprintf("https://ghcr.io/token?scope=repository:%s:pull", repoName)
+	tokenResp, err := s.client.Get(tokenURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GHCR token: %w", err)
+	}
+	defer tokenResp.Body.Close()
+
+	if tokenResp.StatusCode != http.StatusOK {
+		// Skip this image - likely private or doesn't exist
+		return nil, nil
+	}
+
+	var tokenData GHCRTokenResponse
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil {
+		return nil, fmt.Errorf("failed to decode GHCR token: %w", err)
+	}
+
+	// Now fetch tags with token
+	url := fmt.Sprintf("https://ghcr.io/v2/%s/tags/list", repoName)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tokenData.Token)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch GHCR tags: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil // Skip - image may not exist
+	}
+
+	var data GHCRTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode GHCR response: %w", err)
+	}
+
+	// Sort tags
+	sort.Slice(data.Tags, func(i, j int) bool {
+		return tagPriority(data.Tags[i]) < tagPriority(data.Tags[j])
+	})
+
+	// Limit to 100 tags
+	if len(data.Tags) > 100 {
+		data.Tags = data.Tags[:100]
+	}
+
+	return data.Tags, nil
 }
