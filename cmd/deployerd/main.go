@@ -20,6 +20,7 @@ import (
 	"github.com/deployer/deployer/internal/api"
 	"github.com/deployer/deployer/internal/caddy"
 	"github.com/deployer/deployer/internal/config"
+	"github.com/deployer/deployer/internal/dns"
 	"github.com/deployer/deployer/internal/imagesync"
 	"github.com/deployer/deployer/internal/podman"
 	"github.com/deployer/deployer/internal/storage"
@@ -160,6 +161,30 @@ func main() {
 		log.Printf("Caddy connected successfully")
 	}
 
+	// Start built-in DNS server if enabled or if using local domain
+	var dnsServer *dns.Server
+	if cfg.DNS.Enabled || (cfg.Domain.Base != "" && !strings.Contains(cfg.Domain.Base, ".com") && !strings.Contains(cfg.Domain.Base, ".net") && !strings.Contains(cfg.Domain.Base, ".org")) {
+		dnsPort := cfg.DNS.Port
+		if dnsPort == 0 {
+			dnsPort = 5353 // Use non-privileged port by default
+		}
+		dnsServer, err = dns.NewServer(dns.Config{
+			Domain:   cfg.Domain.Base,
+			ServerIP: "", // Auto-detect
+			Port:     dnsPort,
+			Upstream: cfg.DNS.Upstream,
+		})
+		if err != nil {
+			log.Printf("Warning: Failed to create DNS server: %v", err)
+		} else {
+			if err := dnsServer.Start(); err != nil {
+				log.Printf("Warning: Failed to start DNS server: %v", err)
+			} else {
+				log.Printf("DNS server started - configure clients to use this server's IP as DNS on port %d", dnsPort)
+			}
+		}
+	}
+
 	// Create API server with version
 	apiServer := api.NewServerWithVersion(store, pm, caddyClient, version)
 
@@ -194,6 +219,11 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down server...")
+
+	// Stop DNS server if running
+	if dnsServer != nil {
+		dnsServer.Stop()
+	}
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -32,6 +32,16 @@ type Config struct {
 
 	// WebUI settings
 	WebUI WebUIConfig `yaml:"webui"`
+
+	// DNS settings
+	DNS DNSConfig `yaml:"dns"`
+}
+
+// DNSConfig holds DNS server configuration
+type DNSConfig struct {
+	Enabled  bool     `yaml:"enabled"`   // Enable built-in DNS server
+	Port     int      `yaml:"port"`      // DNS port (default 53, use 5353 for non-root)
+	Upstream []string `yaml:"upstream"`  // Upstream DNS servers
 }
 
 type WebUIConfig struct {
