@@ -117,17 +117,17 @@ install_deps() {
 
     case $OS in
         macos)
-            # Check for Homebrew
-            if ! command -v brew &> /dev/null; then
-                if [ -f /opt/homebrew/bin/brew ]; then
-                    export PATH="/opt/homebrew/bin:$PATH"
-                elif [ -f /usr/local/bin/brew ]; then
-                    export PATH="/usr/local/bin:$PATH"
-                else
-                    error "Homebrew not found. Install from https://brew.sh"
-                fi
+            # On macOS, run brew as the original user (not root)
+            local brew_user="${SUDO_USER:-$(whoami)}"
+            local brew_path="/opt/homebrew/bin/brew"
+            [ ! -f "$brew_path" ] && brew_path="/usr/local/bin/brew"
+
+            if [ ! -f "$brew_path" ]; then
+                error "Homebrew not found. Install from https://brew.sh"
             fi
-            HOMEBREW_NO_AUTO_UPDATE=1 brew install podman 2>/dev/null || true
+
+            log "Installing podman via Homebrew (as $brew_user)..."
+            sudo -u "$brew_user" HOMEBREW_NO_AUTO_UPDATE=1 "$brew_path" install podman 2>/dev/null || true
             ;;
         ubuntu|debian)
             apt-get update -qq
@@ -156,7 +156,11 @@ install_caddy() {
 
     case $OS in
         macos)
-            HOMEBREW_NO_AUTO_UPDATE=1 brew install caddy
+            local brew_user="${SUDO_USER:-$(whoami)}"
+            local brew_path="/opt/homebrew/bin/brew"
+            [ ! -f "$brew_path" ] && brew_path="/usr/local/bin/brew"
+            log "Installing caddy via Homebrew (as $brew_user)..."
+            sudo -u "$brew_user" HOMEBREW_NO_AUTO_UPDATE=1 "$brew_path" install caddy 2>/dev/null || true
             ;;
         ubuntu|debian)
             apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https
@@ -477,8 +481,24 @@ create_macos_services() {
 
     # Initialize podman machine if not exists
     log "Initializing Podman machine..."
-    sudo -u "$DEPLOYER_USER" podman machine init 2>/dev/null || true
-    sudo -u "$DEPLOYER_USER" podman machine start 2>/dev/null || true
+    local brew_path="/opt/homebrew/bin"
+    [ ! -d "$brew_path" ] && brew_path="/usr/local/bin"
+    sudo -u "$DEPLOYER_USER" "$brew_path/podman" machine init 2>/dev/null || true
+    sudo -u "$DEPLOYER_USER" "$brew_path/podman" machine start 2>/dev/null || true
+
+    # Get user's home directory
+    local USER_HOME=$(eval echo ~$DEPLOYER_USER)
+
+    # Create symlink for podman socket (macOS puts it in /var/folders/...)
+    log "Setting up Podman socket symlink..."
+    local SOCKET_DIR="$USER_HOME/.local/share/containers/podman/machine"
+    mkdir -p "$SOCKET_DIR"
+    # Find the actual socket location
+    local ACTUAL_SOCKET=$(find /var/folders -name "podman-machine-default-api.sock" 2>/dev/null | head -1)
+    if [ -n "$ACTUAL_SOCKET" ]; then
+        ln -sf "$ACTUAL_SOCKET" "$SOCKET_DIR/podman.sock"
+        chown -R "$DEPLOYER_USER:staff" "$USER_HOME/.local/share/containers"
+    fi
 
     # Create launchd plist for deployer
     cat > /Library/LaunchDaemons/com.deployer.plist <<EOF
@@ -488,6 +508,8 @@ create_macos_services() {
 <dict>
     <key>Label</key>
     <string>com.deployer</string>
+    <key>UserName</key>
+    <string>$DEPLOYER_USER</string>
     <key>ProgramArguments</key>
     <array>
         <string>$DEPLOYER_DIR/bin/deployerd</string>
@@ -496,6 +518,8 @@ create_macos_services() {
     <string>$DEPLOYER_DIR</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HOME</key>
+        <string>$USER_HOME</string>
         <key>DEPLOYER_CONFIG</key>
         <string>$DEPLOYER_DIR/config/deployer.yaml</string>
         <key>PATH</key>
@@ -552,9 +576,14 @@ set_permissions() {
     # Create builds directory for source deployments
     mkdir -p "$DEPLOYER_DIR/builds"
 
-    chown -R "$DEPLOYER_USER:$DEPLOYER_USER" "$DEPLOYER_DIR"
+    # macOS uses 'staff' group, Linux uses same as username
+    if [ "$OS" = "macos" ]; then
+        chown -R "$DEPLOYER_USER:staff" "$DEPLOYER_DIR"
+    else
+        chown -R "$DEPLOYER_USER:$DEPLOYER_USER" "$DEPLOYER_DIR"
+    fi
     chmod 750 "$DEPLOYER_DIR"
-    chmod 640 "$DEPLOYER_DIR/config/"*
+    chmod 640 "$DEPLOYER_DIR/config/"* 2>/dev/null || true
     chmod 750 "$DEPLOYER_DIR/builds"
 }
 
