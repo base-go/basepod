@@ -204,6 +204,81 @@ async function stopServer() {
   }
 }
 
+// Custom model
+const customModelId = ref('')
+const customModelLoading = ref(false)
+
+async function pullCustomModel() {
+  if (!customModelId.value.trim()) return
+
+  const modelId = customModelId.value.trim()
+  customModelLoading.value = true
+  pullingModels.value.add(modelId)
+
+  try {
+    await $api('/mlx/pull', {
+      method: 'POST',
+      body: { model: modelId }
+    })
+    toast.add({
+      title: 'Downloading custom model',
+      description: `Pulling ${modelId}...`,
+      color: 'info'
+    })
+
+    // Poll for progress
+    const pollInterval = setInterval(async () => {
+      try {
+        const progress = await $api<MLXDownloadProgress>(`/mlx/pull/progress?model=${encodeURIComponent(modelId)}`)
+        if (progress) {
+          downloadProgress.value.set(modelId, progress)
+
+          if (progress.status === 'completed') {
+            clearInterval(pollInterval)
+            pullingModels.value.delete(modelId)
+            downloadProgress.value.delete(modelId)
+            customModelLoading.value = false
+            await refreshModels()
+            toast.add({
+              title: 'Model ready',
+              description: `${modelId} is ready to use`,
+              color: 'success'
+            })
+            customModelId.value = ''
+          } else if (progress.status === 'error' || progress.status === 'cancelled') {
+            clearInterval(pollInterval)
+            pullingModels.value.delete(modelId)
+            downloadProgress.value.delete(modelId)
+            customModelLoading.value = false
+            toast.add({
+              title: 'Download failed',
+              description: progress.message || 'Unknown error',
+              color: 'error'
+            })
+          }
+        }
+      } catch {
+        // Progress endpoint might not have data yet
+      }
+    }, 1000)
+
+    // Timeout after 60 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval)
+      pullingModels.value.delete(modelId)
+      downloadProgress.value.delete(modelId)
+      customModelLoading.value = false
+    }, 60 * 60 * 1000)
+  } catch (error) {
+    pullingModels.value.delete(modelId)
+    customModelLoading.value = false
+    const message = error && typeof error === 'object' && 'data' in error
+      ? (error as { data?: { error?: string } }).data?.error
+      : 'Failed to pull model'
+    toast.add({ title: 'Error', description: message, color: 'error' })
+  }
+}
+
 // Auto-refresh status
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
@@ -257,6 +332,47 @@ onUnmounted(() => {
               MLX models leverage the unified memory architecture of M-series chips for efficient inference.
             </p>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Model Input -->
+    <div v-if="mlxData?.supported" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+      <div class="flex items-center gap-2 mb-3">
+        <UIcon name="i-heroicons-plus-circle" class="w-5 h-5 text-gray-500" />
+        <h3 class="font-medium">Run Custom Model</h3>
+      </div>
+      <p class="text-sm text-gray-500 mb-3">
+        Paste any MLX model ID from <a href="https://huggingface.co/mlx-community" target="_blank" class="text-primary-500 hover:underline">Hugging Face</a>
+      </p>
+      <div class="flex gap-2">
+        <UInput
+          v-model="customModelId"
+          placeholder="mlx-community/MiMo-V2-Flash-mlx-8bit"
+          class="flex-1 font-mono text-sm"
+          :disabled="customModelLoading"
+        />
+        <UButton
+          :loading="customModelLoading"
+          :disabled="!customModelId.trim()"
+          @click="pullCustomModel"
+        >
+          Pull & Run
+        </UButton>
+      </div>
+      <!-- Progress for custom model -->
+      <div v-if="customModelLoading && downloadProgress.get(customModelId)" class="mt-3">
+        <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+          <span>{{ Math.round(downloadProgress.get(customModelId)!.progress) }}%</span>
+          <span v-if="downloadProgress.get(customModelId)?.eta">
+            ETA: {{ formatETA(downloadProgress.get(customModelId)!.eta) }}
+          </span>
+        </div>
+        <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+          <div
+            class="h-full bg-primary-500 transition-all duration-300"
+            :style="{ width: `${downloadProgress.get(customModelId)?.progress || 0}%` }"
+          />
         </div>
       </div>
     </div>

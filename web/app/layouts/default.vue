@@ -59,9 +59,9 @@ const logout = async () => {
   <UDashboardGroup>
     <UDashboardSidebar collapsible resizable>
       <template #header="{ collapsed = false }">
-        <div class="flex items-center gap-2" :class="collapsed ? 'justify-center' : ''">
-          <UIcon name="i-heroicons-rocket-launch" class="size-8 text-primary-500 shrink-0" />
-          <span v-if="!collapsed" class="text-xl font-bold truncate">Basepod</span>
+        <div class="flex items-center" :class="collapsed ? 'justify-center' : ''">
+          <span v-if="collapsed" class="text-lg font-bold text-primary-500" style="font-family: 'JetBrains Mono', monospace">[b]</span>
+          <span v-else class="text-xl font-bold text-primary-500" style="font-family: 'JetBrains Mono', monospace">[basepod]</span>
         </div>
       </template>
 
