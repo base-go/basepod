@@ -1215,7 +1215,7 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	updateAvailable := false
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/base-go/dr/releases/latest")
+	resp, err := client.Get("https://api.github.com/repos/base-go/basepod/releases/latest")
 	if err == nil && resp.StatusCode == http.StatusOK {
 		defer resp.Body.Close()
 		var release struct {
@@ -1281,7 +1281,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download URL
-	downloadURL := fmt.Sprintf("https://github.com/base-go/dr/releases/latest/download/basepodd-linux-%s", arch)
+	downloadURL := fmt.Sprintf("https://github.com/base-go/basepod/releases/latest/download/basepod-linux-%s", arch)
 
 	// Download new binary to temp file
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -1298,7 +1298,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write to temp file
-	tmpFile, err := os.CreateTemp("", "basepodd-update-*")
+	tmpFile, err := os.CreateTemp("", "basepod-update-*")
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Failed to create temp file: "+err.Error())
 		return

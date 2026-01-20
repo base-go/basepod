@@ -2,7 +2,7 @@
 set -e
 
 # Basepod Uninstall Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/uninstall.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/base-go/basepod/main/uninstall.sh | sudo bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

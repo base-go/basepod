@@ -81,7 +81,7 @@ case "linux":
 3. **Build on server** (CGO required for SQLite)
 4. **Test each fix via SSH**
 5. **If all working:** Merge to main, tag release v0.1.29
-6. **Create release on base-go/dr**
+6. **Create release on base-go/basepod**
 
 ---
 
@@ -160,7 +160,7 @@ git tag v0.1.29
 git push origin main --tags
 ```
 
-### Step 7: Create release on base-go/dr
+### Step 7: Create release on base-go/basepod
 - Build binaries for all platforms
 - Upload to GitHub release v0.1.29
 

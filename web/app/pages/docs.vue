@@ -270,7 +270,7 @@ const activeSection = ref('getting-started')
             </table>
 
             <h3>GitHub</h3>
-            <p>For more details, visit the <a href="https://github.com/base-go/dr" target="_blank">GitHub repository</a>.</p>
+            <p>For more details, visit the <a href="https://github.com/base-go/basepod" target="_blank">GitHub repository</a>.</p>
           </div>
         </UCard>
       </div>

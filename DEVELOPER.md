@@ -362,7 +362,7 @@ ssh root@server "/opt/deployer/bin/deployer version"
 1. Bump version in `cmd/deployerd/main.go`
 2. Commit and push to base-go/deployer
 3. Build binaries for all platforms
-4. Create release on base-go/dr with binaries
+4. Create release on base-go/basepod with binaries
 
 ---
 

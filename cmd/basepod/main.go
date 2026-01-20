@@ -31,7 +31,7 @@ var (
 	version = "0.2.3"
 
 	// Release URL for updates (uses GitHub releases API)
-	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
+	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
 )
 
 func main() {
@@ -415,7 +415,7 @@ func runUpdate() {
 	}
 
 	// Fetch latest release info from GitHub API
-	apiURL := "https://api.github.com/repos/base-go/dr/releases/latest"
+	apiURL := "https://api.github.com/repos/base-go/basepod/releases/latest"
 	resp, err := http.Get(apiURL)
 	if err != nil {
 		fmt.Printf("Error: cannot check for updates: %v\n", err)

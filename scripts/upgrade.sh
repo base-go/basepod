@@ -2,7 +2,7 @@
 set -e
 
 # Basepod Upgrade Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/upgrade.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/base-go/basepod/main/upgrade.sh | sudo bash
 
 DEPLOYER_VERSION="${DEPLOYER_VERSION:-latest}"
 DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/basepod}"
@@ -52,12 +52,12 @@ esac
 
 # Download URL
 if [ "$DEPLOYER_VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/basepod-linux-$ARCH"
+    DOWNLOAD_URL="https://github.com/base-go/basepod/releases/latest/download/basepod-linux-$ARCH"
     # Get latest version from GitHub API
-    LATEST_VERSION=$(curl -sL https://api.github.com/repos/base-go/dr/releases/latest | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
+    LATEST_VERSION=$(curl -sL https://api.github.com/repos/base-go/basepod/releases/latest | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
     log "Latest version: $LATEST_VERSION"
 else
-    DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/basepod-linux-$ARCH"
+    DOWNLOAD_URL="https://github.com/base-go/basepod/releases/download/$DEPLOYER_VERSION/basepod-linux-$ARCH"
     LATEST_VERSION="$DEPLOYER_VERSION"
 fi
 
