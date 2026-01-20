@@ -1,16 +1,33 @@
 #!/bin/bash
 # Development script for deployer
-# Usage: ./scripts/dev.sh [start|stop|restart|status|logs]
+# Usage: ./scripts/dev.sh [start|stop|restart|status|logs|build]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BINARY="$PROJECT_DIR/deployerd"
+BUILD_DIR="$PROJECT_DIR/build"
+BINARY="$BUILD_DIR/deployerd"
 PID_FILE="$PROJECT_DIR/.deployerd.pid"
 LOG_FILE="/tmp/deployer.log"
 
 cd "$PROJECT_DIR"
+
+build() {
+    echo "Building frontend..."
+    cd "$PROJECT_DIR/web"
+    rm -rf .output .nuxt
+    bun install
+    bunx nuxi generate
+    cd "$PROJECT_DIR"
+
+    echo "Building backend..."
+    mkdir -p "$BUILD_DIR"
+    go build -ldflags "-X main.version=$(grep 'version = ' cmd/deployerd/main.go | sed 's/.*"\(.*\)".*/\1/')" \
+        -o "$BINARY" ./cmd/deployerd
+
+    echo "Build complete: $BINARY"
+}
 
 start() {
     if is_running; then
@@ -18,8 +35,10 @@ start() {
         return 1
     fi
 
-    echo "Building deployer..."
-    go build -o "$BINARY" ./cmd/deployerd
+    # Build if binary doesn't exist
+    if [ ! -f "$BINARY" ]; then
+        build
+    fi
 
     echo "Starting deployer..."
     "$BINARY" > "$LOG_FILE" 2>&1 &
@@ -54,12 +73,6 @@ stop() {
     echo "Deployer stopped"
 }
 
-restart() {
-    stop
-    sleep 1
-    start
-}
-
 status() {
     if is_running; then
         echo "Deployer is running (PID: $(cat "$PID_FILE"))"
@@ -90,6 +103,9 @@ is_running() {
 }
 
 case "${1:-}" in
+    build)
+        build
+        ;;
     start)
         start
         ;;
@@ -97,7 +113,10 @@ case "${1:-}" in
         stop
         ;;
     restart)
-        restart
+        stop
+        sleep 1
+        build
+        start
         ;;
     status)
         status
@@ -106,10 +125,11 @@ case "${1:-}" in
         logs
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo "Usage: $0 {build|start|stop|restart|status|logs}"
         echo ""
         echo "Commands:"
-        echo "  start   - Build and start the server"
+        echo "  build   - Build frontend and backend"
+        echo "  start   - Start the server (builds if needed)"
         echo "  stop    - Stop the server"
         echo "  restart - Rebuild and restart the server"
         echo "  status  - Show server status and recent logs"

@@ -96,8 +96,8 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 	// Fall back to embedded files
 	if s.staticFS == nil {
-		if staticFS, err := web.GetFileSystem(); err == nil {
-			log.Printf("Serving static files from embedded filesystem")
+		if staticFS, source, err := web.GetFileSystem(); err == nil {
+			log.Printf("Serving static files from %s", source)
 			s.staticFS = http.FileServer(http.FS(staticFS))
 		}
 	}
@@ -418,7 +418,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, err := os.Stat(s.staticDir + path); err == nil {
 				fileExists = true
 			}
-		} else if webFS, err := web.GetFileSystem(); err == nil {
+		} else if webFS, _, err := web.GetFileSystem(); err == nil {
 			// Check embedded
 			if _, err := fs.Stat(webFS, strings.TrimPrefix(path, "/")); err == nil {
 				fileExists = true

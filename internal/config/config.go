@@ -62,6 +62,7 @@ type ServerConfig struct {
 
 type DomainConfig struct {
 	Root     string `yaml:"root"`     // Production: root domain (e.g., app.basecode.al) - apps become {name}.app.basecode.al
+	Base     string `yaml:"base"`     // Base domain for subdomains (e.g., base.code) - apps become {name}.base.code
 	Suffix   string `yaml:"suffix"`   // Local dev: domain suffix (e.g., .pod) - apps become {name}.pod
 	Wildcard bool   `yaml:"wildcard"` // Enable wildcard subdomains
 	Email    string `yaml:"email"`    // For Let's Encrypt SSL certificates

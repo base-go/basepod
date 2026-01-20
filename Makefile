@@ -18,14 +18,14 @@ INSTALL_DIR=$(HOME)/deployer/bin
 WEB_DIR=web
 
 # Version
-VERSION?=0.1.0
+VERSION?=0.2.0
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 
-# Build the frontend (clean build)
+# Build the frontend (clean build with static generation)
 web-build:
 	@echo "Building frontend..."
 	@rm -rf $(WEB_DIR)/.output $(WEB_DIR)/.nuxt
-	@cd $(WEB_DIR) && bun install && bun run build
+	@cd $(WEB_DIR) && bun install && bunx nuxi generate
 
 # Run frontend dev server
 web-dev:

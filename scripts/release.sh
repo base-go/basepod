@@ -2,10 +2,12 @@
 set -e
 
 # Release script - builds all binaries and pushes to releases repo
-# Usage: ./release.sh [version]  - specify version like 0.1.11
-#        ./release.sh            - auto-increment patch version
+# Usage: ./scripts/release.sh [version]  - specify version like 0.1.11
+#        ./scripts/release.sh            - auto-increment patch version
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
 RELEASES_DIR="${RELEASES_DIR:-../deployer-releases}"
 GO_VERSION="1.25"
@@ -123,7 +125,7 @@ GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o deployer-darwin-amd64 ./cm
 # Copy to releases
 cp deployerd-linux-arm64 deployerd-linux-amd64 deployerd-darwin-arm64 deployerd-darwin-amd64 \
    deployer-linux-arm64 deployer-linux-amd64 deployer-darwin-arm64 deployer-darwin-amd64 \
-   install.sh "$RELEASES_DIR/"
+   scripts/install-server.sh "$RELEASES_DIR/install.sh"
 
 # Commit and push releases
 cd "$RELEASES_DIR"
