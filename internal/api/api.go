@@ -1274,14 +1274,15 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use runtime architecture
+	// Use runtime OS and architecture
+	goos := runtime.GOOS
 	arch := runtime.GOARCH
 	if arch == "" {
 		arch = "amd64"
 	}
 
 	// Download URL
-	downloadURL := fmt.Sprintf("https://github.com/base-go/basepod/releases/latest/download/basepod-linux-%s", arch)
+	downloadURL := fmt.Sprintf("https://github.com/base-go/basepod/releases/latest/download/basepod-%s-%s", goos, arch)
 
 	// Download new binary to temp file
 	client := &http.Client{Timeout: 120 * time.Second}
