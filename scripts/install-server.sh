@@ -586,13 +586,21 @@ set_permissions() {
     # Create builds directory for source deployments
     mkdir -p "$BASEPOD_DIR/builds"
 
+    # Create Caddy data directory (for certificates)
+    mkdir -p "$BASEPOD_DIR/data/caddy"
+    mkdir -p "$BASEPOD_DIR/Library/Application Support/Caddy"
+
     # macOS uses 'staff' group, Linux uses same as username
     if [ "$OS" = "macos" ]; then
         chown -R "$BASEPOD_USER:staff" "$BASEPOD_DIR"
+        # Caddy runs as root, so it needs write access
+        chown -R root:wheel "$BASEPOD_DIR/data/caddy"
+        chown -R root:wheel "$BASEPOD_DIR/Library"
     else
         chown -R "$BASEPOD_USER:$BASEPOD_USER" "$BASEPOD_DIR"
     fi
     chmod 750 "$BASEPOD_DIR"
+    chmod 755 "$BASEPOD_DIR/data/caddy"
     chmod 640 "$BASEPOD_DIR/config/"* 2>/dev/null || true
     chmod 750 "$BASEPOD_DIR/builds"
 }
