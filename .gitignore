@@ -60,3 +60,4 @@ dist/
 # Air (hot reload)
 tmp/
 production/
+CLAUDE.md
