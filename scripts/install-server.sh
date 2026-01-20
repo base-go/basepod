@@ -322,7 +322,7 @@ database:
   path: $BASEPOD_DIR/data/basepod.db
 
 domain:
-  base: $BASEPOD_DOMAIN
+  root: $BASEPOD_DOMAIN
   wildcard: true
   email: $ssl_email
 EOF
@@ -654,7 +654,7 @@ print_success() {
         echo "  Apps will be accessible via direct port mapping only."
         echo ""
         echo "  To add a domain later, edit: $BASEPOD_DIR/config/basepod.yaml"
-        echo "  And set: domain.base: yourdomain.com"
+        echo "  And set: domain.root: yourdomain.com"
     fi
 
     echo ""
