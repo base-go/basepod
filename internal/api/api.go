@@ -1369,10 +1369,18 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 
 	switch service {
 	case "podman":
-		// For podman, we restart the podman socket service
-		cmd := exec.Command("systemctl", "restart", "podman.socket")
+		// For podman, restart depends on OS
+		var cmd *exec.Cmd
+		if runtime.GOOS == "darwin" {
+			// macOS: restart podman machine
+			cmd = exec.Command("podman", "machine", "stop")
+			cmd.Run() // Ignore error if already stopped
+			cmd = exec.Command("podman", "machine", "start")
+		} else {
+			// Linux: restart podman socket service
+			cmd = exec.Command("systemctl", "--user", "restart", "podman.socket")
+		}
 		if err := cmd.Run(); err != nil {
-			// Try alternative: just reconnect by restarting basepod
 			errorResponse(w, http.StatusInternalServerError, "Failed to restart Podman: "+err.Error())
 			return
 		}
@@ -1383,7 +1391,15 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 
 	case "caddy":
 		// Restart caddy service
-		cmd := exec.Command("systemctl", "restart", "caddy")
+		var cmd *exec.Cmd
+		if runtime.GOOS == "darwin" {
+			// macOS: use launchctl
+			exec.Command("launchctl", "unload", "/Library/LaunchDaemons/com.caddy.plist").Run()
+			cmd = exec.Command("launchctl", "load", "/Library/LaunchDaemons/com.caddy.plist")
+		} else {
+			// Linux: use systemctl
+			cmd = exec.Command("systemctl", "restart", "caddy")
+		}
 		if err := cmd.Run(); err != nil {
 			errorResponse(w, http.StatusInternalServerError, "Failed to restart Caddy: "+err.Error())
 			return
@@ -1394,7 +1410,7 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "basepod":
-		// Send response first, then exit to trigger systemd restart
+		// Send response first, then exit to trigger service manager restart
 		jsonResponse(w, http.StatusOK, map[string]string{
 			"status":  "restarting",
 			"service": "basepod",
