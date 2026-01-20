@@ -256,17 +256,41 @@ If you forgot your admin password:
 
 ## Updating
 
+Updates preserve your existing configuration - you won't be prompted for domain/password again.
+
+### Via Install Script (Recommended)
+
+```bash
+curl -fsSL https://pod.base.al/install | sudo bash
+```
+
+The script detects existing installations and:
+- Skips domain/email/password prompts
+- Preserves your `basepod.yaml` and `Caddyfile`
+- Updates only the binaries
+- Restarts services automatically
+
 ### Via Web UI
 
 1. Go to Settings
 2. Click "Check for Updates"
 3. If available, click "Update Now"
 
-### Via CLI
+### Manual Update
 
 ```bash
-bp status  # Check current version
-# Download and replace binary manually, then restart services
+# Download new binaries
+ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+sudo curl -fsSL "https://github.com/base-go/basepod/releases/latest/download/basepod-${OS}-${ARCH}" -o /usr/local/basepod/bin/basepod
+sudo chmod +x /usr/local/basepod/bin/basepod
+
+# Restart services (Linux)
+sudo systemctl restart basepod
+
+# Restart services (macOS)
+sudo launchctl unload /Library/LaunchDaemons/al.base.basepod.plist
+sudo launchctl load /Library/LaunchDaemons/al.base.basepod.plist
 ```
 
 ## Uninstall
