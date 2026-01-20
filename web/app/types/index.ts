@@ -126,3 +126,14 @@ export interface MLXStatusResponse {
   pid: number
   active_model: string
 }
+
+export interface MLXDownloadProgress {
+  model_id: string
+  status: 'downloading' | 'completed' | 'error' | 'cancelled' | 'not_found'
+  progress: number
+  bytes_total: number
+  bytes_done: number
+  speed: number
+  eta: number
+  message: string
+}

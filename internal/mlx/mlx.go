@@ -480,61 +480,49 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	downloadScript := fmt.Sprintf(`
 import sys
 import os
-import re
-from huggingface_hub import snapshot_download, HfFileSystem
+from huggingface_hub import HfApi, hf_hub_download, list_repo_files
 
 model_id = "%s"
 cache_dir = "%s"
 
-# Get total size first
-total_size = 0
+api = HfApi()
+
+# Get file list and sizes
+print("FETCHING_FILES", flush=True)
 try:
-    fs = HfFileSystem()
-    files = fs.ls(model_id, detail=True)
-    total_size = sum(f.get('size', 0) for f in files if f.get('size'))
+    files = list(api.list_repo_tree(model_id, recursive=True))
+    # Filter to actual files (not directories)
+    file_list = [(f.path, f.size) for f in files if hasattr(f, 'size') and f.size and f.size > 0]
+    total_size = sum(size for _, size in file_list)
     print(f"TOTAL_SIZE:{total_size}", flush=True)
+    print(f"FILE_COUNT:{len(file_list)}", flush=True)
 except Exception as e:
     print(f"SIZE_ERROR:{e}", flush=True)
+    file_list = []
+    total_size = 0
 
-# Custom tqdm class to capture progress
-class ProgressTqdm:
-    def __init__(self, *args, **kwargs):
-        self.total = kwargs.get('total', 0)
-        self.n = 0
-        self.desc = kwargs.get('desc', '')
-
-    def update(self, n=1):
-        self.n += n
-        if self.total > 0:
-            pct = (self.n / self.total) * 100
-            print(f"PROGRESS:{self.n}:{self.total}:{pct:.1f}:{self.desc}", flush=True)
-
-    def close(self):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-# Monkey-patch tqdm
-import huggingface_hub.file_download
-original_tqdm = huggingface_hub.file_download.tqdm
-
-def patched_tqdm(*args, **kwargs):
-    return ProgressTqdm(*args, **kwargs)
-
-huggingface_hub.file_download.tqdm = patched_tqdm
-
-# Download
+# Download files one by one with progress
 print("DOWNLOADING", flush=True)
+downloaded_bytes = 0
 try:
-    snapshot_download(
-        model_id,
-        cache_dir=cache_dir,
-        resume_download=True,
-    )
+    for i, (filename, file_size) in enumerate(file_list):
+        # Report starting this file
+        pct = (downloaded_bytes / total_size * 100) if total_size > 0 else 0
+        print(f"FILE_START:{filename}:{file_size}:{pct:.1f}", flush=True)
+
+        # Download file
+        hf_hub_download(
+            repo_id=model_id,
+            filename=filename,
+            cache_dir=cache_dir,
+            resume_download=True,
+        )
+
+        # Update progress
+        downloaded_bytes += file_size
+        pct = (downloaded_bytes / total_size * 100) if total_size > 0 else 0
+        print(f"PROGRESS:{downloaded_bytes}:{total_size}:{pct:.1f}:{filename}", flush=True)
+
     print("DOWNLOAD_COMPLETE", flush=True)
 except KeyboardInterrupt:
     print("DOWNLOAD_CANCELLED", flush=True)
@@ -609,6 +597,20 @@ print("MODEL_READY", flush=True)
 				} else {
 					dp.Message = fmt.Sprintf("Downloading... %.0f%%", dp.Progress)
 				}
+			}
+		} else if line == "FETCHING_FILES" {
+			dp.Message = "Fetching file list..."
+		} else if strings.HasPrefix(line, "FILE_COUNT:") {
+			var count int
+			fmt.Sscanf(line, "FILE_COUNT:%d", &count)
+			dp.Message = fmt.Sprintf("Found %d files to download", count)
+		} else if strings.HasPrefix(line, "FILE_START:") {
+			// Format: FILE_START:filename:size:pct
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) >= 3 {
+				filename := parts[1]
+				dp.CurrentFile = filename
+				dp.Message = fmt.Sprintf("Downloading %s...", filename)
 			}
 		} else if line == "DOWNLOADING" {
 			dp.Message = "Starting download..."

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MLXModelsResponse } from '~/types'
+import type { MLXModelsResponse, MLXDownloadProgress } from '~/types'
 
 definePageMeta({
   title: 'LLMs'
@@ -10,8 +10,26 @@ const toast = useToast()
 // Fetch models and status
 const { data: mlxData, refresh: refreshModels } = await useApiFetch<MLXModelsResponse>('/mlx/models')
 
-// Pulling state
+// Pulling state with progress
 const pullingModels = ref<Set<string>>(new Set())
+const downloadProgress = ref<Map<string, MLXDownloadProgress>>(new Map())
+
+// Format bytes to human readable
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
+
+// Format seconds to human readable ETA
+function formatETA(seconds: number): string {
+  if (seconds <= 0) return ''
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
 
 // Get model catalog with descriptions
 const modelCatalog: Record<string, string> = {
@@ -30,6 +48,21 @@ function getDescription(modelId: string): string {
   return modelCatalog[modelId] || ''
 }
 
+// Sorted models: running first, then downloaded, then by name
+const sortedModels = computed(() => {
+  if (!mlxData.value?.models) return []
+  return [...mlxData.value.models].sort((a, b) => {
+    // Running model first
+    if (mlxData.value?.active_model === a.id) return -1
+    if (mlxData.value?.active_model === b.id) return 1
+    // Downloaded before not downloaded
+    if (a.downloaded && !b.downloaded) return -1
+    if (!a.downloaded && b.downloaded) return 1
+    // Then by name
+    return a.name.localeCompare(b.name)
+  })
+})
+
 // Pull a model
 async function pullModel(modelId: string) {
   pullingModels.value.add(modelId)
@@ -40,30 +73,51 @@ async function pullModel(modelId: string) {
     })
     toast.add({
       title: 'Downloading model',
-      description: 'This may take several minutes...',
+      description: 'Download started...',
       color: 'info'
     })
-    // Poll for completion
+    // Poll for progress
     const pollInterval = setInterval(async () => {
-      await refreshModels()
-      const model = mlxData.value?.models.find(m => m.id === modelId)
-      if (model?.downloaded) {
-        clearInterval(pollInterval)
-        pullingModels.value.delete(modelId)
-        toast.add({
-          title: 'Model ready',
-          description: `${model.name} is ready to use`,
-          color: 'success'
-        })
+      try {
+        const progress = await $api<MLXDownloadProgress>(`/mlx/pull/progress?model=${encodeURIComponent(modelId)}`)
+        if (progress) {
+          downloadProgress.value.set(modelId, progress)
+
+          if (progress.status === 'completed') {
+            clearInterval(pollInterval)
+            pullingModels.value.delete(modelId)
+            downloadProgress.value.delete(modelId)
+            await refreshModels()
+            const model = mlxData.value?.models.find(m => m.id === modelId)
+            toast.add({
+              title: 'Model ready',
+              description: `${model?.name || modelId} is ready to use`,
+              color: 'success'
+            })
+          } else if (progress.status === 'error' || progress.status === 'cancelled') {
+            clearInterval(pollInterval)
+            pullingModels.value.delete(modelId)
+            downloadProgress.value.delete(modelId)
+            toast.add({
+              title: 'Download failed',
+              description: progress.message || 'Unknown error',
+              color: 'error'
+            })
+          }
+        }
+      } catch {
+        // Progress endpoint might not have data yet, continue polling
       }
-    }, 5000)
-    // Timeout after 30 minutes
+    }, 1000)
+    // Timeout after 60 minutes
     setTimeout(() => {
       clearInterval(pollInterval)
       pullingModels.value.delete(modelId)
-    }, 30 * 60 * 1000)
+      downloadProgress.value.delete(modelId)
+    }, 60 * 60 * 1000)
   } catch (error) {
     pullingModels.value.delete(modelId)
+    downloadProgress.value.delete(modelId)
     const message = error && typeof error === 'object' && 'data' in error
       ? (error as { data?: { error?: string } }).data?.error
       : 'Failed to pull model'
@@ -179,7 +233,7 @@ onUnmounted(() => {
     <!-- Models Grid -->
     <div class="space-y-3">
       <div
-        v-for="model in mlxData?.models"
+        v-for="model in sortedModels"
         :key="model.id"
         class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
         :class="{
@@ -210,11 +264,34 @@ onUnmounted(() => {
 
             <!-- Actions -->
             <template v-if="mlxData?.supported">
-              <!-- If pulling -->
-              <UButton v-if="pullingModels.has(model.id)" disabled size="sm" variant="soft">
-                <UIcon name="i-heroicons-arrow-path" class="w-4 h-4 animate-spin mr-1" />
-                Pulling...
-              </UButton>
+              <!-- If pulling - show progress -->
+              <div v-if="pullingModels.has(model.id)" class="flex items-center gap-3 min-w-[200px]">
+                <div class="flex-1">
+                  <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                    <span v-if="downloadProgress.get(model.id)?.progress">
+                      {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
+                    </span>
+                    <span v-else>Starting...</span>
+                    <span v-if="downloadProgress.get(model.id)?.eta">
+                      ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
+                    </span>
+                  </div>
+                  <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      class="h-full bg-orange-500 transition-all duration-300"
+                      :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
+                    />
+                  </div>
+                  <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
+                    <span v-if="downloadProgress.get(model.id)?.bytes_done">
+                      {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
+                    </span>
+                    <span v-if="downloadProgress.get(model.id)?.speed">
+                      {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
+                    </span>
+                  </div>
+                </div>
+              </div>
 
               <!-- If running this model -->
               <UButton
