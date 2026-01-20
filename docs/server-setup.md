@@ -23,8 +23,8 @@ This guide walks you through setting up Basepod on a VPS or Mac.
 1. Register a domain (e.g., `example.com`)
 2. Create DNS records:
    ```
-   A    d.example.com    → YOUR_SERVER_IP
-   A    *.d.example.com  → YOUR_SERVER_IP  (for wildcard subdomains)
+   A    bp.example.com   → YOUR_SERVER_IP  (basepod dashboard)
+   A    *.example.com    → YOUR_SERVER_IP  (app subdomains)
    ```
 
 ### 3. Install Podman
@@ -71,7 +71,7 @@ curl -fsSL https://pod.base.al/install | sudo bash
 ```
 
 The installer will prompt for:
-- **Domain**: Your server's domain (e.g., `d.example.com`)
+- **Domain**: Your server's domain (e.g., `bp.example.com`)
 - **Email**: For Let's Encrypt SSL certificates
 - **Password**: Admin password for the web UI
 
@@ -107,7 +107,8 @@ server:
   log_level: "info"
 
 domain:
-  root: "d.example.com"    # ← Change this!
+  root: "example.com"       # ← Base domain for apps (myapp.example.com)
+  dashboard: "bp"           # ← Dashboard at bp.example.com
   wildcard: true
   email: "your-email@example.com" # ← Change this!
 
@@ -161,7 +162,7 @@ tail -f /usr/local/basepod/logs/caddy.log
    ```
 
 2. **Access Web UI:**
-   Open `https://d.example.com` in your browser
+   Open `https://bp.example.com` in your browser
 
 3. **Verify SSL:**
    The certificate should be automatically issued by Let's Encrypt

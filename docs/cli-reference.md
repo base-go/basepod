@@ -17,10 +17,10 @@ go build -o bp ./cmd/bp
 The CLI stores its configuration in `~/.basepod.yaml`:
 
 ```yaml
-current_context: d.example.com
+current_context: bp.example.com
 servers:
-  d.example.com:
-    url: https://d.example.com
+  bp.example.com:
+    url: https://bp.example.com
     token: "your-auth-token"
 ```
 
@@ -36,8 +36,8 @@ bp login <server>
 
 **Examples:**
 ```bash
-bp login https://d.example.com
-bp login d.example.com  # https:// added automatically
+bp login https://bp.example.com
+bp login bp.example.com  # https:// added automatically
 ```
 
 ### logout
@@ -230,8 +230,8 @@ bp status
 
 **Output:**
 ```
-Context: d.example.com
-Server: https://d.example.com
+Context: bp.example.com
+Server: https://bp.example.com
 
 System:
   Version: 1.0.0
@@ -283,7 +283,7 @@ The `basepod.yaml` file configures your application for deployment:
 
 ```yaml
 name: myapp
-server: d.example.com  # Optional: target server context
+server: bp.example.com  # Optional: target server context
 domain: myapp.example.com  # Optional: custom domain
 port: 3000  # Container port
 build:
@@ -302,7 +302,7 @@ volumes:
 
 ```bash
 # 1. Login to server
-bp login d.example.com
+bp login bp.example.com
 
 # 2. Create an app
 bp create myapp --domain myapp.example.com

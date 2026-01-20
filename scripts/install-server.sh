@@ -50,7 +50,7 @@ setup_domain() {
 
     if [ -n "$BASEPOD_DOMAIN" ]; then
         log "Using domain: $BASEPOD_DOMAIN"
-        log "Dashboard will be at: d.$BASEPOD_DOMAIN"
+        log "Dashboard will be at: bp.$BASEPOD_DOMAIN"
         # Generate random password if not provided
         if [ -z "$BASEPOD_PASSWORD" ]; then
             BASEPOD_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
@@ -67,12 +67,14 @@ setup_domain() {
     echo "Basepod needs a root domain for your apps."
     echo ""
     echo "Example: If you enter 'example.com':"
-    echo "  - Dashboard:  d.example.com"
+    echo "  - Dashboard:  bp.example.com"
     echo "  - Apps:       myapp.example.com, ghost.example.com, etc."
     echo ""
     echo "Prerequisites:"
     echo "  1. You own this domain"
-    echo "  2. DNS wildcard A record: *.yourdomain.com -> this server's IP"
+    echo "  2. DNS records pointing to this server's IP:"
+    echo "     - A record: bp.yourdomain.com (dashboard)"
+    echo "     - A record: *.yourdomain.com (apps)"
     echo ""
 
     # Check if stdin is a terminal (interactive mode)
@@ -85,7 +87,7 @@ setup_domain() {
             warn "You can configure a domain later in: $BASEPOD_DIR/config/basepod.yaml"
         else
             log "Domain set to: $BASEPOD_DOMAIN"
-            log "Dashboard will be at: d.$BASEPOD_DOMAIN"
+            log "Dashboard will be at: bp.$BASEPOD_DOMAIN"
 
             # Ask for email for SSL certificates
             ask "Enter email for SSL certificates (optional, press Enter to skip):"
@@ -366,7 +368,7 @@ create_caddyfile() {
     }
 }
 
-d.$BASEPOD_DOMAIN {
+bp.$BASEPOD_DOMAIN {
     tls {
         on_demand
     }
@@ -642,7 +644,7 @@ print_success() {
     echo ""
 
     if [ -n "$BASEPOD_DOMAIN" ]; then
-        echo "  Dashboard: https://d.$BASEPOD_DOMAIN"
+        echo "  Dashboard: https://bp.$BASEPOD_DOMAIN"
         echo "  Apps:      https://appname.$BASEPOD_DOMAIN"
         echo ""
         echo "  SSL certificates will be automatically obtained from Let's Encrypt."

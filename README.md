@@ -45,7 +45,7 @@ chmod +x /usr/local/bin/bp
 ### Login to your server
 
 ```bash
-bp login your-server.com
+bp login bp.example.com
 ```
 
 ### Deploy an app
@@ -105,7 +105,7 @@ server:
   api_port: 3000
 
 domain:
-  base: apps.example.com
+  root: example.com
 
 podman:
   network: basepod
