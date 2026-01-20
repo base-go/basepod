@@ -113,16 +113,31 @@ func IsSupported() bool {
 
 // SystemInfo holds system memory information
 type SystemInfo struct {
-	TotalRAM     uint64 `json:"total_ram"`      // Total RAM in bytes
-	TotalRAMGB   int    `json:"total_ram_gb"`   // Total RAM in GB
-	AvailableRAM uint64 `json:"available_ram"`  // Available RAM in bytes (approximate)
-	Supported    bool   `json:"supported"`
+	TotalRAM           uint64 `json:"total_ram"`            // Total RAM in bytes
+	TotalRAMGB         int    `json:"total_ram_gb"`         // Total RAM in GB
+	AvailableRAM       uint64 `json:"available_ram"`        // Available RAM in bytes (approximate)
+	Supported          bool   `json:"supported"`            // Whether MLX is supported
+	Platform           string `json:"platform"`             // Current platform (e.g., "darwin-arm64")
+	UnsupportedReason  string `json:"unsupported_reason,omitempty"` // Why MLX is not supported
+}
+
+// GetUnsupportedReason returns why MLX is not supported on this platform
+func GetUnsupportedReason() string {
+	if runtime.GOOS != "darwin" {
+		return "MLX requires macOS. Current OS: " + runtime.GOOS
+	}
+	if runtime.GOARCH != "arm64" {
+		return "MLX requires Apple Silicon (M series). Current architecture: " + runtime.GOARCH
+	}
+	return ""
 }
 
 // GetSystemInfo returns system information for MLX compatibility
 func GetSystemInfo() SystemInfo {
 	info := SystemInfo{
-		Supported: IsSupported(),
+		Supported:         IsSupported(),
+		Platform:          runtime.GOOS + "-" + runtime.GOARCH,
+		UnsupportedReason: GetUnsupportedReason(),
 	}
 
 	if runtime.GOOS == "darwin" {

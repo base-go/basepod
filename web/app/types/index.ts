@@ -119,6 +119,8 @@ export interface MLXModelsResponse {
   port: number
   endpoint: string
   active_model: string
+  platform?: string
+  unsupported_reason?: string
 }
 
 export interface MLXStatusResponse {
@@ -128,6 +130,7 @@ export interface MLXStatusResponse {
   port: number
   pid: number
   active_model: string
+  unsupported_reason?: string
 }
 
 export interface MLXDownloadProgress {

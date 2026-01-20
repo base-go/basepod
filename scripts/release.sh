@@ -123,6 +123,10 @@ git add -A
 git commit -m "Release v$NEW_VERSION" || true
 git push
 
+# Copy install scripts to release names
+cp scripts/install-server.sh install.sh
+cp scripts/install-cli.sh install-cli.sh
+
 # Create GitHub release with binaries
 echo "Creating GitHub release..."
 gh release create "v$NEW_VERSION" \
@@ -134,25 +138,29 @@ gh release create "v$NEW_VERSION" \
     bp-linux-amd64 \
     bp-darwin-arm64 \
     bp-darwin-amd64 \
-    scripts/install-server.sh \
+    install.sh \
+    install-cli.sh \
     --title "v$NEW_VERSION" \
     --notes "Release v$NEW_VERSION
 
-**Server (basepod)**: Run on your server
+**Server (basepod)**: Run on your Mac Mini or Linux VPS
 **CLI (bp)**: Run on your local machine
 
 ## Install
 
 \`\`\`bash
-# Server
-curl -fsSL https://github.com/base-go/basepod/releases/latest/download/install-server.sh | bash
+# Server (requires sudo)
+curl -fsSL https://pod.base.al/install | sudo bash
 
-# CLI (macOS)
-curl -fsSL https://github.com/base-go/basepod/releases/latest/download/bp-darwin-arm64 -o /usr/local/bin/bp && chmod +x /usr/local/bin/bp
-\`\`\`"
+# CLI
+curl -fsSL https://pod.base.al/cli | bash
+\`\`\`
 
-# Cleanup binaries
-rm -f basepod-* bp-*
+Documentation: https://pod.base.al"
+
+# Cleanup binaries and install scripts
+rm -f basepod-* bp-* install.sh install-cli.sh
 
 echo ""
 echo "Released v$NEW_VERSION"
+echo "Install: curl -fsSL https://pod.base.al/install | sudo bash"

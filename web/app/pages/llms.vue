@@ -240,14 +240,23 @@ onUnmounted(() => {
     </div>
 
     <!-- Not Supported Warning -->
-    <div v-if="!mlxData?.supported" class="p-6 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg mb-6">
-      <div class="flex items-center gap-3">
-        <UIcon name="i-heroicons-exclamation-triangle" class="w-6 h-6 text-yellow-500" />
+    <div v-if="!mlxData?.supported" class="p-6 bg-amber-50 dark:bg-amber-900/20 rounded-lg mb-6 border border-amber-200 dark:border-amber-800">
+      <div class="flex items-start gap-4">
+        <UIcon name="i-heroicons-exclamation-triangle" class="w-8 h-8 text-amber-500 flex-shrink-0" />
         <div>
-          <h3 class="font-medium text-yellow-800 dark:text-yellow-200">MLX Not Available</h3>
-          <p class="text-sm text-yellow-700 dark:text-yellow-300">
-            Local LLMs require macOS with Apple Silicon (M1/M2/M3/M4).
+          <h3 class="font-semibold text-amber-800 dark:text-amber-200 text-lg">Local LLMs Not Available</h3>
+          <p class="text-amber-700 dark:text-amber-300 mt-1">
+            {{ mlxData?.unsupported_reason || 'MLX requires macOS with Apple Silicon (M series).' }}
           </p>
+          <p v-if="mlxData?.platform" class="text-sm text-amber-600 dark:text-amber-400 mt-2">
+            Current platform: <code class="bg-amber-100 dark:bg-amber-800 px-1.5 py-0.5 rounded">{{ mlxData.platform }}</code>
+          </p>
+          <div class="mt-4 p-3 bg-amber-100 dark:bg-amber-800/50 rounded text-sm">
+            <p class="text-amber-800 dark:text-amber-200">
+              <strong>To use local LLMs:</strong> Run Basepod on a Mac with Apple Silicon.
+              MLX models leverage the unified memory architecture of M-series chips for efficient inference.
+            </p>
+          </div>
         </div>
       </div>
     </div>

@@ -1,15 +1,16 @@
 #!/bin/bash
 set -e
 
-# Basepod Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/install.sh | sudo bash
-# Or with domain: DEPLOYER_DOMAIN=example.com curl -fsSL ... | sudo bash
+# Basepod Server Install Script
+# Usage: curl -fsSL https://pod.base.al/install | sudo bash
+# Or with domain: BASEPOD_DOMAIN=example.com curl -fsSL ... | sudo bash
 
-DEPLOYER_VERSION="${DEPLOYER_VERSION:-latest}"
-DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/basepod}"
-DEPLOYER_USER="${DEPLOYER_USER:-basepod}"
-DEPLOYER_DOMAIN="${DEPLOYER_DOMAIN:-}"
-DEPLOYER_PASSWORD="${DEPLOYER_PASSWORD:-}"
+BASEPOD_VERSION="${BASEPOD_VERSION:-latest}"
+BASEPOD_DIR="${BASEPOD_DIR:-/opt/basepod}"
+BASEPOD_USER="${BASEPOD_USER:-basepod}"
+BASEPOD_DOMAIN="${BASEPOD_DOMAIN:-}"
+BASEPOD_PASSWORD="${BASEPOD_PASSWORD:-}"
+GITHUB_REPO="base-go/basepod"
 
 # Colors
 RED='\033[0;31m'
@@ -42,17 +43,17 @@ log "Detected OS: $OS"
 
 # Interactive domain setup if not provided
 setup_domain() {
-    # Check if DEPLOYER_DOMAIN was passed via sudo
-    if [ -z "$DEPLOYER_DOMAIN" ] && [ -n "$SUDO_DEPLOYER_DOMAIN" ]; then
-        DEPLOYER_DOMAIN="$SUDO_DEPLOYER_DOMAIN"
+    # Check if BASEPOD_DOMAIN was passed via sudo
+    if [ -z "$BASEPOD_DOMAIN" ] && [ -n "$SUDO_BASEPOD_DOMAIN" ]; then
+        BASEPOD_DOMAIN="$SUDO_BASEPOD_DOMAIN"
     fi
 
-    if [ -n "$DEPLOYER_DOMAIN" ]; then
-        log "Using domain: $DEPLOYER_DOMAIN"
-        log "Dashboard will be at: d.$DEPLOYER_DOMAIN"
+    if [ -n "$BASEPOD_DOMAIN" ]; then
+        log "Using domain: $BASEPOD_DOMAIN"
+        log "Dashboard will be at: d.$BASEPOD_DOMAIN"
         # Generate random password if not provided
-        if [ -z "$DEPLOYER_PASSWORD" ]; then
-            DEPLOYER_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+        if [ -z "$BASEPOD_PASSWORD" ]; then
+            BASEPOD_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
         fi
         log "Admin password generated"
         return
@@ -77,36 +78,36 @@ setup_domain() {
     # Check if stdin is a terminal (interactive mode)
     if [ -t 0 ]; then
         ask "Enter your root domain (e.g., example.com):"
-        read -r DEPLOYER_DOMAIN
+        read -r BASEPOD_DOMAIN
 
-        if [ -z "$DEPLOYER_DOMAIN" ]; then
+        if [ -z "$BASEPOD_DOMAIN" ]; then
             warn "No domain entered. Apps will use IP:port access only."
-            warn "You can configure a domain later in: $DEPLOYER_DIR/config/basepod.yaml"
+            warn "You can configure a domain later in: $BASEPOD_DIR/config/basepod.yaml"
         else
-            log "Domain set to: $DEPLOYER_DOMAIN"
-            log "Dashboard will be at: d.$DEPLOYER_DOMAIN"
+            log "Domain set to: $BASEPOD_DOMAIN"
+            log "Dashboard will be at: d.$BASEPOD_DOMAIN"
 
             # Ask for email for SSL certificates
             ask "Enter email for SSL certificates (optional, press Enter to skip):"
-            read -r DEPLOYER_EMAIL
+            read -r BASEPOD_EMAIL
 
-            if [ -n "$DEPLOYER_EMAIL" ]; then
-                log "Email set to: $DEPLOYER_EMAIL"
+            if [ -n "$BASEPOD_EMAIL" ]; then
+                log "Email set to: $BASEPOD_EMAIL"
             fi
 
             # Generate random password if not provided
-            if [ -z "$DEPLOYER_PASSWORD" ]; then
-                DEPLOYER_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+            if [ -z "$BASEPOD_PASSWORD" ]; then
+                BASEPOD_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
             fi
             log "Admin password generated"
         fi
     else
-        # Non-interactive mode without domain - piping curl without DEPLOYER_DOMAIN set
+        # Non-interactive mode without domain - piping curl without BASEPOD_DOMAIN set
         warn "Non-interactive mode detected."
-        warn "To configure domain, use: curl ... | sudo DEPLOYER_DOMAIN=example.com bash"
+        warn "To configure domain, use: curl ... | sudo BASEPOD_DOMAIN=example.com bash"
         warn ""
         warn "Proceeding without domain. Dashboard will be accessible via IP:port."
-        warn "You can configure domain later in: $DEPLOYER_DIR/config/basepod.yaml"
+        warn "You can configure domain later in: $BASEPOD_DIR/config/basepod.yaml"
     fi
     echo ""
 }
@@ -189,29 +190,29 @@ install_caddy() {
 create_user() {
     # On macOS, use the user who ran sudo
     if [ "$OS" = "macos" ]; then
-        DEPLOYER_USER="${SUDO_USER:-$(whoami)}"
-        log "Using user: $DEPLOYER_USER"
+        BASEPOD_USER="${SUDO_USER:-$(whoami)}"
+        log "Using user: $BASEPOD_USER"
         return
     fi
 
-    if id "$DEPLOYER_USER" &>/dev/null; then
-        log "User $DEPLOYER_USER already exists"
+    if id "$BASEPOD_USER" &>/dev/null; then
+        log "User $BASEPOD_USER already exists"
     else
-        log "Creating user $DEPLOYER_USER..."
-        useradd -r -m -s /bin/bash "$DEPLOYER_USER"
+        log "Creating user $BASEPOD_USER..."
+        useradd -r -m -s /bin/bash "$BASEPOD_USER"
     fi
 
     # Add to podman group if exists
-    usermod -aG podman "$DEPLOYER_USER" 2>/dev/null || true
+    usermod -aG podman "$BASEPOD_USER" 2>/dev/null || true
 
     # Configure subuid/subgid for rootless Podman
     # This is required for Podman to map UIDs/GIDs in containers
     log "Configuring subuid/subgid for rootless Podman..."
-    if ! grep -q "^$DEPLOYER_USER:" /etc/subuid 2>/dev/null; then
-        echo "$DEPLOYER_USER:100000:65536" >> /etc/subuid
+    if ! grep -q "^$BASEPOD_USER:" /etc/subuid 2>/dev/null; then
+        echo "$BASEPOD_USER:100000:65536" >> /etc/subuid
     fi
-    if ! grep -q "^$DEPLOYER_USER:" /etc/subgid 2>/dev/null; then
-        echo "$DEPLOYER_USER:100000:65536" >> /etc/subgid
+    if ! grep -q "^$BASEPOD_USER:" /etc/subgid 2>/dev/null; then
+        echo "$BASEPOD_USER:100000:65536" >> /etc/subgid
     fi
 }
 
@@ -219,14 +220,14 @@ create_user() {
 install_basepod() {
     # Set appropriate install dir for macOS
     if [ "$OS" = "macos" ]; then
-        DEPLOYER_DIR="/usr/local/basepod"
+        BASEPOD_DIR="/usr/local/basepod"
     fi
 
-    log "Installing Basepod to $DEPLOYER_DIR..."
+    log "Installing Basepod to $BASEPOD_DIR..."
 
     # Create directories with proper permissions (as root)
-    mkdir -p "$DEPLOYER_DIR"/{bin,config,data,logs}
-    chmod 755 "$DEPLOYER_DIR" "$DEPLOYER_DIR/bin"
+    mkdir -p "$BASEPOD_DIR"/{bin,config,data,logs}
+    chmod 755 "$BASEPOD_DIR" "$BASEPOD_DIR/bin"
 
     # Detect architecture and OS
     ARCH=$(uname -m)
@@ -244,25 +245,25 @@ install_basepod() {
     fi
 
     # Get latest version info
-    LATEST_VERSION=$(curl -fsSL "https://api.github.com/repos/base-go/dr/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/' || echo "unknown")
+    LATEST_VERSION=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/' || echo "unknown")
     log "Installing version: $LATEST_VERSION"
 
     # Download basepod binary
-    if [ "$DEPLOYER_VERSION" = "latest" ]; then
-        DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/basepodd-$DOWNLOAD_OS-$ARCH"
+    if [ "$BASEPOD_VERSION" = "latest" ]; then
+        DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/basepod-$DOWNLOAD_OS-$ARCH"
     else
-        DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/basepodd-$DOWNLOAD_OS-$ARCH"
+        DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$BASEPOD_VERSION/basepod-$DOWNLOAD_OS-$ARCH"
     fi
 
     log "Downloading from $DOWNLOAD_URL..."
-    rm -f "$DEPLOYER_DIR/bin/basepodd"
-    curl -fsSL "$DOWNLOAD_URL" -o "$DEPLOYER_DIR/bin/basepodd" || {
+    rm -f "$BASEPOD_DIR/bin/basepod"
+    curl -fsSL "$DOWNLOAD_URL" -o "$BASEPOD_DIR/bin/basepod" || {
         warn "Binary not found, building from source..."
         build_from_source
     }
 
-    chmod +x "$DEPLOYER_DIR/bin/basepodd"
-    ln -sf "$DEPLOYER_DIR/bin/basepodd" /usr/local/bin/basepodd
+    chmod +x "$BASEPOD_DIR/bin/basepod"
+    ln -sf "$BASEPOD_DIR/bin/basepod" /usr/local/bin/basepod
 }
 
 # Build from source if binary not available
@@ -280,7 +281,7 @@ build_from_source() {
     TMPDIR=$(mktemp -d)
     git clone --depth 1 https://github.com/base-go/basepod.git "$TMPDIR"
     cd "$TMPDIR"
-    go build -o "$DEPLOYER_DIR/bin/basepod" ./cmd/basepod
+    go build -o "$BASEPOD_DIR/bin/basepod" ./cmd/basepod
     cd -
     rm -rf "$TMPDIR"
 }
@@ -290,20 +291,20 @@ create_config() {
     log "Creating configuration..."
 
     # Determine email for SSL
-    local ssl_email="${DEPLOYER_EMAIL:-}"
-    if [ -z "$ssl_email" ] && [ -n "$DEPLOYER_DOMAIN" ]; then
-        ssl_email="admin@$DEPLOYER_DOMAIN"
+    local ssl_email="${BASEPOD_EMAIL:-}"
+    if [ -z "$ssl_email" ] && [ -n "$BASEPOD_DOMAIN" ]; then
+        ssl_email="admin@$BASEPOD_DOMAIN"
     fi
 
     # Generate password hash using sha256
     local password_hash=""
-    if [ -n "$DEPLOYER_PASSWORD" ]; then
-        password_hash=$(echo -n "$DEPLOYER_PASSWORD" | sha256sum | cut -d' ' -f1)
+    if [ -n "$BASEPOD_PASSWORD" ]; then
+        password_hash=$(echo -n "$BASEPOD_PASSWORD" | sha256sum | cut -d' ' -f1)
     fi
 
-    if [ -n "$DEPLOYER_DOMAIN" ]; then
+    if [ -n "$BASEPOD_DOMAIN" ]; then
         # Production mode with real domain
-        cat > "$DEPLOYER_DIR/config/basepod.yaml" <<EOF
+        cat > "$BASEPOD_DIR/config/basepod.yaml" <<EOF
 server:
   api_port: 3000
   host: 0.0.0.0
@@ -318,16 +319,16 @@ caddy:
   admin_url: http://localhost:2019
 
 database:
-  path: $DEPLOYER_DIR/data/basepod.db
+  path: $BASEPOD_DIR/data/basepod.db
 
 domain:
-  base: $DEPLOYER_DOMAIN
+  base: $BASEPOD_DOMAIN
   wildcard: true
   email: $ssl_email
 EOF
     else
         # No domain mode - access via IP:port (no auth required for local)
-        cat > "$DEPLOYER_DIR/config/basepod.yaml" <<EOF
+        cat > "$BASEPOD_DIR/config/basepod.yaml" <<EOF
 server:
   api_port: 3000
   host: 0.0.0.0
@@ -339,7 +340,7 @@ caddy:
   admin_url: http://localhost:2019
 
 database:
-  path: $DEPLOYER_DIR/data/basepod.db
+  path: $BASEPOD_DIR/data/basepod.db
 
 domain:
   suffix: ""
@@ -353,10 +354,10 @@ create_caddyfile() {
     log "Creating Caddyfile..."
 
     # Use provided email or default
-    local ssl_email="${DEPLOYER_EMAIL:-admin@$DEPLOYER_DOMAIN}"
+    local ssl_email="${BASEPOD_EMAIL:-admin@$BASEPOD_DOMAIN}"
 
-    if [ -n "$DEPLOYER_DOMAIN" ]; then
-        cat > "$DEPLOYER_DIR/config/Caddyfile" <<EOF
+    if [ -n "$BASEPOD_DOMAIN" ]; then
+        cat > "$BASEPOD_DIR/config/Caddyfile" <<EOF
 {
     admin localhost:2019
     email $ssl_email
@@ -365,7 +366,7 @@ create_caddyfile() {
     }
 }
 
-d.$DEPLOYER_DOMAIN {
+d.$BASEPOD_DOMAIN {
     tls {
         on_demand
     }
@@ -380,7 +381,7 @@ d.$DEPLOYER_DOMAIN {
 }
 EOF
     else
-        cat > "$DEPLOYER_DIR/config/Caddyfile" <<EOF
+        cat > "$BASEPOD_DIR/config/Caddyfile" <<EOF
 {
     admin localhost:2019
     auto_https off
@@ -405,7 +406,7 @@ create_services() {
 
     # Run podman system migrate for the basepod user (required after subuid/subgid changes)
     log "Running podman system migrate..."
-    sudo -u "$DEPLOYER_USER" sh -c "cd /tmp && podman system migrate" 2>/dev/null || true
+    sudo -u "$BASEPOD_USER" sh -c "cd /tmp && podman system migrate" 2>/dev/null || true
 
     # Basepod service
     cat > /etc/systemd/system/basepod.service <<EOF
@@ -415,13 +416,13 @@ After=network.target podman.socket
 
 [Service]
 Type=simple
-User=$DEPLOYER_USER
-Group=$DEPLOYER_USER
-WorkingDirectory=$DEPLOYER_DIR
-ExecStart=$DEPLOYER_DIR/bin/basepodd
+User=$BASEPOD_USER
+Group=$BASEPOD_USER
+WorkingDirectory=$BASEPOD_DIR
+ExecStart=$BASEPOD_DIR/bin/basepod
 Restart=always
 RestartSec=5
-Environment=DEPLOYER_CONFIG=$DEPLOYER_DIR/config/basepod.yaml
+Environment=BASEPOD_CONFIG=$BASEPOD_DIR/config/basepod.yaml
 Environment=PODMAN_SOCKET=/run/podman/podman.sock
 
 [Install]
@@ -433,7 +434,7 @@ EOF
     if [ -f /lib/systemd/system/caddy.service ] || [ -f /usr/lib/systemd/system/caddy.service ]; then
         log "Using system Caddy service, updating /etc/caddy/Caddyfile..."
         mkdir -p /etc/caddy
-        cp "$DEPLOYER_DIR/config/Caddyfile" /etc/caddy/Caddyfile
+        cp "$BASEPOD_DIR/config/Caddyfile" /etc/caddy/Caddyfile
         chown root:root /etc/caddy/Caddyfile
         chmod 644 /etc/caddy/Caddyfile
     else
@@ -446,8 +447,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/caddy run --config $DEPLOYER_DIR/config/Caddyfile
-ExecReload=/usr/bin/caddy reload --config $DEPLOYER_DIR/config/Caddyfile
+ExecStart=/usr/bin/caddy run --config $BASEPOD_DIR/config/Caddyfile
+ExecReload=/usr/bin/caddy reload --config $BASEPOD_DIR/config/Caddyfile
 Restart=always
 RestartSec=5
 
@@ -462,14 +463,14 @@ EOF
     systemctl start podman.socket 2>/dev/null || true
 
     # Also enable user-level podman socket as fallback
-    sudo -u "$DEPLOYER_USER" systemctl --user enable podman.socket 2>/dev/null || true
-    sudo -u "$DEPLOYER_USER" systemctl --user start podman.socket 2>/dev/null || true
-    loginctl enable-linger "$DEPLOYER_USER" 2>/dev/null || true
+    sudo -u "$BASEPOD_USER" systemctl --user enable podman.socket 2>/dev/null || true
+    sudo -u "$BASEPOD_USER" systemctl --user start podman.socket 2>/dev/null || true
+    loginctl enable-linger "$BASEPOD_USER" 2>/dev/null || true
 
     # Add basepod user to podman socket group for access
     if [ -S /run/podman/podman.sock ]; then
         chmod 660 /run/podman/podman.sock 2>/dev/null || true
-        chgrp "$DEPLOYER_USER" /run/podman/podman.sock 2>/dev/null || true
+        chgrp "$BASEPOD_USER" /run/podman/podman.sock 2>/dev/null || true
     fi
 
     systemctl daemon-reload
@@ -483,11 +484,11 @@ create_macos_services() {
     log "Initializing Podman machine..."
     local brew_path="/opt/homebrew/bin"
     [ ! -d "$brew_path" ] && brew_path="/usr/local/bin"
-    sudo -u "$DEPLOYER_USER" "$brew_path/podman" machine init 2>/dev/null || true
-    sudo -u "$DEPLOYER_USER" "$brew_path/podman" machine start 2>/dev/null || true
+    sudo -u "$BASEPOD_USER" "$brew_path/podman" machine init 2>/dev/null || true
+    sudo -u "$BASEPOD_USER" "$brew_path/podman" machine start 2>/dev/null || true
 
     # Get user's home directory
-    local USER_HOME=$(eval echo ~$DEPLOYER_USER)
+    local USER_HOME=$(eval echo ~$BASEPOD_USER)
 
     # Create symlink for podman socket (macOS puts it in /var/folders/...)
     log "Setting up Podman socket symlink..."
@@ -497,7 +498,7 @@ create_macos_services() {
     local ACTUAL_SOCKET=$(find /var/folders -name "podman-machine-default-api.sock" 2>/dev/null | head -1)
     if [ -n "$ACTUAL_SOCKET" ]; then
         ln -sf "$ACTUAL_SOCKET" "$SOCKET_DIR/podman.sock"
-        chown -R "$DEPLOYER_USER:staff" "$USER_HOME/.local/share/containers"
+        chown -R "$BASEPOD_USER:staff" "$USER_HOME/.local/share/containers"
     fi
 
     # Create launchd plist for basepod
@@ -509,19 +510,19 @@ create_macos_services() {
     <key>Label</key>
     <string>com.basepod</string>
     <key>UserName</key>
-    <string>$DEPLOYER_USER</string>
+    <string>$BASEPOD_USER</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$DEPLOYER_DIR/bin/basepodd</string>
+        <string>$BASEPOD_DIR/bin/basepod</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>$DEPLOYER_DIR</string>
+    <string>$BASEPOD_DIR</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
         <string>$USER_HOME</string>
-        <key>DEPLOYER_CONFIG</key>
-        <string>$DEPLOYER_DIR/config/basepod.yaml</string>
+        <key>BASEPOD_CONFIG</key>
+        <string>$BASEPOD_DIR/config/basepod.yaml</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
@@ -530,9 +531,9 @@ create_macos_services() {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$DEPLOYER_DIR/logs/basepod.log</string>
+    <string>$BASEPOD_DIR/logs/basepod.log</string>
     <key>StandardErrorPath</key>
-    <string>$DEPLOYER_DIR/logs/basepod.err</string>
+    <string>$BASEPOD_DIR/logs/basepod.err</string>
 </dict>
 </plist>
 EOF
@@ -551,16 +552,16 @@ EOF
         <string>$CADDY_PATH</string>
         <string>run</string>
         <string>--config</string>
-        <string>$DEPLOYER_DIR/config/Caddyfile</string>
+        <string>$BASEPOD_DIR/config/Caddyfile</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$DEPLOYER_DIR/logs/caddy.log</string>
+    <string>$BASEPOD_DIR/logs/caddy.log</string>
     <key>StandardErrorPath</key>
-    <string>$DEPLOYER_DIR/logs/caddy.err</string>
+    <string>$BASEPOD_DIR/logs/caddy.err</string>
 </dict>
 </plist>
 EOF
@@ -574,17 +575,17 @@ set_permissions() {
     log "Setting permissions..."
 
     # Create builds directory for source deployments
-    mkdir -p "$DEPLOYER_DIR/builds"
+    mkdir -p "$BASEPOD_DIR/builds"
 
     # macOS uses 'staff' group, Linux uses same as username
     if [ "$OS" = "macos" ]; then
-        chown -R "$DEPLOYER_USER:staff" "$DEPLOYER_DIR"
+        chown -R "$BASEPOD_USER:staff" "$BASEPOD_DIR"
     else
-        chown -R "$DEPLOYER_USER:$DEPLOYER_USER" "$DEPLOYER_DIR"
+        chown -R "$BASEPOD_USER:$BASEPOD_USER" "$BASEPOD_DIR"
     fi
-    chmod 750 "$DEPLOYER_DIR"
-    chmod 640 "$DEPLOYER_DIR/config/"* 2>/dev/null || true
-    chmod 750 "$DEPLOYER_DIR/builds"
+    chmod 750 "$BASEPOD_DIR"
+    chmod 640 "$BASEPOD_DIR/config/"* 2>/dev/null || true
+    chmod 750 "$BASEPOD_DIR/builds"
 }
 
 # Start services
@@ -619,14 +620,14 @@ print_success() {
     echo -e "${GREEN}========================================${NC}"
     echo ""
 
-    if [ -n "$DEPLOYER_DOMAIN" ]; then
-        echo "  Dashboard: https://d.$DEPLOYER_DOMAIN"
-        echo "  Apps:      https://appname.$DEPLOYER_DOMAIN"
+    if [ -n "$BASEPOD_DOMAIN" ]; then
+        echo "  Dashboard: https://d.$BASEPOD_DOMAIN"
+        echo "  Apps:      https://appname.$BASEPOD_DOMAIN"
         echo ""
         echo "  SSL certificates will be automatically obtained from Let's Encrypt."
         echo ""
         echo -e "${YELLOW}  Login password:${NC}"
-        echo "    $DEPLOYER_PASSWORD"
+        echo "    $BASEPOD_PASSWORD"
         echo ""
         echo -e "${YELLOW}  Save this password! It won't be shown again.${NC}"
     else
@@ -635,12 +636,12 @@ print_success() {
         echo -e "${YELLOW}  Note: No domain configured.${NC}"
         echo "  Apps will be accessible via direct port mapping only."
         echo ""
-        echo "  To add a domain later, edit: $DEPLOYER_DIR/config/basepod.yaml"
+        echo "  To add a domain later, edit: $BASEPOD_DIR/config/basepod.yaml"
         echo "  And set: domain.base: yourdomain.com"
     fi
 
     echo ""
-    echo "  Config:    $DEPLOYER_DIR/config/basepod.yaml"
+    echo "  Config:    $BASEPOD_DIR/config/basepod.yaml"
     echo "  Logs:      journalctl -u basepod -f"
     echo ""
     echo "  Commands:"
@@ -654,12 +655,12 @@ print_success() {
 # Main
 main() {
     echo ""
-    echo "  ____             _                       "
-    echo " |  _ \  ___ _ __ | | ___  _   _  ___ _ __ "
-    echo " | | | |/ _ \ '_ \| |/ _ \| | | |/ _ \ '__|"
-    echo " | |_| |  __/ |_) | | (_) | |_| |  __/ |   "
-    echo " |____/ \___| .__/|_|\___/ \__, |\___|_|   "
-    echo "            |_|            |___/           "
+    echo "  ____                                _ "
+    echo " | __ )  __ _ ___  ___ _ __   ___   __| |"
+    echo " |  _ \ / _\` / __|/ _ \ '_ \ / _ \ / _\` |"
+    echo " | |_) | (_| \__ \  __/ |_) | (_) | (_| |"
+    echo " |____/ \__,_|___/\___| .__/ \___/ \__,_|"
+    echo "                      |_|                "
     echo ""
     echo " Self-hosted PaaS with Podman & Caddy"
     echo ""
@@ -711,14 +712,14 @@ uninstall() {
 
     if [ "$REMOVE_DATA" = "y" ] || [ "$REMOVE_DATA" = "Y" ]; then
         log "Removing data directory..."
-        rm -rf "$DEPLOYER_DIR"
+        rm -rf "$BASEPOD_DIR"
 
         # Remove user
         log "Removing user..."
-        userdel -r "$DEPLOYER_USER" 2>/dev/null || true
+        userdel -r "$BASEPOD_USER" 2>/dev/null || true
     else
-        warn "Keeping data directory: $DEPLOYER_DIR"
-        warn "Keeping user: $DEPLOYER_USER"
+        warn "Keeping data directory: $BASEPOD_DIR"
+        warn "Keeping user: $BASEPOD_USER"
     fi
 
     echo ""

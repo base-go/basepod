@@ -2179,12 +2179,14 @@ func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"models":       modelsWithRAM,
-		"supported":    mlx.IsSupported(),
-		"active_model": status.ActiveModel,
-		"running":      status.Running,
-		"port":         status.Port,
-		"endpoint":     endpoint,
+		"models":             modelsWithRAM,
+		"supported":          mlx.IsSupported(),
+		"platform":           runtime.GOOS + "/" + runtime.GOARCH,
+		"unsupported_reason": mlx.GetUnsupportedReason(),
+		"active_model":       status.ActiveModel,
+		"running":            status.Running,
+		"port":               status.Port,
+		"endpoint":           endpoint,
 		"system": map[string]interface{}{
 			"total_ram_gb":     sysInfo.TotalRAMGB,
 			"available_ram_gb": int(sysInfo.AvailableRAM / (1024 * 1024 * 1024)),
@@ -2207,13 +2209,14 @@ func (s *Server) handleMLXStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"supported":    mlx.IsSupported(),
-		"platform":     runtime.GOOS + "/" + runtime.GOARCH,
-		"running":      status.Running,
-		"port":         status.Port,
-		"pid":          status.PID,
-		"active_model": status.ActiveModel,
-		"endpoint":     endpoint,
+		"supported":          mlx.IsSupported(),
+		"platform":           runtime.GOOS + "/" + runtime.GOARCH,
+		"unsupported_reason": mlx.GetUnsupportedReason(),
+		"running":            status.Running,
+		"port":               status.Port,
+		"pid":                status.PID,
+		"active_model":       status.ActiveModel,
+		"endpoint":           endpoint,
 	})
 }
 
