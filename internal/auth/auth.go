@@ -40,7 +40,7 @@ func HashPassword(password string) string {
 // ValidatePassword checks if the password matches the stored hash
 func (m *Manager) ValidatePassword(password string) bool {
 	if m.passwordHash == "" {
-		return true // No auth configured
+		return false // No password configured - require setup first
 	}
 	return HashPassword(password) == m.passwordHash
 }
@@ -73,7 +73,11 @@ func (m *Manager) CreateSession() (*Session, error) {
 // ValidateSession checks if a session token is valid
 func (m *Manager) ValidateSession(token string) bool {
 	if m.passwordHash == "" {
-		return true // No auth configured
+		return false // No password configured - require setup first
+	}
+
+	if token == "" {
+		return false
 	}
 
 	m.mu.RLock()
@@ -89,6 +93,23 @@ func (m *Manager) ValidateSession(token string) bool {
 		return false
 	}
 
+	return true
+}
+
+// NeedsSetup returns true if no password has been configured yet
+func (m *Manager) NeedsSetup() bool {
+	return m.passwordHash == ""
+}
+
+// SetPassword sets the initial password (only works if no password is set)
+func (m *Manager) SetPassword(password string) bool {
+	if m.passwordHash != "" {
+		return false // Password already set, use UpdatePassword instead
+	}
+	if password == "" {
+		return false // Cannot set empty password
+	}
+	m.passwordHash = HashPassword(password)
 	return true
 }
 

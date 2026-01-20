@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -97,8 +96,8 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 	// Fall back to embedded files
 	if s.staticFS == nil {
-		if staticFS, source, err := web.GetFileSystem(); err == nil {
-			log.Printf("Serving static files from: %s", source)
+		if staticFS, err := web.GetFileSystem(); err == nil {
+			log.Printf("Serving static files from embedded filesystem")
 			s.staticFS = http.FileServer(http.FS(staticFS))
 		}
 	}
@@ -117,6 +116,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/auth/login", s.handleLogin)
 	s.router.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.router.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	s.router.HandleFunc("POST /api/auth/setup", s.handleSetup) // Initial password setup
 	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.handleChangePassword))
 
 	// Apps (auth required)
@@ -170,8 +170,9 @@ func (s *Server) setupRoutes() {
 // requireAuth wraps a handler with authentication check
 func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.auth.IsAuthRequired() {
-			handler(w, r)
+		// Check if initial setup is needed
+		if s.auth.NeedsSetup() {
+			errorResponse(w, http.StatusForbidden, "Setup required: please set an admin password")
 			return
 		}
 
@@ -253,10 +254,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthStatus returns current auth status
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
-	authRequired := s.auth.IsAuthRequired()
+	needsSetup := s.auth.NeedsSetup()
 	authenticated := false
 
-	if authRequired {
+	if !needsSetup {
 		token := ""
 		if cookie, err := r.Cookie("deployer_token"); err == nil {
 			token = cookie.Value
@@ -266,14 +267,71 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 			token = strings.TrimPrefix(token, "Bearer ")
 		}
 		authenticated = s.auth.ValidateSession(token)
-	} else {
-		authenticated = true
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"authRequired":  authRequired,
+		"needsSetup":    needsSetup,
 		"authenticated": authenticated,
 	})
+}
+
+// handleSetup handles initial password setup (only works when no password is set)
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if !s.auth.NeedsSetup() {
+		errorResponse(w, http.StatusForbidden, "Setup already completed")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if len(req.Password) < 8 {
+		errorResponse(w, http.StatusBadRequest, "Password must be at least 8 characters")
+		return
+	}
+
+	if !s.auth.SetPassword(req.Password) {
+		errorResponse(w, http.StatusInternalServerError, "Failed to set password")
+		return
+	}
+
+	// Save password hash to config file
+	if err := s.savePasswordToConfig(); err != nil {
+		log.Printf("Warning: failed to persist password to config: %v", err)
+	}
+
+	// Create session for the user
+	session, err := s.auth.CreateSession()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create session")
+		return
+	}
+
+	// Set cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "deployer_token",
+		Value:    session.Token,
+		Path:     "/",
+		Expires:  session.ExpiresAt,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"message": "Setup completed successfully",
+		"token":   session.Token,
+	})
+}
+
+// savePasswordToConfig persists the current password hash to the config file
+func (s *Server) savePasswordToConfig() error {
+	s.config.Auth.PasswordHash = s.auth.GetPasswordHash()
+	return s.config.Save()
 }
 
 // handleChangePassword handles password change
@@ -329,8 +387,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if it's an app domain (not the dashboard)
-	dashboardDomain := "d." + s.config.Domain.Base
-	if host != dashboardDomain && s.config.Domain.Base != "" && strings.HasSuffix(host, "."+s.config.Domain.Base) {
+	dashboardDomain := "d." + s.config.Domain.Root
+	if host != dashboardDomain && s.config.Domain.Root != "" && strings.HasSuffix(host, "."+s.config.Domain.Root) {
 		// Look up app by domain
 		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
 			// Proxy to the app
@@ -360,7 +418,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, err := os.Stat(s.staticDir + path); err == nil {
 				fileExists = true
 			}
-		} else if webFS, _, err := web.GetFileSystem(); err == nil {
+		} else if webFS, err := web.GetFileSystem(); err == nil {
 			// Check embedded
 			if _, err := fs.Stat(webFS, strings.TrimPrefix(path, "/")); err == nil {
 				fileExists = true
@@ -603,8 +661,8 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Compute external host from domain config
-	if s.config != nil && s.config.Domain.Base != "" {
-		response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Base, a.Ports.HostPort)
+	if s.config != nil && s.config.Domain.Root != "" {
+		response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Root, a.Ports.HostPort)
 	} else {
 		response.ExternalHost = fmt.Sprintf("localhost:%d", a.Ports.HostPort)
 	}
@@ -851,12 +909,11 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 
 	// Create new container with current settings
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:           containerName,
-		Image:          a.Image,
-		Env:            a.Env,
-		Networks:       []string{"deployer"},
-		ExposeExternal: a.Ports.ExposeExternal,
-		Volumes:        volumeMounts,
+		Name:     containerName,
+		Image:    a.Image,
+		Env:      a.Env,
+		Networks: []string{"deployer"},
+		Volumes:  volumeMounts,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -953,11 +1010,10 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 
 	// Create new container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:           "deployer-" + a.Name,
-		Image:          image,
-		Env:            a.Env,
-		Networks:       []string{"deployer"},
-		ExposeExternal: a.Ports.ExposeExternal,
+		Name:     "deployer-" + a.Name,
+		Image:    image,
+		Env:      a.Env,
+		Networks: []string{"deployer"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1106,7 +1162,7 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]interface{}{
 		"domain": map[string]interface{}{
-			"base":     s.config.Domain.Base,
+			"root":     s.config.Domain.Root,
 			"suffix":   s.config.Domain.Suffix,
 			"wildcard": s.config.Domain.Wildcard,
 		},
@@ -1118,7 +1174,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Domain struct {
-			Base     string `json:"base"`
+			Root     string `json:"root"`
 			Wildcard bool   `json:"wildcard"`
 		} `json:"domain"`
 	}
@@ -1128,7 +1184,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update config
-	s.config.Domain.Base = req.Domain.Base
+	s.config.Domain.Root = req.Domain.Root
 	s.config.Domain.Wildcard = req.Domain.Wildcard
 
 	// Save to file
@@ -1140,7 +1196,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status": "updated",
 		"domain": map[string]interface{}{
-			"base":     s.config.Domain.Base,
+			"root":     s.config.Domain.Root,
 			"wildcard": s.config.Domain.Wildcard,
 		},
 	})
@@ -1386,11 +1442,10 @@ func (s *Server) deployPlaceholder(a *app.App) {
 
 	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:           "deployer-" + a.Name,
-		Image:          placeholderImage,
-		Env:            a.Env,
-		Networks:       []string{"deployer"},
-		ExposeExternal: a.Ports.ExposeExternal,
+		Name:     "deployer-" + a.Name,
+		Image:    placeholderImage,
+		Env:      a.Env,
+		Networks: []string{"deployer"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1459,8 +1514,6 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		Domain         string            `json:"domain"`
 		Env            map[string]string `json:"env"`
 		EnableSSL      bool              `json:"enableSSL"`
-		Version        string            `json:"version"`
-		UseAlpine      bool              `json:"useAlpine"`
 		ExposeExternal bool              `json:"exposeExternal"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1468,8 +1521,8 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build image with version and alpine preference
-	image := tmpl.BuildImage(req.Version, req.UseAlpine)
+	// Get the appropriate image for current architecture
+	image := tmpl.GetImage()
 
 	// Generate name if not provided
 	name := req.Name
@@ -1571,33 +1624,13 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 		a.Ports.HostPort = assignHostPort(a.ID)
 	}
 
-	// Create volume mounts from template
-	volumeMounts := []string{}
-	volumeDir := filepath.Join("/opt/deployer/volumes", a.Name)
-	for _, v := range tmpl.Volumes {
-		hostPath := filepath.Join(volumeDir, v.Name)
-		// Create directory on host
-		if err := os.MkdirAll(hostPath, 0755); err != nil {
-			// Log but don't fail - volume dir creation is best effort
-		}
-		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", hostPath, v.ContainerPath))
-		// Store in app record
-		a.Volumes = append(a.Volumes, app.VolumeMount{
-			Name:          v.Name,
-			HostPath:      hostPath,
-			ContainerPath: v.ContainerPath,
-		})
-	}
-
-	// Create container with port mapping, network and volumes
+	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:           "deployer-" + a.Name,
-		Image:          image,
-		Env:            a.Env,
-		Command:        tmpl.Command,
-		Networks:       []string{"deployer"},
-		ExposeExternal: a.Ports.ExposeExternal,
-		Volumes:        volumeMounts,
+		Name:     "deployer-" + a.Name,
+		Image:    image,
+		Env:      a.Env,
+		Command:  tmpl.Command,
+		Networks: []string{"deployer"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -1647,7 +1680,7 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get base domain from config
-	baseDomain := s.config.Domain.Base
+	baseDomain := s.config.Domain.Root
 	if baseDomain == "" {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -1899,11 +1932,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 
 	// Create new container with network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:           containerName,
-		Image:          imageName,
-		Env:            a.Env,
-		Networks:       []string{"deployer"},
-		ExposeExternal: a.Ports.ExposeExternal,
+		Name:     containerName,
+		Image:    imageName,
+		Env:      a.Env,
+		Networks: []string{"deployer"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -2014,7 +2046,7 @@ func execCommandStream(ctx context.Context, name string, args []string, writeLin
 	return output.String(), err
 }
 
-// handleImageTags returns cached tags for an image
+// handleImageTags returns tags for an image
 func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
 	image := r.URL.Query().Get("image")
 	if image == "" {
@@ -2022,24 +2054,10 @@ func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get tags from storage (cached)
-	tags, _, err := s.storage.GetImageTags(image)
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, "Failed to get tags: "+err.Error())
-		return
-	}
-
-	// If no cached tags, return the template's default versions
-	if len(tags) == 0 {
-		tmpl := templates.GetTemplateByImage(image)
-		if tmpl != nil && len(tmpl.Versions) > 0 {
-			tags = tmpl.Versions
-		}
-	}
-
+	// Return empty tags - image tag selection feature not yet implemented
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"image": image,
-		"tags":  tags,
+		"tags":  []string{},
 	})
 }
 

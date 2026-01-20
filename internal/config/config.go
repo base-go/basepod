@@ -61,11 +61,10 @@ type ServerConfig struct {
 }
 
 type DomainConfig struct {
-	Root     string `yaml:"root"`      // e.g., deployer.example.com
-	Base     string `yaml:"base"`      // e.g., common.al (used for app subdomains: appname.common.al)
-	Suffix   string `yaml:"suffix"`    // e.g., .pod for local dev or empty for production
-	Wildcard bool   `yaml:"wildcard"`  // Enable *.deployer.example.com
-	Email    string `yaml:"email"`     // For Let's Encrypt
+	Root     string `yaml:"root"`     // Production: root domain (e.g., app.basecode.al) - apps become {name}.app.basecode.al
+	Suffix   string `yaml:"suffix"`   // Local dev: domain suffix (e.g., .pod) - apps become {name}.pod
+	Wildcard bool   `yaml:"wildcard"` // Enable wildcard subdomains
+	Email    string `yaml:"email"`    // For Let's Encrypt SSL certificates
 }
 
 type PodmanConfig struct {
@@ -157,7 +156,8 @@ func DefaultConfig() *Config {
 			LogLevel: "info",
 		},
 		Domain: DomainConfig{
-			Suffix:   ".pod", // Local development default
+			Root:     "",          // Production: set to your domain (e.g., app.basecode.al)
+			Suffix:   ".base.code", // Local dev fallback
 			Wildcard: true,
 		},
 		Podman: PodmanConfig{
@@ -169,18 +169,18 @@ func DefaultConfig() *Config {
 	}
 }
 
-// GetAppDomain generates the domain for an app based on config
-// For local dev: appname.pod
-// For production: appname.basedomain (e.g., myapp.common.al)
+// GetAppDomain generates the domain for an app
+// Production: {appname}.{root} (e.g., myapp.app.basecode.al)
+// Local dev:  {appname}{suffix} (e.g., myapp.base.code)
 func (c *Config) GetAppDomain(appName string) string {
-	if c.Domain.Base != "" {
-		// Production mode with base domain
-		return appName + "." + c.Domain.Base
+	if c.Domain.Root != "" {
+		// Production mode with root domain
+		return appName + "." + c.Domain.Root
 	}
 	// Local development mode with suffix
 	suffix := c.Domain.Suffix
 	if suffix == "" {
-		suffix = ".pod"
+		suffix = ".base.code"
 	}
 	return appName + suffix
 }

@@ -1,15 +1,19 @@
-import type { AuthStatusResponse } from '~/types'
-
 export default defineNuxtRouteMiddleware(async (to) => {
-  // Skip auth check for login page
-  if (to.path === '/login') {
+  // Skip auth check for login and setup pages
+  if (to.path === '/login' || to.path === '/setup') {
     return
   }
 
   try {
-    const { data } = await useFetch<AuthStatusResponse>('/api/auth/status')
+    const { data } = await useFetch<{ needsSetup: boolean; authenticated: boolean }>('/api/auth/status')
 
-    if (data.value?.authRequired && !data.value?.authenticated) {
+    // Redirect to setup if no password configured
+    if (data.value?.needsSetup) {
+      return navigateTo('/setup')
+    }
+
+    // Redirect to login if not authenticated
+    if (!data.value?.authenticated) {
       return navigateTo('/login')
     }
   } catch {
