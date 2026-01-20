@@ -61,7 +61,7 @@ type ServerConfig struct {
 }
 
 type DomainConfig struct {
-	Root     string `yaml:"root"`     // Production: root domain (e.g., app.basecode.al) - apps become {name}.app.basecode.al
+	Root     string `yaml:"root"`     // Production: root domain (e.g., example.com) - apps become {name}.example.com
 	Base     string `yaml:"base"`     // Base domain for subdomains (e.g., base.code) - apps become {name}.base.code
 	Suffix   string `yaml:"suffix"`   // Local dev: domain suffix (e.g., .pod) - apps become {name}.pod
 	Wildcard bool   `yaml:"wildcard"` // Enable wildcard subdomains
@@ -157,7 +157,7 @@ func DefaultConfig() *Config {
 			LogLevel: "info",
 		},
 		Domain: DomainConfig{
-			Root:     "",          // Production: set to your domain (e.g., app.basecode.al)
+			Root:     "",          // Production: set to your domain (e.g., example.com)
 			Suffix:   ".base.code", // Local dev fallback
 			Wildcard: true,
 		},
@@ -171,7 +171,7 @@ func DefaultConfig() *Config {
 }
 
 // GetAppDomain generates the domain for an app
-// Production: {appname}.{root} (e.g., myapp.app.basecode.al)
+// Production: {appname}.{root} (e.g., myapp.example.com)
 // Local dev:  {appname}{suffix} (e.g., myapp.base.code)
 func (c *Config) GetAppDomain(appName string) string {
 	if c.Domain.Root != "" {
