@@ -554,6 +554,15 @@ EOF
         <string>--config</string>
         <string>$BASEPOD_DIR/config/Caddyfile</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>$BASEPOD_DIR</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>$BASEPOD_DIR</string>
+        <key>XDG_DATA_HOME</key>
+        <string>$BASEPOD_DIR/data</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -642,13 +651,22 @@ print_success() {
 
     echo ""
     echo "  Config:    $BASEPOD_DIR/config/basepod.yaml"
-    echo "  Logs:      journalctl -u basepod -f"
-    echo ""
-    echo "  Commands:"
-    echo "    systemctl status basepod   # Check status"
-    echo "    systemctl restart basepod  # Restart"
-    echo "    journalctl -u basepod -f   # View logs"
-    echo "    basepod update             # Update to latest version"
+
+    if [ "$OS" = "macos" ]; then
+        echo "  Logs:      tail -f $BASEPOD_DIR/logs/basepod.log"
+        echo ""
+        echo "  Commands:"
+        echo "    sudo launchctl list | grep basepod  # Check status"
+        echo "    sudo launchctl unload /Library/LaunchDaemons/com.basepod.plist && sudo launchctl load /Library/LaunchDaemons/com.basepod.plist  # Restart"
+        echo "    tail -f $BASEPOD_DIR/logs/basepod.log  # View logs"
+    else
+        echo "  Logs:      journalctl -u basepod -f"
+        echo ""
+        echo "  Commands:"
+        echo "    systemctl status basepod   # Check status"
+        echo "    systemctl restart basepod  # Restart"
+        echo "    journalctl -u basepod -f   # View logs"
+    fi
     echo ""
 }
 
