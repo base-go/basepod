@@ -161,16 +161,30 @@ func main() {
 		log.Printf("Caddy connected successfully")
 	}
 
-	// Start built-in DNS server if enabled or if using local domain
+	// Initialize Caddy HTTP server and sync routes for running apps
+	if caddyClient != nil {
+		if err := initializeCaddyRoutes(caddyClient, store); err != nil {
+			log.Printf("Warning: Failed to initialize Caddy routes: %v", err)
+		}
+	}
+
+	// Start built-in DNS server if enabled or if using local domain suffix
 	var dnsServer *dns.Server
-	if cfg.DNS.Enabled || (cfg.Domain.Base != "" && !strings.Contains(cfg.Domain.Base, ".com") && !strings.Contains(cfg.Domain.Base, ".net") && !strings.Contains(cfg.Domain.Base, ".org")) {
+	// Determine DNS domain: use Base if set, otherwise use Suffix (strip leading dot)
+	dnsDomain := cfg.Domain.Base
+	if dnsDomain == "" && cfg.Domain.Suffix != "" {
+		dnsDomain = strings.TrimPrefix(cfg.Domain.Suffix, ".")
+	}
+	// Auto-enable DNS for local development domains (non-standard TLDs)
+	isLocalDomain := dnsDomain != "" && !strings.Contains(dnsDomain, ".com") && !strings.Contains(dnsDomain, ".net") && !strings.Contains(dnsDomain, ".org") && !strings.Contains(dnsDomain, ".io")
+	if cfg.DNS.Enabled || isLocalDomain {
 		dnsPort := cfg.DNS.Port
 		if dnsPort == 0 {
 			dnsPort = 5353 // Use non-privileged port by default
 		}
 		dnsServer, err = dns.NewServer(dns.Config{
-			Domain:   cfg.Domain.Base,
-			ServerIP: "", // Auto-detect
+			Domain:   dnsDomain,
+			ServerIP: "127.0.0.2", // Local development (separate from 127.0.0.1 to avoid conflicts)
 			Port:     dnsPort,
 			Upstream: cfg.DNS.Upstream,
 		})
@@ -351,6 +365,41 @@ func ensureCaddyRunning() error {
 		return fmt.Errorf("failed to start Caddy: %w", err)
 	}
 
+	return nil
+}
+
+// initializeCaddyRoutes sets up the Caddy HTTP server and syncs routes for all running apps
+func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) error {
+	// Get all apps
+	apps, err := store.ListApps()
+	if err != nil {
+		return fmt.Errorf("failed to list apps: %w", err)
+	}
+
+	// Collect routes for running apps with domains
+	var routes []caddy.Route
+	for _, a := range apps {
+		if a.Status == "running" && a.Domain != "" && a.Ports.HostPort > 0 {
+			routes = append(routes, caddy.Route{
+				ID:        "deployer-" + a.Name,
+				Domain:    a.Domain,
+				Upstream:  fmt.Sprintf("127.0.0.1:%d", a.Ports.HostPort),
+				EnableSSL: a.SSL.Enabled,
+			})
+		}
+	}
+
+	if len(routes) == 0 {
+		log.Printf("No running apps with domains to configure")
+		return nil
+	}
+
+	// Initialize the Caddy server with all routes
+	if err := caddyClient.InitializeServer(routes); err != nil {
+		return fmt.Errorf("failed to initialize Caddy server: %w", err)
+	}
+
+	log.Printf("Configured Caddy with %d app routes", len(routes))
 	return nil
 }
 

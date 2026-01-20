@@ -24,6 +24,11 @@ const navigation = [
     label: 'One-Click LLMs',
     icon: 'i-heroicons-cpu-chip',
     to: '/llms'
+  },
+  {
+    label: 'Chat',
+    icon: 'i-heroicons-chat-bubble-left-right',
+    to: '/chat'
   }
 ]
 

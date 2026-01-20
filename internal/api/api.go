@@ -151,6 +151,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/mlx/status", s.requireAuth(s.handleMLXStatus))
 	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
 	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.handleMLXPull))
+	s.router.HandleFunc("GET /api/mlx/pull/progress", s.requireAuth(s.handleMLXPullProgress))
+	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.handleMLXPullCancel))
 	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.handleMLXRun))
 	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.handleMLXStop))
 	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
@@ -2106,13 +2108,58 @@ func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
 	svc := mlx.GetService()
 	models := svc.ListModels()
 	status := svc.GetStatus()
+	sysInfo := mlx.GetSystemInfo()
+
+	// Add RAM requirements to each model
+	type ModelWithRAM struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Size         string `json:"size"`
+		Downloaded   bool   `json:"downloaded"`
+		DownloadedAt string `json:"downloaded_at,omitempty"`
+		RequiredRAM  int    `json:"required_ram_gb"`
+		CanRun       bool   `json:"can_run"`
+		Warning      string `json:"warning,omitempty"`
+	}
+
+	var modelsWithRAM []ModelWithRAM
+	for _, m := range models {
+		canRun, warning := mlx.CanRunModel(m.ID, sysInfo.TotalRAMGB)
+		mwr := ModelWithRAM{
+			ID:          m.ID,
+			Name:        m.Name,
+			Size:        m.Size,
+			Downloaded:  m.Downloaded,
+			RequiredRAM: mlx.EstimateModelRAM(m.ID),
+			CanRun:      canRun,
+			Warning:     warning,
+		}
+		if !m.DownloadedAt.IsZero() {
+			mwr.DownloadedAt = m.DownloadedAt.Format("2006-01-02T15:04:05Z")
+		}
+		modelsWithRAM = append(modelsWithRAM, mwr)
+	}
+
+	// Build endpoint URL using same domain pattern as apps
+	var endpoint string
+	if s.config != nil {
+		llmDomain := s.config.GetAppDomain("llm")
+		endpoint = fmt.Sprintf("https://%s/v1/chat/completions", llmDomain)
+	} else {
+		endpoint = fmt.Sprintf("http://localhost:%d/v1/chat/completions", status.Port)
+	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"models":       models,
+		"models":       modelsWithRAM,
 		"supported":    mlx.IsSupported(),
 		"active_model": status.ActiveModel,
 		"running":      status.Running,
 		"port":         status.Port,
+		"endpoint":     endpoint,
+		"system": map[string]interface{}{
+			"total_ram_gb":     sysInfo.TotalRAMGB,
+			"available_ram_gb": int(sysInfo.AvailableRAM / (1024 * 1024 * 1024)),
+		},
 	})
 }
 
@@ -2121,6 +2168,15 @@ func (s *Server) handleMLXStatus(w http.ResponseWriter, r *http.Request) {
 	svc := mlx.GetService()
 	status := svc.GetStatus()
 
+	// Build endpoint URL using same domain pattern as apps
+	var endpoint string
+	if s.config != nil {
+		llmDomain := s.config.GetAppDomain("llm")
+		endpoint = fmt.Sprintf("https://%s/v1/chat/completions", llmDomain)
+	} else {
+		endpoint = fmt.Sprintf("http://localhost:%d/v1/chat/completions", status.Port)
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"supported":    mlx.IsSupported(),
 		"platform":     runtime.GOOS + "/" + runtime.GOARCH,
@@ -2128,6 +2184,7 @@ func (s *Server) handleMLXStatus(w http.ResponseWriter, r *http.Request) {
 		"port":         status.Port,
 		"pid":          status.PID,
 		"active_model": status.ActiveModel,
+		"endpoint":     endpoint,
 	})
 }
 
@@ -2165,6 +2222,56 @@ func (s *Server) handleMLXPull(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMLXPullProgress returns the current download progress
+func (s *Server) handleMLXPullProgress(w http.ResponseWriter, r *http.Request) {
+	modelID := r.URL.Query().Get("model")
+
+	if modelID != "" {
+		// Get specific model progress
+		dp := mlx.GetDownloadProgress(modelID)
+		if dp == nil {
+			jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"model_id": modelID,
+				"status":   "not_found",
+			})
+			return
+		}
+
+		jsonResponse(w, http.StatusOK, dp)
+		return
+	}
+
+	// Get all active downloads
+	downloads := mlx.GetAllDownloads()
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"downloads": downloads,
+	})
+}
+
+// handleMLXPullCancel cancels an active download
+func (s *Server) handleMLXPullCancel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Model == "" {
+		errorResponse(w, http.StatusBadRequest, "Model is required")
+		return
+	}
+
+	if mlx.CancelDownload(req.Model) {
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"status":  "cancelled",
+			"message": "Download cancelled",
+		})
+	} else {
+		errorResponse(w, http.StatusNotFound, "No active download found for this model")
+	}
+}
+
 // handleMLXRun starts the MLX server with a model
 func (s *Server) handleMLXRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -2186,6 +2293,22 @@ func (s *Server) handleMLXRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := svc.GetStatus()
+
+	// Add Caddy route for the LLM endpoint using same domain pattern as apps
+	if s.config != nil && s.caddy != nil {
+		llmDomain := s.config.GetAppDomain("llm")
+		route := caddy.Route{
+			ID:       "mlx-llm",
+			Domain:   llmDomain,
+			Upstream: fmt.Sprintf("localhost:%d", status.Port),
+		}
+		if err := s.caddy.AddRoute(route); err != nil {
+			log.Printf("Warning: failed to add Caddy route for MLX: %v", err)
+		} else {
+			log.Printf("Added Caddy route for MLX: %s -> localhost:%d", llmDomain, status.Port)
+		}
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status":       "running",
 		"model":        req.Model,
@@ -2200,6 +2323,13 @@ func (s *Server) handleMLXStop(w http.ResponseWriter, r *http.Request) {
 	if err := svc.Stop(); err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// Remove Caddy route for the LLM endpoint
+	if s.caddy != nil {
+		if err := s.caddy.RemoveRoute("mlx-llm"); err != nil {
+			log.Printf("Warning: failed to remove Caddy route for MLX: %v", err)
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{

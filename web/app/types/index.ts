@@ -114,6 +114,7 @@ export interface MLXModelsResponse {
   supported: boolean
   running: boolean
   port: number
+  endpoint: string
   active_model: string
 }
 

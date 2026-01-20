@@ -108,29 +108,47 @@ func (c *Client) AddRoute(route Route) error {
 	return nil
 }
 
-// initializeServer creates the deployer server with the first route
-func (c *Client) initializeServer(route Route) error {
+// InitializeServer creates the Caddy HTTP server with routes for all apps
+func (c *Client) InitializeServer(routes []Route) error {
+	// First, delete any existing server config (ignore errors)
+	delReq, _ := http.NewRequest("DELETE", c.adminURL+"/config/apps/http/servers/srv0", nil)
+	c.httpClient.Do(delReq)
+
+	// Build route configs
+	var routeConfigs []interface{}
+	for _, route := range routes {
+		routeConfigs = append(routeConfigs, map[string]interface{}{
+			"@id": route.ID,
+			"match": []map[string]interface{}{
+				{"host": []string{route.Domain}},
+			},
+			"handle": []map[string]interface{}{
+				{
+					"handler": "reverse_proxy",
+					"upstreams": []map[string]string{
+						{"dial": route.Upstream},
+					},
+					"headers": map[string]interface{}{
+						"request": map[string]interface{}{
+							"set": map[string][]string{
+								"Host":              {"{http.request.host}"},
+								"X-Forwarded-Host":  {"{http.request.host}"},
+								"X-Forwarded-Proto": {"{http.request.scheme}"},
+								"X-Real-IP":         {"{http.request.remote.host}"},
+							},
+						},
+					},
+				},
+			},
+		})
+	}
+
 	serverConfig := map[string]interface{}{
 		"listen": []string{"127.0.0.2:8080"},
 		"automatic_https": map[string]interface{}{
 			"disable": true,
 		},
-		"routes": []interface{}{
-			map[string]interface{}{
-				"@id": route.ID,
-				"match": []map[string]interface{}{
-					{"host": []string{route.Domain}},
-				},
-				"handle": []map[string]interface{}{
-					{
-						"handler": "reverse_proxy",
-						"upstreams": []map[string]string{
-							{"dial": route.Upstream},
-						},
-					},
-				},
-			},
-		},
+		"routes": routeConfigs,
 	}
 
 	body, err := json.Marshal(serverConfig)
@@ -138,7 +156,7 @@ func (c *Client) initializeServer(route Route) error {
 		return fmt.Errorf("failed to marshal server config: %w", err)
 	}
 
-	url := c.adminURL + "/config/apps/http/servers/deployer"
+	url := c.adminURL + "/config/apps/http/servers/srv0"
 	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
 	if err != nil {
 		return err

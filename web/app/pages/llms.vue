@@ -164,8 +164,14 @@ onUnmounted(() => {
             <div class="font-medium">{{ mlxData.models.find(m => m.id === mlxData.active_model)?.name || mlxData.active_model }}</div>
           </div>
         </div>
-        <div class="text-sm text-gray-500">
-          <code class="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">http://localhost:{{ mlxData.port }}/v1/chat/completions</code>
+        <div class="flex items-center gap-3">
+          <code class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded text-gray-500">{{ mlxData.endpoint }}</code>
+          <NuxtLink to="/chat">
+            <UButton size="sm">
+              <UIcon name="i-heroicons-chat-bubble-left-right" class="w-4 h-4 mr-1" />
+              Open Chat
+            </UButton>
+          </NuxtLink>
         </div>
       </div>
     </div>
@@ -251,7 +257,7 @@ onUnmounted(() => {
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
         The MLX server is OpenAI-compatible. Use it with any OpenAI client:
       </p>
-      <pre class="text-xs bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">curl http://localhost:{{ mlxData.port }}/v1/chat/completions \
+      <pre class="text-xs bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">curl {{ mlxData.endpoint }} \
   -H "Content-Type: application/json" \
   -d '{"model": "{{ mlxData.active_model }}", "messages": [{"role": "user", "content": "Hello!"}]}'</pre>
     </div>
