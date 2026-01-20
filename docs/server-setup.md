@@ -217,6 +217,36 @@ sudo launchctl unload /Library/LaunchDaemons/al.base.caddy.plist
 sudo launchctl load /Library/LaunchDaemons/al.base.caddy.plist
 ```
 
+### Reset admin password
+
+If you forgot your admin password:
+
+1. Edit the config file:
+   ```bash
+   sudo nano /usr/local/basepod/config/basepod.yaml
+   ```
+
+2. Clear the password hash:
+   ```yaml
+   auth:
+     password_hash: ""
+   ```
+
+3. Restart basepod:
+
+   **Linux:**
+   ```bash
+   sudo systemctl restart basepod
+   ```
+
+   **macOS:**
+   ```bash
+   sudo launchctl unload /Library/LaunchDaemons/com.basepod.plist
+   sudo launchctl load /Library/LaunchDaemons/com.basepod.plist
+   ```
+
+4. Visit your dashboard URL - you'll be prompted to set a new password.
+
 ## Security Recommendations
 
 1. **Firewall**: Allow only ports 22 (SSH), 80, 443
