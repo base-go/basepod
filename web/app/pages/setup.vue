@@ -45,7 +45,7 @@ const setup = async () => {
     <div class="w-full max-w-sm">
       <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
         <div class="text-center mb-8">
-          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Welcome to Deployer</h1>
+          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Welcome to Basepod</h1>
           <p class="text-gray-500 dark:text-gray-400 mt-2">Set up your admin password to get started</p>
         </div>
 

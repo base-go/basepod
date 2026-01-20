@@ -43,7 +43,7 @@ const activeSection = ref('getting-started')
   <div>
     <div class="mb-6">
       <h2 class="text-xl font-semibold">Documentation</h2>
-      <p class="text-gray-500 dark:text-gray-400">Learn how to use Deployer</p>
+      <p class="text-gray-500 dark:text-gray-400">Learn how to use Basepod</p>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -73,7 +73,7 @@ const activeSection = ref('getting-started')
           <!-- Getting Started -->
           <div v-show="activeSection === 'getting-started'" class="prose dark:prose-invert max-w-none">
             <h2>Getting Started</h2>
-            <p>Deployer is a lightweight PaaS (Platform as a Service) that makes it easy to deploy and manage containerized applications.</p>
+            <p>Basepod is a lightweight PaaS (Platform as a Service) that makes it easy to deploy and manage containerized applications.</p>
 
             <h3>Key Features</h3>
             <ul>
@@ -190,7 +190,7 @@ const activeSection = ref('getting-started')
           <!-- Domains & SSL -->
           <div v-show="activeSection === 'domains'" class="prose dark:prose-invert max-w-none">
             <h2>Domains & SSL</h2>
-            <p>Deployer uses Caddy as a reverse proxy with automatic SSL.</p>
+            <p>Basepod uses Caddy as a reverse proxy with automatic SSL.</p>
 
             <h3>Automatic Subdomains</h3>
             <p>Each web app gets a subdomain based on its name. For example, if your domain is <code>example.com</code> and you create an app named "blog", it will be accessible at <code>blog.example.com</code>.</p>
@@ -205,7 +205,7 @@ const activeSection = ref('getting-started')
           <!-- API Reference -->
           <div v-show="activeSection === 'api'" class="prose dark:prose-invert max-w-none">
             <h2>API Reference</h2>
-            <p>Deployer provides a REST API for programmatic access.</p>
+            <p>Basepod provides a REST API for programmatic access.</p>
 
             <h3>Authentication</h3>
             <p>All API requests (except login) require a Bearer token:</p>

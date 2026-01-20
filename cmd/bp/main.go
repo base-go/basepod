@@ -79,6 +79,8 @@ func main() {
 		cmdDelete(args)
 	case "info":
 		cmdInfo(args)
+	case "status":
+		cmdStatus(args)
 	case "init":
 		cmdInit(args)
 	default:
@@ -95,7 +97,7 @@ Usage:
   bp <command> [arguments]
 
 Commands:
-  login <server>    Login to a Deployer server (adds to contexts)
+  login <server>    Login to a Basepod server (adds to contexts)
   logout [name]     Logout from server (current or named)
   context [name]    List contexts or switch to named context
   apps              List all apps
@@ -108,6 +110,7 @@ Commands:
   restart <name>    Restart an app
   delete <name>     Delete an app
   info              Show server info
+  status            Show detailed server and app status
   init              Initialize basepod.yaml in current directory
 
 Options:
@@ -1046,5 +1049,78 @@ func cmdInfo(args []string) {
 	fmt.Println("Server Info:")
 	for k, v := range info {
 		fmt.Printf("  %s: %v\n", k, v)
+	}
+}
+
+func cmdStatus(args []string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	server, contextName, err := getCurrentServer(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Context: %s\n", contextName)
+	fmt.Printf("Server: %s\n", server.URL)
+	fmt.Println()
+
+	// Get system info
+	resp, err := apiRequest("GET", "/api/system/info", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var info map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("System:")
+	fmt.Printf("  Version: %v\n", info["version"])
+	fmt.Printf("  Platform: %v/%v\n", info["os"], info["arch"])
+	if podmanStatus, ok := info["podman_status"].(string); ok {
+		fmt.Printf("  Podman: %s\n", podmanStatus)
+	}
+	if caddyStatus, ok := info["caddy_status"].(string); ok {
+		fmt.Printf("  Caddy: %s\n", caddyStatus)
+	}
+	fmt.Println()
+
+	// Get apps
+	appsResp, err := apiRequest("GET", "/api/apps", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting apps: %v\n", err)
+		os.Exit(1)
+	}
+	defer appsResp.Body.Close()
+
+	var result app.AppListResponse
+	if err := json.NewDecoder(appsResp.Body).Decode(&result); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse apps response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Apps:")
+	if len(result.Apps) == 0 {
+		fmt.Println("  No apps deployed")
+	} else {
+		running := 0
+		stopped := 0
+		for _, a := range result.Apps {
+			if a.Status == "running" {
+				running++
+			} else {
+				stopped++
+			}
+		}
+		fmt.Printf("  Total: %d (running: %d, stopped: %d)\n", len(result.Apps), running, stopped)
 	}
 }

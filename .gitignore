@@ -13,6 +13,10 @@ bin/
 /deployer-*
 /deployerd-*
 /deployer-cli
+/basepod
+/basepod-*
+/bp
+/bp-*
 
 # Test binary, built with `go test -c`
 *.test

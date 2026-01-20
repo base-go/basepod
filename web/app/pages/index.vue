@@ -13,7 +13,7 @@ const stats = computed(() => [
   {
     label: 'Total Apps',
     value: apps.value?.total || 0,
-    description: 'Apps managed by Deployer',
+    description: 'Apps managed by Basepod',
     icon: 'i-heroicons-cube',
     color: 'primary' as const
   },

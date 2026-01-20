@@ -439,7 +439,7 @@ const pruneResources = async () => {
 
           <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
             <div>
-              <p class="font-medium">Deployer</p>
+              <p class="font-medium">Basepod</p>
               <p class="text-sm text-gray-500">API Server</p>
             </div>
             <div class="flex items-center gap-2">

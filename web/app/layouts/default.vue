@@ -61,7 +61,7 @@ const logout = async () => {
       <template #header="{ collapsed = false }">
         <div class="flex items-center gap-2" :class="collapsed ? 'justify-center' : ''">
           <UIcon name="i-heroicons-rocket-launch" class="size-8 text-primary-500 shrink-0" />
-          <span v-if="!collapsed" class="text-xl font-bold truncate">Deployer</span>
+          <span v-if="!collapsed" class="text-xl font-bold truncate">Basepod</span>
         </div>
       </template>
 

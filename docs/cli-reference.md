@@ -1,40 +1,60 @@
 # CLI Reference
 
-`deployerctl` is the command-line interface for Deployer.
+`bp` is the command-line interface for Basepod.
 
 ## Installation
 
 ```bash
 # Install CLI only (local machine)
-curl -sSL https://raw.githubusercontent.com/deployer/deployer/main/scripts/install-cli.sh | bash
+curl -fsSL https://pod.base.al/cli | bash
 
 # Or build from source
-go build -o deployerctl ./cmd/deployerctl
+go build -o bp ./cmd/bp
 ```
 
 ## Configuration
 
-The CLI stores its configuration in `~/.deployerctl.yaml`:
+The CLI stores its configuration in `~/.basepod.yaml`:
 
 ```yaml
-server: https://deployer.example.com
-token: ""  # Optional auth token
+current_context: d.example.com
+servers:
+  d.example.com:
+    url: https://d.example.com
+    token: "your-auth-token"
 ```
 
 ## Commands
 
 ### login
 
-Connect to a Deployer server.
+Connect to a Basepod server.
 
 ```bash
-deployerctl login <server>
+bp login <server>
 ```
 
 **Examples:**
 ```bash
-deployerctl login https://deployer.example.com
-deployerctl login deployer.example.com  # https:// added automatically
+bp login https://d.example.com
+bp login d.example.com  # https:// added automatically
+```
+
+### logout
+
+Disconnect from a server.
+
+```bash
+bp logout [name]
+```
+
+### context
+
+List or switch server contexts.
+
+```bash
+bp context        # List all contexts
+bp context <name> # Switch to named context
 ```
 
 ### apps
@@ -42,7 +62,7 @@ deployerctl login deployer.example.com  # https:// added automatically
 List all applications.
 
 ```bash
-deployerctl apps
+bp apps
 ```
 
 **Output:**
@@ -57,7 +77,7 @@ api         stopped   api.example.com          node:20
 Create a new application.
 
 ```bash
-deployerctl create <name> [flags]
+bp create <name> [flags]
 ```
 
 **Flags:**
@@ -67,18 +87,48 @@ deployerctl create <name> [flags]
 
 **Examples:**
 ```bash
-deployerctl create myapp
-deployerctl create myapp --domain myapp.example.com
-deployerctl create myapp --domain myapp.example.com --port 3000
-deployerctl create myapp --image nginx:latest
+bp create myapp
+bp create myapp --domain myapp.example.com
+bp create myapp --domain myapp.example.com --port 3000
+bp create myapp --image nginx:latest
+```
+
+### init
+
+Initialize a `basepod.yaml` configuration file in the current directory.
+
+```bash
+bp init
+```
+
+This creates a `basepod.yaml` file with default settings based on the current directory name.
+
+### push
+
+Deploy an application from local source code.
+
+```bash
+bp push [path]
+```
+
+This command:
+1. Reads the `basepod.yaml` configuration
+2. Creates a tarball of your source code
+3. Uploads it to the server
+4. Builds and deploys the container
+
+**Examples:**
+```bash
+bp push              # Deploy current directory
+bp push ./myapp      # Deploy specific path
 ```
 
 ### deploy
 
-Deploy an application.
+Deploy an application using a Docker image or Git repository.
 
 ```bash
-deployerctl deploy <name> [flags]
+bp deploy <name> [flags]
 ```
 
 **Flags:**
@@ -88,10 +138,10 @@ deployerctl deploy <name> [flags]
 
 **Examples:**
 ```bash
-deployerctl deploy myapp --image nginx:latest
-deployerctl deploy myapp --image ghcr.io/user/myapp:v1.0
-deployerctl deploy myapp --git https://github.com/user/repo.git
-deployerctl deploy myapp --git https://github.com/user/repo.git --branch develop
+bp deploy myapp --image nginx:latest
+bp deploy myapp --image ghcr.io/user/myapp:v1.0
+bp deploy myapp --git https://github.com/user/repo.git
+bp deploy myapp --git https://github.com/user/repo.git --branch develop
 ```
 
 ### logs
@@ -99,7 +149,7 @@ deployerctl deploy myapp --git https://github.com/user/repo.git --branch develop
 View application logs.
 
 ```bash
-deployerctl logs <name> [flags]
+bp logs <name> [flags]
 ```
 
 **Flags:**
@@ -107,9 +157,9 @@ deployerctl logs <name> [flags]
 
 **Examples:**
 ```bash
-deployerctl logs myapp
-deployerctl logs myapp --tail 50
-deployerctl logs myapp -n 200
+bp logs myapp
+bp logs myapp --tail 50
+bp logs myapp -n 200
 ```
 
 ### start
@@ -117,7 +167,7 @@ deployerctl logs myapp -n 200
 Start a stopped application.
 
 ```bash
-deployerctl start <name>
+bp start <name>
 ```
 
 ### stop
@@ -125,7 +175,7 @@ deployerctl start <name>
 Stop a running application.
 
 ```bash
-deployerctl stop <name>
+bp stop <name>
 ```
 
 ### restart
@@ -133,7 +183,7 @@ deployerctl stop <name>
 Restart an application.
 
 ```bash
-deployerctl restart <name>
+bp restart <name>
 ```
 
 ### delete
@@ -141,15 +191,15 @@ deployerctl restart <name>
 Delete an application.
 
 ```bash
-deployerctl delete <name>
+bp delete <name>
 ```
 
 **Aliases:** `rm`
 
 **Example:**
 ```bash
-deployerctl delete myapp
-deployerctl rm myapp
+bp delete myapp
+bp rm myapp
 ```
 
 ### info
@@ -157,16 +207,40 @@ deployerctl rm myapp
 Show server information.
 
 ```bash
-deployerctl info
+bp info
 ```
 
 **Output:**
 ```
 Server Info:
-  version: 0.1.0
-  status: running
-  containers: 5
-  images: 12
+  version: 1.0.0
+  os: darwin
+  arch: arm64
+  podman_status: connected
+  caddy_status: running
+```
+
+### status
+
+Show detailed server and app status.
+
+```bash
+bp status
+```
+
+**Output:**
+```
+Context: d.example.com
+Server: https://d.example.com
+
+System:
+  Version: 1.0.0
+  Platform: darwin/arm64
+  Podman: connected
+  Caddy: running
+
+Apps:
+  Total: 5 (running: 3, stopped: 2)
 ```
 
 ### version
@@ -174,9 +248,9 @@ Server Info:
 Show CLI version.
 
 ```bash
-deployerctl version
-deployerctl -v
-deployerctl --version
+bp version
+bp -v
+bp --version
 ```
 
 ### help
@@ -184,9 +258,9 @@ deployerctl --version
 Show help information.
 
 ```bash
-deployerctl help
-deployerctl -h
-deployerctl --help
+bp help
+bp -h
+bp --help
 ```
 
 ## Exit Codes
@@ -200,8 +274,27 @@ deployerctl --help
 
 | Variable | Description |
 |----------|-------------|
-| `DEPLOYER_SERVER` | Default server URL |
-| `DEPLOYER_TOKEN` | Authentication token |
+| `BASEPOD_SERVER` | Default server URL |
+| `BASEPOD_TOKEN` | Authentication token |
+
+## basepod.yaml Configuration
+
+The `basepod.yaml` file configures your application for deployment:
+
+```yaml
+name: myapp
+server: d.example.com  # Optional: target server context
+domain: myapp.example.com  # Optional: custom domain
+port: 3000  # Container port
+build:
+  dockerfile: Dockerfile
+  context: .
+env:
+  NODE_ENV: production
+  DATABASE_URL: postgres://...
+volumes:
+  - /data
+```
 
 ## Examples
 
@@ -209,40 +302,63 @@ deployerctl --help
 
 ```bash
 # 1. Login to server
-deployerctl login https://deployer.example.com
+bp login d.example.com
 
 # 2. Create an app
-deployerctl create myapp --domain myapp.example.com
+bp create myapp --domain myapp.example.com
 
 # 3. Deploy
-deployerctl deploy myapp --image nginx:latest
+bp deploy myapp --image nginx:latest
 
 # 4. Check status
-deployerctl apps
+bp status
 
 # 5. View logs
-deployerctl logs myapp
+bp logs myapp
 
 # 6. Restart if needed
-deployerctl restart myapp
+bp restart myapp
+```
+
+### Deploy from Source
+
+```bash
+# Initialize configuration
+cd my-project
+bp init
+
+# Edit basepod.yaml as needed
+
+# Deploy
+bp push
 ```
 
 ### Deploy a Node.js App
 
 ```bash
 # Create app with Node.js port
-deployerctl create api --domain api.example.com --port 3000
+bp create api --domain api.example.com --port 3000
 
 # Deploy custom image
-deployerctl deploy api --image ghcr.io/myuser/myapi:latest
+bp deploy api --image ghcr.io/myuser/myapi:latest
 
 # Check it's running
-deployerctl apps
+bp apps
 ```
 
-### Quick Nginx Setup
+### Multi-Server Deployment
 
 ```bash
-deployerctl create web --domain www.example.com
-deployerctl deploy web --image nginx:alpine
+# Login to multiple servers
+bp login d.production.com
+bp login d.staging.com
+
+# List contexts
+bp context
+
+# Switch to production
+bp context d.production.com
+
+# Deploy
+bp push
 ```
