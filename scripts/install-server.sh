@@ -610,6 +610,10 @@ start_services() {
     log "Starting services..."
 
     if [ "$OS" = "macos" ]; then
+        # Unload first in case they're already running (for updates)
+        launchctl unload /Library/LaunchDaemons/com.basepod.plist 2>/dev/null || true
+        launchctl unload /Library/LaunchDaemons/com.caddy.plist 2>/dev/null || true
+        # Then load
         launchctl load /Library/LaunchDaemons/com.caddy.plist 2>/dev/null || true
         launchctl load /Library/LaunchDaemons/com.basepod.plist 2>/dev/null || true
         return
@@ -678,6 +682,32 @@ print_success() {
     echo ""
 }
 
+# Check if this is an update (config already exists)
+is_update() {
+    # Check for existing installation
+    [ -f "/usr/local/basepod/config/basepod.yaml" ] && return 0
+    [ -f "/opt/basepod/config/basepod.yaml" ] && return 0
+    return 1
+}
+
+# Print update success message
+print_update_success() {
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    Basepod updated successfully!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo "  Your existing configuration has been preserved."
+    echo ""
+    echo "  Config:    $BASEPOD_DIR/config/basepod.yaml"
+    if [ "$OS" = "macos" ]; then
+        echo "  Logs:      tail -f $BASEPOD_DIR/logs/basepod.log"
+    else
+        echo "  Logs:      journalctl -u basepod -f"
+    fi
+    echo ""
+}
+
 # Main
 main() {
     echo ""
@@ -691,19 +721,37 @@ main() {
     echo " Self-hosted PaaS with Podman & Caddy"
     echo ""
 
-    # Ask for domain configuration first
-    setup_domain
+    # Check if this is an update
+    if is_update; then
+        log "Existing installation detected - performing update..."
+        log "Config will be preserved."
+        echo ""
 
-    install_deps
-    install_caddy
-    create_user
-    install_basepod
-    create_config
-    create_caddyfile
-    create_services
-    set_permissions
-    start_services
-    print_success
+        install_deps
+        install_caddy
+        create_user
+        install_basepod
+        # Skip create_config - preserve existing config
+        # Skip create_caddyfile - preserve existing Caddyfile
+        create_services
+        set_permissions
+        start_services
+        print_update_success
+    else
+        # Fresh install - ask for domain configuration
+        setup_domain
+
+        install_deps
+        install_caddy
+        create_user
+        install_basepod
+        create_config
+        create_caddyfile
+        create_services
+        set_permissions
+        start_services
+        print_success
+    fi
 }
 
 # Uninstall function
