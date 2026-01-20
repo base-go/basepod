@@ -1,4 +1,4 @@
-// Package main is the entry point for the deployerd server daemon.
+// Package main is the entry point for the basepod server daemon.
 package main
 
 import (
@@ -17,18 +17,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/deployer/deployer/internal/api"
-	"github.com/deployer/deployer/internal/caddy"
-	"github.com/deployer/deployer/internal/config"
-	"github.com/deployer/deployer/internal/dns"
-	"github.com/deployer/deployer/internal/imagesync"
-	"github.com/deployer/deployer/internal/podman"
-	"github.com/deployer/deployer/internal/storage"
-	"github.com/deployer/deployer/internal/web"
+	"github.com/base-go/basepod/internal/api"
+	"github.com/base-go/basepod/internal/caddy"
+	"github.com/base-go/basepod/internal/config"
+	"github.com/base-go/basepod/internal/dns"
+	"github.com/base-go/basepod/internal/imagesync"
+	"github.com/base-go/basepod/internal/podman"
+	"github.com/base-go/basepod/internal/storage"
+	"github.com/base-go/basepod/internal/web"
 )
 
 var (
-	version = "0.2.0"
+	version = "0.2.1"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/dr/releases/latest/download"
@@ -45,7 +45,7 @@ func main() {
 			runRestart()
 			return
 		case "version":
-			fmt.Printf("deployerd version %s\n", version)
+			fmt.Printf("basepod version %s\n", version)
 			return
 		}
 	}
@@ -60,7 +60,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("deployerd version %s\n", version)
+		fmt.Printf("basepod version %s\n", version)
 		os.Exit(0)
 	}
 
@@ -123,15 +123,15 @@ func main() {
 		}
 		cancel()
 
-		// Ensure deployer network exists for inter-container communication
+		// Ensure basepod network exists for inter-container communication
 		networkCtx, networkCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := pm.CreateNetwork(networkCtx, "deployer"); err != nil {
+		if err := pm.CreateNetwork(networkCtx, "basepod"); err != nil {
 			// Ignore "already exists" error
 			if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "network already exists") {
-				log.Printf("Warning: Failed to create deployer network: %v", err)
+				log.Printf("Warning: Failed to create basepod network: %v", err)
 			}
 		} else {
-			log.Printf("Deployer network created")
+			log.Printf("Basepod network created")
 		}
 		networkCancel()
 	}
@@ -220,7 +220,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("Deployer server starting on %s", addr)
+		log.Printf("Basepod server starting on %s", addr)
 		log.Printf("Base directory: %s", paths.Base)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -251,7 +251,7 @@ func main() {
 }
 
 func runSetup(paths *config.Paths) {
-	fmt.Println("=== Deployer Setup ===")
+	fmt.Println("=== Basepod Setup ===")
 	fmt.Printf("Base directory: %s\n", paths.Base)
 	fmt.Println()
 
@@ -281,7 +281,7 @@ func runSetup(paths *config.Paths) {
 		fmt.Printf("Failed to save config: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Config saved to: %s/config/deployer.yaml\n", paths.Base)
+	fmt.Printf("Config saved to: %s/config/basepod.yaml\n", paths.Base)
 
 	// Initialize storage
 	_, err = storage.New()
@@ -289,14 +289,14 @@ func runSetup(paths *config.Paths) {
 		fmt.Printf("Failed to initialize database: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Database initialized: %s/data/deployer.db\n", paths.Base)
+	fmt.Printf("Database initialized: %s/data/basepod.db\n", paths.Base)
 
 	fmt.Println()
 	fmt.Println("Setup complete! Start the server with:")
-	fmt.Printf("  %s/bin/deployerd\n", paths.Base)
+	fmt.Printf("  %s/bin/basepod\n", paths.Base)
 	fmt.Println()
 	fmt.Println("Or run directly:")
-	fmt.Println("  go run ./cmd/deployerd")
+	fmt.Println("  go run ./cmd/basepod")
 }
 
 // ensurePodmanRunning starts Podman machine if not running (macOS) or service (Linux)
@@ -381,7 +381,7 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 	for _, a := range apps {
 		if a.Status == "running" && a.Domain != "" && a.Ports.HostPort > 0 {
 			routes = append(routes, caddy.Route{
-				ID:        "deployer-" + a.Name,
+				ID:        "basepod-" + a.Name,
 				Domain:    a.Domain,
 				Upstream:  fmt.Sprintf("127.0.0.1:%d", a.Ports.HostPort),
 				EnableSSL: a.SSL.Enabled,
@@ -457,7 +457,7 @@ func runUpdate() {
 	fmt.Println("Downloading update...")
 
 	// Determine binary name based on OS and arch
-	binaryName := fmt.Sprintf("deployerd-%s-%s", runtime.GOOS, runtime.GOARCH)
+	binaryName := fmt.Sprintf("basepod-%s-%s", runtime.GOOS, runtime.GOARCH)
 	downloadURL := releaseBaseURL + "/" + binaryName
 
 	// Download new binary
@@ -474,7 +474,7 @@ func runUpdate() {
 	}
 
 	// Create temp file
-	tmpFile, err := os.CreateTemp("", "deployer-update-*")
+	tmpFile, err := os.CreateTemp("", "basepod-update-*")
 	if err != nil {
 		fmt.Printf("Error: cannot create temp file: %v\n", err)
 		os.Exit(1)
@@ -526,49 +526,49 @@ func runUpdate() {
 	runRestart()
 }
 
-// runRestart restarts the deployer service based on OS
+// runRestart restarts the basepod service based on OS
 func runRestart() {
-	fmt.Println("Restarting deployer...")
+	fmt.Println("Restarting basepod...")
 
 	if runtime.GOOS == "darwin" {
 		// macOS: Try launchctl first, then suggest manual restart
-		cmd := exec.Command("launchctl", "kickstart", "-k", "system/com.deployer.deployer")
+		cmd := exec.Command("launchctl", "kickstart", "-k", "system/com.basepod.basepod")
 		if err := cmd.Run(); err != nil {
 			// Try user-level service
-			cmd = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.deployer.deployer", os.Getuid()))
+			cmd = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.basepod.basepod", os.Getuid()))
 			if err := cmd.Run(); err != nil {
 				fmt.Println("No launchd service found.")
 				fmt.Println("If running manually, restart the process.")
-				fmt.Println("If using Homebrew services: brew services restart deployer")
+				fmt.Println("If using Homebrew services: brew services restart basepod")
 				os.Exit(0)
 			}
 		}
-		fmt.Println("Deployer restarted successfully.")
+		fmt.Println("Basepod restarted successfully.")
 		return
 	}
 
-	// Linux: Use systemctl - try 'deployer' first, then 'deployerd'
-	cmd := exec.Command("systemctl", "restart", "deployer")
+	// Linux: Use systemctl - try 'basepod' first, then 'basepod'
+	cmd := exec.Command("systemctl", "restart", "basepod")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// Try deployerd service name
-		cmd = exec.Command("systemctl", "restart", "deployerd")
+		// Try basepod service name
+		cmd = exec.Command("systemctl", "restart", "basepod")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			// Try user-level systemd
-			cmd = exec.Command("systemctl", "--user", "restart", "deployer")
+			cmd = exec.Command("systemctl", "--user", "restart", "basepod")
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
-				fmt.Printf("Error: failed to restart deployer service: %v\n", err)
-				fmt.Println("You may need to run with sudo: sudo systemctl restart deployer")
+				fmt.Printf("Error: failed to restart basepod service: %v\n", err)
+				fmt.Println("You may need to run with sudo: sudo systemctl restart basepod")
 				os.Exit(1)
 			}
 		}
 	}
-	fmt.Println("Deployer restarted successfully.")
+	fmt.Println("Basepod restarted successfully.")
 }
 
 // normalizeVersion converts version to x.x.x format

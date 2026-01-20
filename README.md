@@ -1,165 +1,132 @@
-# Deployer
+# Basepod
 
-A self-hosted Platform as a Service (PaaS) built with **Go**, **Podman**, and **Caddy**. Deploy your applications with ease, similar to CapRover but using rootless containers.
+Turn your Mac Mini into a personal server. Deploy apps, host websites, and run local LLMs on Apple Silicon - all in one place.
+
+Built with Go, Podman, and Caddy.
 
 ## Features
 
-- **Easy Deployments** - Deploy from Docker images or source code (Dockerfile)
-- **Automatic SSL** - Free HTTPS via Let's Encrypt with Caddy
-- **Rootless Containers** - Powered by Podman, no root required
-- **Modern Web UI** - Built with Nuxt 4 and Nuxt UI 4
-- **Multi-Server CLI** - Deploy to multiple servers with context switching
-- **One-Click Apps** - Pre-configured templates for popular services
+- **One-click deployments** - Deploy from Docker images, Git repos, or local source
+- **Automatic SSL** - Free TLS certificates via Caddy
+- **Local LLM support** - Run MLX models on Apple Silicon with OpenAI-compatible API
+- **Simple CLI** - `bp push` to deploy your app
+- **Web UI** - Modern dashboard for managing apps
+- **Rootless** - Runs entirely in userspace with Podman
+- **Templates** - 25+ pre-configured app templates
 
-## Architecture
+## Quick Start
 
-```
-+---------------------------------------------------------+
-|                     Clients                              |
-|        deployer CLI (macOS/Linux)                       |
-+---------------------------------------------------------+
-                          |
-                          v
-+---------------------------------------------------------+
-|                  Deployer Server                         |
-|              (deployerd on VPS)                         |
-+--------+--------+-----------+------------+--------------+
-|  Apps  | Proxy  |    SSL    |   Deploy   |   Storage    |
-| Manager| (Caddy)|   (ACME)  |   Engine   |   (SQLite)   |
-+--------+--------+-----------+------------+--------------+
-|                      Podman                              |
-+----------------------------------------------------------+
-```
-
----
-
-## Server Install (VPS/Linux)
-
-Install Deployer on your Linux VPS with one command:
+### Install Server
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
+curl -fsSL https://pod.base.al/install | bash
 ```
 
-With a custom domain (recommended - enables automatic SSL):
+### Install CLI
 
 ```bash
-DEPLOYER_DOMAIN=example.com curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash
+curl -fsSL https://pod.base.al/cli | bash
 ```
 
-### What Gets Installed
-
-- **deployerd** - The server binary at `/opt/deployer/bin/deployer`
-- **Podman** - Container runtime (rootless)
-- **Caddy** - Reverse proxy with automatic SSL
-- **SQLite** - App database at `/opt/deployer/data/`
-
-### After Install
-
-| Item | Location |
-|------|----------|
-| Dashboard | `https://d.example.com` |
-| Apps | `https://appname.example.com` |
-| Config | `/opt/deployer/config/deployer.yaml` |
-| Logs | `journalctl -u deployer -f` |
-
-**Save the password shown after install - it won't be displayed again.**
-
-### DNS Setup
-
-Point a wildcard DNS record to your server:
-
-```
-*.example.com  ->  YOUR_SERVER_IP
-```
-
-Or for specific subdomains:
-```
-d.example.com     ->  YOUR_SERVER_IP  (dashboard)
-myapp.example.com ->  YOUR_SERVER_IP  (apps)
-```
-
-### Supported OS
-
-Ubuntu, Debian, Fedora, CentOS, Rocky Linux, Alma Linux, Arch Linux
-
----
-
-## Client Install (CLI)
-
-The `deployer` CLI lets you deploy from your local machine to any Deployer server.
-
-### macOS
+Or download manually:
 
 ```bash
-# Using Homebrew (coming soon)
-brew install base-go/tap/deployer
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/base-go/basepod/releases/latest/download/bp-darwin-arm64 -o /usr/local/bin/bp
+chmod +x /usr/local/bin/bp
 
-# Or download manually
-curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-darwin-arm64 -o /usr/local/bin/deployer
-chmod +x /usr/local/bin/deployer
+# Linux (AMD64)
+curl -fsSL https://github.com/base-go/basepod/releases/latest/download/bp-linux-amd64 -o /usr/local/bin/bp
+chmod +x /usr/local/bin/bp
 ```
 
-### Linux
+## Usage
+
+### Login to your server
 
 ```bash
-# AMD64
-curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-linux-amd64 -o /usr/local/bin/deployer
-chmod +x /usr/local/bin/deployer
+bp login your-server.com
+```
 
-# ARM64
-curl -fsSL https://github.com/base-go/deployer/releases/latest/download/deployer-linux-arm64 -o /usr/local/bin/deployer
-chmod +x /usr/local/bin/deployer
+### Deploy an app
+
+```bash
+# Initialize a new app
+cd myapp
+bp init
+
+# Deploy
+bp push
+```
+
+### Using Docker images
+
+```bash
+bp create myapp
+bp deploy myapp --image nginx:latest
 ```
 
 ### CLI Commands
 
-```bash
-# Login to a server (saves token for future use)
-deployer login d.example.com
-
-# List configured servers
-deployer context
-
-# Switch active server
-deployer context use production
-
-# Deploy current directory (requires Dockerfile)
-deployer push myapp
-
-# Deploy to specific server
-deployer push myapp --server d.example.com
+```
+bp login <server>    Login to a Basepod server
+bp logout            Logout from current server
+bp context           List or switch server contexts
+bp apps              List all apps
+bp create <name>     Create a new app
+bp push              Deploy from local source
+bp deploy <name>     Deploy with Docker image
+bp logs <name>       View app logs
+bp start <name>      Start an app
+bp stop <name>       Stop an app
+bp restart <name>    Restart an app
+bp delete <name>     Delete an app
+bp info              Show server info
 ```
 
-### Project Configuration
+## Configuration
 
-Create `deployer.yaml` in your project root:
+### App Configuration (basepod.yaml)
 
 ```yaml
-# Optional: specify which server to deploy to
-server: d.example.com
-
-# App settings (optional)
 name: myapp
 port: 3000
+build:
+  dockerfile: Dockerfile
+  context: .
+env:
+  NODE_ENV: production
 ```
 
-### Deploy Workflow
+### Server Configuration (~/.basepod/config/basepod.yaml)
 
-```bash
-# 1. Login once
-deployer login d.example.com
-# Enter password when prompted
+```yaml
+server:
+  api_port: 3000
 
-# 2. Create Dockerfile in your project
-# 3. Deploy
-cd myproject
-deployer push myapp
+domain:
+  base: apps.example.com
 
-# Your app will be live at https://myapp.example.com
+podman:
+  network: basepod
+
+database:
+  path: data/basepod.db
 ```
 
----
+## Architecture
+
+```
++-------------+     +-------------+     +-------------+
+|   bp CLI    |---->|   Basepod   |---->|   Podman    |
++-------------+     |   Server    |     |  Containers |
+                    +------+------+     +-------------+
+                           |
+                    +------v------+
+                    |    Caddy    |
+                    |   (Proxy)   |
+                    +-------------+
+```
 
 ## One-Click Apps
 
@@ -176,105 +143,43 @@ Pre-configured templates available from the dashboard:
 | Storage | MinIO, File Browser |
 | Automation | n8n |
 
----
+## Requirements
 
-## REST API
+- **Server**: Linux or macOS with Podman and Caddy
+- **CLI**: Any OS (macOS, Linux)
+- **LLM**: macOS with Apple Silicon (M1/M2/M3/M4) for MLX support
 
-All endpoints require authentication (token from login).
+## Development
 
-```bash
-# List apps
-curl -H "Authorization: Bearer TOKEN" https://d.example.com/api/apps
+### Prerequisites
 
-# Create app from image
-curl -X POST https://d.example.com/api/apps \
-  -H "Authorization: Bearer TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "myapp", "image": "nginx:latest"}'
+- Go 1.24+
+- Node.js 20+ / Bun
+- Podman
+- Caddy
 
-# Deploy from template
-curl -X POST https://d.example.com/api/apps/from-template \
-  -H "Authorization: Bearer TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"template_id": "postgres", "name": "mydb"}'
-
-# Get templates
-curl https://d.example.com/api/templates
-```
-
----
-
-## Local Development (macOS)
-
-For developing Deployer itself or testing locally with `*.pod` domains.
-
-### Setup
+### Build from source
 
 ```bash
-# Install dependencies
-brew install podman caddy dnsmasq
+git clone https://github.com/base-go/basepod.git
+cd basepod
 
-# Initialize Podman
-podman machine init
-podman machine start
+# Build server
+go build -o basepod ./cmd/basepod
 
-# Configure local DNS for *.pod domains
-echo -e "address=/pod/127.0.0.2\nlisten-address=127.0.0.2\nport=53" | sudo tee /opt/homebrew/etc/dnsmasq.conf
-sudo ifconfig lo0 alias 127.0.0.2
-sudo mkdir -p /etc/resolver
-sudo bash -c 'echo "nameserver 127.0.0.2" > /etc/resolver/pod'
-sudo /opt/homebrew/sbin/dnsmasq
+# Build CLI
+go build -o bp ./cmd/bp
 
-# Port forward 80 to 8080
-echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.2 port 80 -> 127.0.0.2 port 8080" | sudo pfctl -ef -
+# Build web UI
+cd web && bun install && bun run generate
 ```
 
-### Build and Run
+### Run in development
 
 ```bash
-# Backend
-go build -o deployer ./cmd/deployer
-./deployer
-
-# Frontend (in another terminal)
-cd web
-bun install
-bun dev
+./scripts/dev.sh
 ```
-
-Access at http://localhost:3000. Apps get `*.pod` domains locally.
-
----
-
-## Comparison with CapRover
-
-| Feature | Deployer | CapRover |
-|---------|----------|----------|
-| Container Runtime | Podman (rootless) | Docker (root) |
-| Reverse Proxy | Caddy | Nginx |
-| Language | Go | Node.js |
-| SSL | Auto (Caddy/ACME) | Auto (Let's Encrypt) |
-| Multi-server CLI | Yes | No |
-| Web UI | Nuxt 4 | React |
-
----
-
-## Upgrade
-
-```bash
-# On the server
-curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/upgrade.sh | sudo bash
-```
-
-## Uninstall
-
-```bash
-# On the server
-curl -fsSL https://raw.githubusercontent.com/base-go/deployer/main/install.sh | sudo bash -s -- --uninstall
-```
-
----
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT License

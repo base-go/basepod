@@ -1,5 +1,5 @@
 {
-  "name": "deployer-web",
+  "name": "basepod-web",
   "version": "0.1.0",
   "private": true,
   "type": "module",

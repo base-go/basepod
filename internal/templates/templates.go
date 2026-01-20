@@ -276,7 +276,7 @@ var Templates = []Template{
 		HasAlpine:      false, // WordPress alpine is fpm-only
 		Port:           80,
 		Env: map[string]string{
-			"WORDPRESS_DB_HOST":     "deployer-mysql",
+			"WORDPRESS_DB_HOST":     "basepod-mysql",
 			"WORDPRESS_DB_USER":     "root",
 			"WORDPRESS_DB_PASSWORD": "changeme",
 			"WORDPRESS_DB_NAME":     "app",
@@ -392,7 +392,7 @@ var Templates = []Template{
 		Port:        80,
 		Env: map[string]string{
 			"APP_URL":    "http://localhost",
-			"DB_HOST":    "deployer-mysql",
+			"DB_HOST":    "basepod-mysql",
 			"DB_PORT":    "3306",
 			"DB_USER":    "root",
 			"DB_PASS":    "changeme",
@@ -483,8 +483,8 @@ var Templates = []Template{
 		Versions:    []string{"latest", "7", "6"},
 		Port:        3000,
 		Env: map[string]string{
-			"MONGO_URL":          "mongodb://deployer-mongodb:27017/rocketchat",
-			"MONGO_OPLOG_URL":    "mongodb://deployer-mongodb:27017/local",
+			"MONGO_URL":          "mongodb://basepod-mongodb:27017/rocketchat",
+			"MONGO_OPLOG_URL":    "mongodb://basepod-mongodb:27017/local",
 			"ROOT_URL":           "http://localhost:3000",
 			"PORT":               "3000",
 			"DEPLOY_METHOD":      "docker",
@@ -636,10 +636,10 @@ var Templates = []Template{
 			"RAILS_ENV":         "production",
 			"SECRET_KEY_BASE":   "changeme_must_be_long_secret_key_base_value",
 			"FRONTEND_URL":      "http://localhost:3000",
-			"POSTGRES_HOST":     "deployer-postgres",
+			"POSTGRES_HOST":     "basepod-postgres",
 			"POSTGRES_USERNAME": "postgres",
 			"POSTGRES_PASSWORD": "changeme",
-			"REDIS_URL":         "redis://deployer-redis:6379",
+			"REDIS_URL":         "redis://basepod-redis:6379",
 		},
 		Category: "business",
 		Icon:     "i-lucide-message-square",
@@ -654,7 +654,7 @@ var Templates = []Template{
 		Env: map[string]string{
 			"APP_URL":      "http://localhost",
 			"APP_KEY":      "base64:changeme_32_char_key_here_====",
-			"DB_HOST":      "deployer-mysql",
+			"DB_HOST":      "basepod-mysql",
 			"DB_DATABASE":  "invoiceninja",
 			"DB_USERNAME":  "root",
 			"DB_PASSWORD":  "changeme",
@@ -674,7 +674,7 @@ var Templates = []Template{
 		Versions:    []string{"latest"},
 		Port:        3000,
 		Env: map[string]string{
-			"DATABASE_URL":          "postgresql://postgres:changeme@deployer-postgres:5432/calcom",
+			"DATABASE_URL":          "postgresql://postgres:changeme@basepod-postgres:5432/calcom",
 			"NEXTAUTH_SECRET":       "changeme_must_be_secret",
 			"CALENDSO_ENCRYPTION_KEY": "changeme_32_chars_encryption_key",
 			"NEXT_PUBLIC_WEBAPP_URL": "http://localhost:3000",

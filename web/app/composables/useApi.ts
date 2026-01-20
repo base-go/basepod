@@ -1,4 +1,4 @@
-// API composable for making requests to the deployer backend
+// API composable for making requests to the basepod backend
 
 export function useApiBase() {
   const config = useRuntimeConfig()

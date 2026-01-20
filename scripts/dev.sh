@@ -1,5 +1,5 @@
 #!/bin/bash
-# Development script for deployer
+# Development script for basepod
 # Usage: ./scripts/dev.sh [start|stop|restart|status|logs|build]
 
 set -e
@@ -7,9 +7,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-BINARY="$BUILD_DIR/deployerd"
-PID_FILE="$PROJECT_DIR/.deployerd.pid"
-LOG_FILE="/tmp/deployer.log"
+BINARY="$BUILD_DIR/basepodd"
+PID_FILE="$PROJECT_DIR/.basepodd.pid"
+LOG_FILE="/tmp/basepod.log"
 
 cd "$PROJECT_DIR"
 
@@ -23,15 +23,15 @@ build() {
 
     echo "Building backend..."
     mkdir -p "$BUILD_DIR"
-    go build -ldflags "-X main.version=$(grep 'version = ' cmd/deployerd/main.go | sed 's/.*"\(.*\)".*/\1/')" \
-        -o "$BINARY" ./cmd/deployerd
+    go build -ldflags "-X main.version=$(grep 'version = ' cmd/basepodd/main.go | sed 's/.*"\(.*\)".*/\1/')" \
+        -o "$BINARY" ./cmd/basepodd
 
     echo "Build complete: $BINARY"
 }
 
 start() {
     if is_running; then
-        echo "Deployer is already running (PID: $(cat "$PID_FILE"))"
+        echo "Basepod is already running (PID: $(cat "$PID_FILE"))"
         return 1
     fi
 
@@ -40,17 +40,17 @@ start() {
         build
     fi
 
-    echo "Starting deployer..."
+    echo "Starting basepod..."
     "$BINARY" > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
     sleep 2
     if is_running; then
-        echo "Deployer started (PID: $(cat "$PID_FILE"))"
+        echo "Basepod started (PID: $(cat "$PID_FILE"))"
         echo "Logs: $LOG_FILE"
         echo "API: http://localhost:3000"
     else
-        echo "Failed to start deployer. Check logs:"
+        echo "Failed to start basepod. Check logs:"
         tail -20 "$LOG_FILE"
         return 1
     fi
@@ -58,29 +58,29 @@ start() {
 
 stop() {
     if ! is_running; then
-        echo "Deployer is not running"
+        echo "Basepod is not running"
         rm -f "$PID_FILE"
         return 0
     fi
 
-    echo "Stopping deployer..."
+    echo "Stopping basepod..."
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE"
 
     # Also kill any stray processes
-    pkill -f "deployerd" 2>/dev/null || true
+    pkill -f "basepodd" 2>/dev/null || true
 
-    echo "Deployer stopped"
+    echo "Basepod stopped"
 }
 
 status() {
     if is_running; then
-        echo "Deployer is running (PID: $(cat "$PID_FILE"))"
+        echo "Basepod is running (PID: $(cat "$PID_FILE"))"
         echo ""
         echo "Recent logs:"
         tail -10 "$LOG_FILE" 2>/dev/null || echo "No logs found"
     else
-        echo "Deployer is not running"
+        echo "Basepod is not running"
     fi
 }
 

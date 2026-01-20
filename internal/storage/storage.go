@@ -1,4 +1,4 @@
-// Package storage provides data persistence for deployer using SQLite.
+// Package storage provides data persistence for basepod using SQLite.
 package storage
 
 import (
@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/deployer/deployer/internal/app"
-	"github.com/deployer/deployer/internal/config"
+	"github.com/base-go/basepod/internal/app"
+	"github.com/base-go/basepod/internal/config"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -25,7 +25,7 @@ func New() (*Storage, error) {
 		return nil, fmt.Errorf("failed to get paths: %w", err)
 	}
 
-	dbPath := filepath.Join(paths.Data, "deployer.db")
+	dbPath := filepath.Join(paths.Data, "basepod.db")
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

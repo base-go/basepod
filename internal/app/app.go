@@ -1,4 +1,4 @@
-// Package app provides application management for deployer.
+// Package app provides application management for basepod.
 package app
 
 import (
@@ -18,7 +18,7 @@ type App struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Type        AppType           `json:"type"`        // container or mlx
-	Domain      string            `json:"domain"`      // e.g., myapp.deployer.example.com
+	Domain      string            `json:"domain"`      // e.g., myapp.basepod.example.com
 	ContainerID string            `json:"container_id"`
 	Image       string            `json:"image"`
 	Status      AppStatus         `json:"status"`

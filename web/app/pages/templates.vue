@@ -285,7 +285,7 @@ async function deployTemplate() {
             <div class="p-3 bg-gray-100 dark:bg-gray-800 rounded-md space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500">Internal (container-to-container)</span>
-                <code class="text-xs">deployer-{{ deployForm.name }}:{{ selectedTemplate?.port }}</code>
+                <code class="text-xs">basepod-{{ deployForm.name }}:{{ selectedTemplate?.port }}</code>
               </div>
               <div v-if="deployForm.exposeExternal" class="flex items-center justify-between">
                 <span class="text-xs text-gray-500">External (after deploy)</span>

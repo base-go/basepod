@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Deployer Uninstall Script
+# Basepod Uninstall Script
 # Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/uninstall.sh | sudo bash
 
 RED='\033[0;31m'
@@ -19,36 +19,36 @@ fi
 
 echo ""
 echo -e "${RED}========================================${NC}"
-echo -e "${RED}       Uninstalling Deployer           ${NC}"
+echo -e "${RED}       Uninstalling Basepod           ${NC}"
 echo -e "${RED}========================================${NC}"
 echo ""
 
 # Stop services
 log "Stopping services..."
-systemctl stop deployer 2>/dev/null || true
+systemctl stop basepod 2>/dev/null || true
 systemctl stop caddy 2>/dev/null || true
-systemctl disable deployer 2>/dev/null || true
+systemctl disable basepod 2>/dev/null || true
 
 # Remove systemd service
-log "Removing deployer service..."
-rm -f /etc/systemd/system/deployer.service
+log "Removing basepod service..."
+rm -f /etc/systemd/system/basepod.service
 systemctl daemon-reload
 
 # Remove binary symlink
 log "Removing binary..."
-rm -f /usr/local/bin/deployer
+rm -f /usr/local/bin/basepod
 
 # Remove Caddyfile
 log "Removing Caddyfile..."
 rm -f /etc/caddy/Caddyfile
 
 # Remove data directory
-log "Removing /opt/deployer..."
-rm -rf /opt/deployer
+log "Removing /opt/basepod..."
+rm -rf /opt/basepod
 
-# Remove deployer user
-log "Removing deployer user..."
-userdel -r deployer 2>/dev/null || true
+# Remove basepod user
+log "Removing basepod user..."
+userdel -r basepod 2>/dev/null || true
 
 # Optionally remove Caddy and Podman
 echo ""
@@ -58,5 +58,5 @@ echo "  apt remove -y caddy podman  # Debian/Ubuntu"
 echo "  dnf remove -y caddy podman  # Fedora/RHEL"
 echo ""
 
-echo -e "${GREEN}Deployer completely uninstalled.${NC}"
+echo -e "${GREEN}Basepod completely uninstalled.${NC}"
 echo ""

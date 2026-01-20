@@ -1,5 +1,5 @@
-// Package config provides configuration management for deployer.
-// All paths are relative to ~/deployer for rootless operation.
+// Package config provides configuration management for basepod.
+// All paths are relative to ~/.basepod for rootless operation.
 package config
 
 import (
@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds the main configuration for deployer
+// Config holds the main configuration for basepod
 type Config struct {
 	// Server settings
 	Server ServerConfig `yaml:"server"`
@@ -77,29 +77,29 @@ type DatabaseConfig struct {
 	Path string `yaml:"path"` // SQLite database path
 }
 
-// Paths holds all the directory paths used by deployer
+// Paths holds all the directory paths used by basepod
 type Paths struct {
-	Base   string // ~/deployer
-	Bin    string // ~/deployer/bin
-	Config string // ~/deployer/config
-	Data   string // ~/deployer/data
-	Apps   string // ~/deployer/data/apps
-	Certs  string // ~/deployer/data/certs
-	Logs   string // ~/deployer/logs
-	Caddy  string // ~/deployer/caddy
-	Tmp    string // ~/deployer/tmp
+	Base   string // ~/.basepod
+	Bin    string // ~/.basepod/bin
+	Config string // ~/.basepod/config
+	Data   string // ~/.basepod/data
+	Apps   string // ~/.basepod/data/apps
+	Certs  string // ~/.basepod/data/certs
+	Logs   string // ~/.basepod/logs
+	Caddy  string // ~/.basepod/caddy
+	Tmp    string // ~/.basepod/tmp
 }
 
-// GetBaseDir returns the base directory for deployer (~/deployer)
+// GetBaseDir returns the base directory for basepod (~/.basepod)
 func GetBaseDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
-	return filepath.Join(home, "deployer"), nil
+	return filepath.Join(home, "basepod"), nil
 }
 
-// GetPaths returns all paths used by deployer
+// GetPaths returns all paths used by basepod
 func GetPaths() (*Paths, error) {
 	base, err := GetBaseDir()
 	if err != nil {
@@ -162,10 +162,10 @@ func DefaultConfig() *Config {
 			Wildcard: true,
 		},
 		Podman: PodmanConfig{
-			Network: "deployer",
+			Network: "basepod",
 		},
 		Database: DatabaseConfig{
-			Path: "data/deployer.db",
+			Path: "data/basepod.db",
 		},
 	}
 }
@@ -195,7 +195,7 @@ func Load() (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		configFile = filepath.Join(paths.Config, "deployer.yaml")
+		configFile = filepath.Join(paths.Config, "basepod.yaml")
 	}
 
 	// If config doesn't exist, return defaults
@@ -227,7 +227,7 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	configFile := filepath.Join(paths.Config, "deployer.yaml")
+	configFile := filepath.Join(paths.Config, "basepod.yaml")
 
 	data, err := yaml.Marshal(c)
 	if err != nil {

@@ -1,4 +1,4 @@
-// Package auth provides authentication for the deployer API.
+// Package auth provides authentication for the basepod API.
 package auth
 
 import (

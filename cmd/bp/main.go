@@ -18,13 +18,13 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/deployer/deployer/internal/app"
+	"github.com/base-go/basepod/internal/app"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
 var (
-	version = "0.2.0"
+	version = "0.2.1"
 )
 
 // ServerConfig holds configuration for a single server
@@ -50,7 +50,7 @@ func main() {
 
 	switch cmd {
 	case "version", "-v", "--version":
-		fmt.Printf("deployer version %s\n", version)
+		fmt.Printf("bp version %s\n", version)
 	case "help", "-h", "--help":
 		printUsage()
 	case "login":
@@ -89,10 +89,10 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`deployer - CLI for Deployer PaaS
+	fmt.Println(`bp - CLI for Basepod PaaS
 
 Usage:
-  deployer <command> [arguments]
+  bp <command> [arguments]
 
 Commands:
   login <server>    Login to a Deployer server (adds to contexts)
@@ -108,26 +108,26 @@ Commands:
   restart <name>    Restart an app
   delete <name>     Delete an app
   info              Show server info
-  init              Initialize deployer.yaml in current directory
+  init              Initialize basepod.yaml in current directory
 
 Options:
   -h, --help        Show help
   -v, --version     Show version
 
 Examples:
-  deployer login d.example.com
-  deployer init
-  deployer push                          # Deploy current directory
-  deployer push ./myapp                  # Deploy specific path
-  deployer create myapp -d myapp.example.com
-  deployer deploy myapp -i nginx:latest
-  deployer logs myapp -n 50`)
+  bp login d.example.com
+  bp init
+  bp push                          # Deploy current directory
+  bp push ./myapp                  # Deploy specific path
+  bp create myapp -d myapp.example.com
+  bp deploy myapp -i nginx:latest
+  bp logs myapp -n 50`)
 }
 
 // getConfigPath returns the path to the CLI config file
 func getConfigPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".deployer.yaml")
+	return filepath.Join(home, ".basepod.yaml")
 }
 
 // loadConfig loads the CLI configuration
@@ -165,12 +165,12 @@ func saveConfig(cfg *CLIConfig) error {
 // getCurrentServer returns the current server config
 func getCurrentServer(cfg *CLIConfig) (*ServerConfig, string, error) {
 	if cfg.CurrentContext == "" {
-		return nil, "", fmt.Errorf("not logged in. Run: deployer login <server>")
+		return nil, "", fmt.Errorf("not logged in. Run: bp login <server>")
 	}
 
 	server, ok := cfg.Servers[cfg.CurrentContext]
 	if !ok {
-		return nil, "", fmt.Errorf("context '%s' not found. Run: deployer context", cfg.CurrentContext)
+		return nil, "", fmt.Errorf("context '%s' not found. Run: bp context", cfg.CurrentContext)
 	}
 
 	return &server, cfg.CurrentContext, nil
@@ -232,7 +232,7 @@ func apiRequest(method, path string, body interface{}) (*http.Response, error) {
 
 func cmdLogin(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer login <server>")
+		fmt.Fprintln(os.Stderr, "Usage: bp login <server>")
 		os.Exit(1)
 	}
 
@@ -402,7 +402,7 @@ func cmdContext(args []string) {
 	// If no args, list all contexts
 	if len(args) == 0 {
 		if len(cfg.Servers) == 0 {
-			fmt.Println("No contexts configured. Run: deployer login <server>")
+			fmt.Println("No contexts configured. Run: bp login <server>")
 			return
 		}
 
@@ -452,7 +452,7 @@ func cmdApps(args []string) {
 	}
 
 	if len(result.Apps) == 0 {
-		fmt.Println("No apps found. Create one with: deployer create <name>")
+		fmt.Println("No apps found. Create one with: bp create <name>")
 		return
 	}
 
@@ -466,7 +466,7 @@ func cmdApps(args []string) {
 
 func cmdCreate(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer create <name> [--domain <domain>] [--port <port>]")
+		fmt.Fprintln(os.Stderr, "Usage: bp create <name> [--domain <domain>] [--port <port>]")
 		os.Exit(1)
 	}
 
@@ -519,11 +519,11 @@ func cmdCreate(args []string) {
 		fmt.Printf("Domain: %s\n", newApp.Domain)
 	}
 	fmt.Println("\nNext steps:")
-	fmt.Printf("  deployer push             # Deploy from current directory\n")
-	fmt.Printf("  deployer deploy %s -i <image>  # Deploy with Docker image\n", name)
+	fmt.Printf("  bp push             # Deploy from current directory\n")
+	fmt.Printf("  bp deploy %s -i <image>  # Deploy with Docker image\n", name)
 }
 
-// AppConfig represents the deployer.yaml configuration
+// AppConfig represents the basepod.yaml configuration
 type AppConfig struct {
 	Name    string            `yaml:"name"`
 	Server  string            `yaml:"server,omitempty"`  // Server context to deploy to
@@ -540,9 +540,9 @@ type BuildConfig struct {
 	Context    string `yaml:"context,omitempty"`
 }
 
-// loadAppConfig loads deployer.yaml from the specified directory
+// loadAppConfig loads basepod.yaml from the specified directory
 func loadAppConfig(dir string) (*AppConfig, error) {
-	configPath := filepath.Join(dir, "deployer.yaml")
+	configPath := filepath.Join(dir, "basepod.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, err
@@ -562,9 +562,9 @@ func cmdInit(args []string) {
 		dir = args[0]
 	}
 
-	configPath := filepath.Join(dir, "deployer.yaml")
+	configPath := filepath.Join(dir, "basepod.yaml")
 	if _, err := os.Stat(configPath); err == nil {
-		fmt.Fprintf(os.Stderr, "deployer.yaml already exists\n")
+		fmt.Fprintf(os.Stderr, "basepod.yaml already exists\n")
 		os.Exit(1)
 	}
 
@@ -600,9 +600,9 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Created deployer.yaml for '%s'\n", appName)
+	fmt.Printf("Created basepod.yaml for '%s'\n", appName)
 	fmt.Println("\nEdit the file to configure your app, then run:")
-	fmt.Println("  deployer push")
+	fmt.Println("  bp push")
 }
 
 func cmdPush(args []string) {
@@ -615,15 +615,15 @@ func cmdPush(args []string) {
 	appCfg, err := loadAppConfig(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "No deployer.yaml found. Run 'deployer init' first.")
+			fmt.Fprintln(os.Stderr, "No basepod.yaml found. Run 'bp init' first.")
 		} else {
-			fmt.Fprintf(os.Stderr, "Failed to load deployer.yaml: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to load basepod.yaml: %v\n", err)
 		}
 		os.Exit(1)
 	}
 
 	if appCfg.Name == "" {
-		fmt.Fprintln(os.Stderr, "App name is required in deployer.yaml")
+		fmt.Fprintln(os.Stderr, "App name is required in basepod.yaml")
 		os.Exit(1)
 	}
 
@@ -635,7 +635,7 @@ func cmdPush(args []string) {
 	}
 
 	// Determine which server to use:
-	// 1. If deployer.yaml has 'server' field, use that context
+	// 1. If basepod.yaml has 'server' field, use that context
 	// 2. Otherwise use current context
 	var serverCfg *ServerConfig
 	var contextName string
@@ -643,8 +643,8 @@ func cmdPush(args []string) {
 	if appCfg.Server != "" {
 		srv, ok := cliCfg.Servers[appCfg.Server]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "Server context '%s' from deployer.yaml not found.\n", appCfg.Server)
-			fmt.Fprintln(os.Stderr, "Run: deployer login <server>")
+			fmt.Fprintf(os.Stderr, "Server context '%s' from basepod.yaml not found.\n", appCfg.Server)
+			fmt.Fprintln(os.Stderr, "Run: bp login <server>")
 			os.Exit(1)
 		}
 		serverCfg = &srv
@@ -833,7 +833,7 @@ func createTarball(dir string) (*bytes.Buffer, error) {
 
 func cmdDeploy(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer deploy <name> --image <image>")
+		fmt.Fprintln(os.Stderr, "Usage: bp deploy <name> --image <image>")
 		os.Exit(1)
 	}
 
@@ -863,7 +863,7 @@ func cmdDeploy(args []string) {
 
 	if req.Image == "" && req.GitURL == "" {
 		fmt.Fprintln(os.Stderr, "Error: --image or --git is required")
-		fmt.Fprintln(os.Stderr, "Tip: Use 'deployer push' to deploy from local source")
+		fmt.Fprintln(os.Stderr, "Tip: Use 'bp push' to deploy from local source")
 		os.Exit(1)
 	}
 
@@ -894,7 +894,7 @@ func cmdDeploy(args []string) {
 
 func cmdLogs(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer logs <name> [--tail <n>]")
+		fmt.Fprintln(os.Stderr, "Usage: bp logs <name> [--tail <n>]")
 		os.Exit(1)
 	}
 
@@ -929,7 +929,7 @@ func cmdLogs(args []string) {
 
 func cmdStart(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer start <name>")
+		fmt.Fprintln(os.Stderr, "Usage: bp start <name>")
 		os.Exit(1)
 	}
 
@@ -952,7 +952,7 @@ func cmdStart(args []string) {
 
 func cmdStop(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer stop <name>")
+		fmt.Fprintln(os.Stderr, "Usage: bp stop <name>")
 		os.Exit(1)
 	}
 
@@ -975,7 +975,7 @@ func cmdStop(args []string) {
 
 func cmdRestart(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer restart <name>")
+		fmt.Fprintln(os.Stderr, "Usage: bp restart <name>")
 		os.Exit(1)
 	}
 
@@ -998,7 +998,7 @@ func cmdRestart(args []string) {
 
 func cmdDelete(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: deployer delete <name>")
+		fmt.Fprintln(os.Stderr, "Usage: bp delete <name>")
 		os.Exit(1)
 	}
 

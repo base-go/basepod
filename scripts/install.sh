@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deployer Installation Script
+# Basepod Installation Script
 # Works on Linux and macOS
 
 set -e
@@ -12,9 +12,9 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DEPLOYER_HOME="$HOME/deployer"
+DEPLOYER_HOME="$HOME/basepod"
 DEPLOYER_VERSION="${DEPLOYER_VERSION:-latest}"
-GITHUB_REPO="deployer/deployer"
+GITHUB_REPO="basepod/basepod"
 
 # Detect OS and architecture
 detect_platform() {
@@ -54,7 +54,7 @@ detect_platform() {
 print_banner() {
     echo -e "${BLUE}"
     echo "╔═══════════════════════════════════════╗"
-    echo "║         Deployer Installer            ║"
+    echo "║         Basepod Installer            ║"
     echo "║    PaaS with Podman + Caddy + Go      ║"
     echo "╚═══════════════════════════════════════╝"
     echo -e "${NC}"
@@ -170,12 +170,12 @@ install_caddy() {
     fi
 }
 
-# Download and install Deployer
-install_deployer() {
-    echo -e "${YELLOW}Installing Deployer...${NC}"
+# Download and install Basepod
+install_basepod() {
+    echo -e "${YELLOW}Installing Basepod...${NC}"
 
-    DEPLOYER_PATH="$DEPLOYER_HOME/bin/deployer"
-    DEPLOYERCTL_PATH="$DEPLOYER_HOME/bin/deployerctl"
+    DEPLOYER_PATH="$DEPLOYER_HOME/bin/basepod"
+    DEPLOYERCTL_PATH="$DEPLOYER_HOME/bin/basepodctl"
 
     # For now, build from source if Go is available
     if command -v go &> /dev/null; then
@@ -195,15 +195,15 @@ install_deployer() {
         fi
 
         # Build
-        go build -o "$DEPLOYER_PATH" ./cmd/deployer
-        go build -o "$DEPLOYERCTL_PATH" ./cmd/deployerctl
+        go build -o "$DEPLOYER_PATH" ./cmd/basepod
+        go build -o "$DEPLOYERCTL_PATH" ./cmd/basepodctl
 
         # Cleanup
         if [ "$BUILD_DIR" != "." ]; then
             rm -rf "$BUILD_DIR"
         fi
 
-        echo -e "${GREEN}✓ Deployer built and installed${NC}"
+        echo -e "${GREEN}✓ Basepod built and installed${NC}"
     else
         echo -e "${RED}Go not found. Please install Go 1.25+ first.${NC}"
         echo "  https://go.dev/dl/"
@@ -215,7 +215,7 @@ install_deployer() {
 create_config() {
     echo -e "${YELLOW}Creating default configuration...${NC}"
 
-    CONFIG_FILE="$DEPLOYER_HOME/config/deployer.yaml"
+    CONFIG_FILE="$DEPLOYER_HOME/config/basepod.yaml"
 
     if [ -f "$CONFIG_FILE" ]; then
         echo -e "${GREEN}✓ Config already exists${NC}"
@@ -223,7 +223,7 @@ create_config() {
     fi
 
     cat > "$CONFIG_FILE" << 'EOF'
-# Deployer Configuration
+# Basepod Configuration
 server:
   host: "0.0.0.0"
   port: 443
@@ -231,16 +231,16 @@ server:
   log_level: "info"
 
 domain:
-  root: ""  # Set this to your domain, e.g., deployer.example.com
+  root: ""  # Set this to your domain, e.g., basepod.example.com
   wildcard: true
   email: "" # For Let's Encrypt
 
 podman:
   socket_path: "" # Auto-detected if empty
-  network: "deployer"
+  network: "basepod"
 
 database:
-  path: "data/deployer.db"
+  path: "data/basepod.db"
 EOF
 
     echo -e "${GREEN}✓ Config created at $CONFIG_FILE${NC}"
@@ -256,14 +256,14 @@ create_systemd_service() {
 
     mkdir -p "$HOME/.config/systemd/user"
 
-    cat > "$HOME/.config/systemd/user/deployer.service" << EOF
+    cat > "$HOME/.config/systemd/user/basepod.service" << EOF
 [Unit]
-Description=Deployer PaaS
+Description=Basepod PaaS
 After=network.target podman.socket
 
 [Service]
 Type=simple
-ExecStart=$DEPLOYER_HOME/bin/deployer
+ExecStart=$DEPLOYER_HOME/bin/basepod
 Restart=always
 RestartSec=5
 Environment=HOME=$HOME
@@ -272,9 +272,9 @@ Environment=HOME=$HOME
 WantedBy=default.target
 EOF
 
-    cat > "$HOME/.config/systemd/user/deployer-caddy.service" << EOF
+    cat > "$HOME/.config/systemd/user/basepod-caddy.service" << EOF
 [Unit]
-Description=Deployer Caddy Proxy
+Description=Basepod Caddy Proxy
 After=network.target
 
 [Service]
@@ -292,8 +292,8 @@ EOF
     echo -e "${GREEN}✓ Systemd services created${NC}"
     echo ""
     echo "To enable and start services:"
-    echo "  systemctl --user enable --now deployer"
-    echo "  systemctl --user enable --now deployer-caddy"
+    echo "  systemctl --user enable --now basepod"
+    echo "  systemctl --user enable --now basepod-caddy"
 }
 
 # Create launchd service (macOS only)
@@ -306,25 +306,25 @@ create_launchd_service() {
 
     mkdir -p "$HOME/Library/LaunchAgents"
 
-    cat > "$HOME/Library/LaunchAgents/com.deployer.agent.plist" << EOF
+    cat > "$HOME/Library/LaunchAgents/com.basepod.agent.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.deployer.agent</string>
+    <string>com.basepod.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$DEPLOYER_HOME/bin/deployer</string>
+        <string>$DEPLOYER_HOME/bin/basepod</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$DEPLOYER_HOME/logs/deployer.log</string>
+    <string>$DEPLOYER_HOME/logs/basepod.log</string>
     <key>StandardErrorPath</key>
-    <string>$DEPLOYER_HOME/logs/deployer.error.log</string>
+    <string>$DEPLOYER_HOME/logs/basepod.error.log</string>
 </dict>
 </plist>
 EOF
@@ -332,7 +332,7 @@ EOF
     echo -e "${GREEN}✓ launchd service created${NC}"
     echo ""
     echo "To start the service:"
-    echo "  launchctl load ~/Library/LaunchAgents/com.deployer.agent.plist"
+    echo "  launchctl load ~/Library/LaunchAgents/com.basepod.agent.plist"
 }
 
 # Add to PATH
@@ -357,7 +357,7 @@ setup_path() {
     if [ -n "$PROFILE_FILE" ] && [ -f "$PROFILE_FILE" ]; then
         if ! grep -q "DEPLOYER_HOME" "$PROFILE_FILE"; then
             echo "" >> "$PROFILE_FILE"
-            echo "# Deployer" >> "$PROFILE_FILE"
+            echo "# Basepod" >> "$PROFILE_FILE"
             echo "export DEPLOYER_HOME=\"$DEPLOYER_HOME\"" >> "$PROFILE_FILE"
             echo "export PATH=\"\$DEPLOYER_HOME/bin:\$PATH\"" >> "$PROFILE_FILE"
             echo -e "${GREEN}✓ Added to $PROFILE_FILE${NC}"
@@ -371,7 +371,7 @@ setup_path() {
 print_completion() {
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
-    echo -e "${GREEN}  Deployer installed successfully!     ${NC}"
+    echo -e "${GREEN}  Basepod installed successfully!     ${NC}"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
     echo ""
     echo "Installation directory: $DEPLOYER_HOME"
@@ -379,15 +379,15 @@ print_completion() {
     echo -e "${YELLOW}Next steps:${NC}"
     echo ""
     echo "1. Edit your configuration:"
-    echo "   nano $DEPLOYER_HOME/config/deployer.yaml"
+    echo "   nano $DEPLOYER_HOME/config/basepod.yaml"
     echo ""
     echo "2. Set your domain and email for SSL"
     echo ""
     echo "3. Start the services:"
     if [ "$OS" = "linux" ]; then
-        echo "   systemctl --user enable --now deployer deployer-caddy"
+        echo "   systemctl --user enable --now basepod basepod-caddy"
     else
-        echo "   $DEPLOYER_HOME/bin/deployer &"
+        echo "   $DEPLOYER_HOME/bin/basepod &"
         echo "   $DEPLOYER_HOME/bin/caddy run --config $DEPLOYER_HOME/caddy/Caddyfile &"
     fi
     echo ""
@@ -396,7 +396,7 @@ print_completion() {
     echo "   http://localhost:3000 (for local testing)"
     echo ""
     echo "For CLI usage:"
-    echo "   deployerctl --help"
+    echo "   basepodctl --help"
     echo ""
     echo -e "${BLUE}Documentation: https://github.com/${GITHUB_REPO}${NC}"
 }
@@ -408,7 +408,7 @@ main() {
     check_prerequisites
     create_directories
     install_caddy
-    install_deployer
+    install_basepod
     create_config
 
     if [ "$OS" = "linux" ]; then

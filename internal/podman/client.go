@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deployer/deployer/internal/config"
+	"github.com/base-go/basepod/internal/config"
 )
 
 // Client is the interface for Podman operations

@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# Deployer Install Script
+# Basepod Install Script
 # Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/install.sh | sudo bash
 # Or with domain: DEPLOYER_DOMAIN=example.com curl -fsSL ... | sudo bash
 
 DEPLOYER_VERSION="${DEPLOYER_VERSION:-latest}"
-DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/deployer}"
-DEPLOYER_USER="${DEPLOYER_USER:-deployer}"
+DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/basepod}"
+DEPLOYER_USER="${DEPLOYER_USER:-basepod}"
 DEPLOYER_DOMAIN="${DEPLOYER_DOMAIN:-}"
 DEPLOYER_PASSWORD="${DEPLOYER_PASSWORD:-}"
 
@@ -63,7 +63,7 @@ setup_domain() {
     echo -e "${BLUE}         Domain Configuration          ${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo ""
-    echo "Deployer needs a root domain for your apps."
+    echo "Basepod needs a root domain for your apps."
     echo ""
     echo "Example: If you enter 'example.com':"
     echo "  - Dashboard:  d.example.com"
@@ -81,7 +81,7 @@ setup_domain() {
 
         if [ -z "$DEPLOYER_DOMAIN" ]; then
             warn "No domain entered. Apps will use IP:port access only."
-            warn "You can configure a domain later in: $DEPLOYER_DIR/config/deployer.yaml"
+            warn "You can configure a domain later in: $DEPLOYER_DIR/config/basepod.yaml"
         else
             log "Domain set to: $DEPLOYER_DOMAIN"
             log "Dashboard will be at: d.$DEPLOYER_DOMAIN"
@@ -106,7 +106,7 @@ setup_domain() {
         warn "To configure domain, use: curl ... | sudo DEPLOYER_DOMAIN=example.com bash"
         warn ""
         warn "Proceeding without domain. Dashboard will be accessible via IP:port."
-        warn "You can configure domain later in: $DEPLOYER_DIR/config/deployer.yaml"
+        warn "You can configure domain later in: $DEPLOYER_DIR/config/basepod.yaml"
     fi
     echo ""
 }
@@ -185,7 +185,7 @@ install_caddy() {
     esac
 }
 
-# Create deployer user
+# Create basepod user
 create_user() {
     # On macOS, use the user who ran sudo
     if [ "$OS" = "macos" ]; then
@@ -215,14 +215,14 @@ create_user() {
     fi
 }
 
-# Download and install deployer
-install_deployer() {
+# Download and install basepod
+install_basepod() {
     # Set appropriate install dir for macOS
     if [ "$OS" = "macos" ]; then
-        DEPLOYER_DIR="/usr/local/deployer"
+        DEPLOYER_DIR="/usr/local/basepod"
     fi
 
-    log "Installing Deployer to $DEPLOYER_DIR..."
+    log "Installing Basepod to $DEPLOYER_DIR..."
 
     # Create directories with proper permissions (as root)
     mkdir -p "$DEPLOYER_DIR"/{bin,config,data,logs}
@@ -247,22 +247,22 @@ install_deployer() {
     LATEST_VERSION=$(curl -fsSL "https://api.github.com/repos/base-go/dr/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/' || echo "unknown")
     log "Installing version: $LATEST_VERSION"
 
-    # Download deployer binary
+    # Download basepod binary
     if [ "$DEPLOYER_VERSION" = "latest" ]; then
-        DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/deployerd-$DOWNLOAD_OS-$ARCH"
+        DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/basepodd-$DOWNLOAD_OS-$ARCH"
     else
-        DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/deployerd-$DOWNLOAD_OS-$ARCH"
+        DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/basepodd-$DOWNLOAD_OS-$ARCH"
     fi
 
     log "Downloading from $DOWNLOAD_URL..."
-    rm -f "$DEPLOYER_DIR/bin/deployerd"
-    curl -fsSL "$DOWNLOAD_URL" -o "$DEPLOYER_DIR/bin/deployerd" || {
+    rm -f "$DEPLOYER_DIR/bin/basepodd"
+    curl -fsSL "$DOWNLOAD_URL" -o "$DEPLOYER_DIR/bin/basepodd" || {
         warn "Binary not found, building from source..."
         build_from_source
     }
 
-    chmod +x "$DEPLOYER_DIR/bin/deployerd"
-    ln -sf "$DEPLOYER_DIR/bin/deployerd" /usr/local/bin/deployerd
+    chmod +x "$DEPLOYER_DIR/bin/basepodd"
+    ln -sf "$DEPLOYER_DIR/bin/basepodd" /usr/local/bin/basepodd
 }
 
 # Build from source if binary not available
@@ -278,9 +278,9 @@ build_from_source() {
 
     # Clone and build
     TMPDIR=$(mktemp -d)
-    git clone --depth 1 https://github.com/base-go/deployer.git "$TMPDIR"
+    git clone --depth 1 https://github.com/base-go/basepod.git "$TMPDIR"
     cd "$TMPDIR"
-    go build -o "$DEPLOYER_DIR/bin/deployer" ./cmd/deployer
+    go build -o "$DEPLOYER_DIR/bin/basepod" ./cmd/basepod
     cd -
     rm -rf "$TMPDIR"
 }
@@ -303,7 +303,7 @@ create_config() {
 
     if [ -n "$DEPLOYER_DOMAIN" ]; then
         # Production mode with real domain
-        cat > "$DEPLOYER_DIR/config/deployer.yaml" <<EOF
+        cat > "$DEPLOYER_DIR/config/basepod.yaml" <<EOF
 server:
   api_port: 3000
   host: 0.0.0.0
@@ -318,7 +318,7 @@ caddy:
   admin_url: http://localhost:2019
 
 database:
-  path: $DEPLOYER_DIR/data/deployer.db
+  path: $DEPLOYER_DIR/data/basepod.db
 
 domain:
   base: $DEPLOYER_DOMAIN
@@ -327,7 +327,7 @@ domain:
 EOF
     else
         # No domain mode - access via IP:port (no auth required for local)
-        cat > "$DEPLOYER_DIR/config/deployer.yaml" <<EOF
+        cat > "$DEPLOYER_DIR/config/basepod.yaml" <<EOF
 server:
   api_port: 3000
   host: 0.0.0.0
@@ -339,7 +339,7 @@ caddy:
   admin_url: http://localhost:2019
 
 database:
-  path: $DEPLOYER_DIR/data/deployer.db
+  path: $DEPLOYER_DIR/data/basepod.db
 
 domain:
   suffix: ""
@@ -403,14 +403,14 @@ create_services() {
 
     log "Creating systemd services..."
 
-    # Run podman system migrate for the deployer user (required after subuid/subgid changes)
+    # Run podman system migrate for the basepod user (required after subuid/subgid changes)
     log "Running podman system migrate..."
     sudo -u "$DEPLOYER_USER" sh -c "cd /tmp && podman system migrate" 2>/dev/null || true
 
-    # Deployer service
-    cat > /etc/systemd/system/deployer.service <<EOF
+    # Basepod service
+    cat > /etc/systemd/system/basepod.service <<EOF
 [Unit]
-Description=Deployer PaaS
+Description=Basepod PaaS
 After=network.target podman.socket
 
 [Service]
@@ -418,10 +418,10 @@ Type=simple
 User=$DEPLOYER_USER
 Group=$DEPLOYER_USER
 WorkingDirectory=$DEPLOYER_DIR
-ExecStart=$DEPLOYER_DIR/bin/deployerd
+ExecStart=$DEPLOYER_DIR/bin/basepodd
 Restart=always
 RestartSec=5
-Environment=DEPLOYER_CONFIG=$DEPLOYER_DIR/config/deployer.yaml
+Environment=DEPLOYER_CONFIG=$DEPLOYER_DIR/config/basepod.yaml
 Environment=PODMAN_SOCKET=/run/podman/podman.sock
 
 [Install]
@@ -466,7 +466,7 @@ EOF
     sudo -u "$DEPLOYER_USER" systemctl --user start podman.socket 2>/dev/null || true
     loginctl enable-linger "$DEPLOYER_USER" 2>/dev/null || true
 
-    # Add deployer user to podman socket group for access
+    # Add basepod user to podman socket group for access
     if [ -S /run/podman/podman.sock ]; then
         chmod 660 /run/podman/podman.sock 2>/dev/null || true
         chgrp "$DEPLOYER_USER" /run/podman/podman.sock 2>/dev/null || true
@@ -500,19 +500,19 @@ create_macos_services() {
         chown -R "$DEPLOYER_USER:staff" "$USER_HOME/.local/share/containers"
     fi
 
-    # Create launchd plist for deployer
-    cat > /Library/LaunchDaemons/com.deployer.plist <<EOF
+    # Create launchd plist for basepod
+    cat > /Library/LaunchDaemons/com.basepod.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.deployer</string>
+    <string>com.basepod</string>
     <key>UserName</key>
     <string>$DEPLOYER_USER</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$DEPLOYER_DIR/bin/deployerd</string>
+        <string>$DEPLOYER_DIR/bin/basepodd</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$DEPLOYER_DIR</string>
@@ -521,7 +521,7 @@ create_macos_services() {
         <key>HOME</key>
         <string>$USER_HOME</string>
         <key>DEPLOYER_CONFIG</key>
-        <string>$DEPLOYER_DIR/config/deployer.yaml</string>
+        <string>$DEPLOYER_DIR/config/basepod.yaml</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
@@ -530,9 +530,9 @@ create_macos_services() {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$DEPLOYER_DIR/logs/deployer.log</string>
+    <string>$DEPLOYER_DIR/logs/basepod.log</string>
     <key>StandardErrorPath</key>
-    <string>$DEPLOYER_DIR/logs/deployer.err</string>
+    <string>$DEPLOYER_DIR/logs/basepod.err</string>
 </dict>
 </plist>
 EOF
@@ -565,7 +565,7 @@ EOF
 </plist>
 EOF
 
-    chmod 644 /Library/LaunchDaemons/com.deployer.plist
+    chmod 644 /Library/LaunchDaemons/com.basepod.plist
     chmod 644 /Library/LaunchDaemons/com.caddy.plist
 }
 
@@ -593,15 +593,15 @@ start_services() {
 
     if [ "$OS" = "macos" ]; then
         launchctl load /Library/LaunchDaemons/com.caddy.plist 2>/dev/null || true
-        launchctl load /Library/LaunchDaemons/com.deployer.plist 2>/dev/null || true
+        launchctl load /Library/LaunchDaemons/com.basepod.plist 2>/dev/null || true
         return
     fi
 
     systemctl enable caddy
     systemctl start caddy
 
-    systemctl enable deployer
-    systemctl start deployer
+    systemctl enable basepod
+    systemctl start basepod
 }
 
 # Print success message
@@ -615,7 +615,7 @@ print_success() {
 
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Deployer installed successfully!${NC}"
+    echo -e "${GREEN}  Basepod installed successfully!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
 
@@ -635,19 +635,19 @@ print_success() {
         echo -e "${YELLOW}  Note: No domain configured.${NC}"
         echo "  Apps will be accessible via direct port mapping only."
         echo ""
-        echo "  To add a domain later, edit: $DEPLOYER_DIR/config/deployer.yaml"
+        echo "  To add a domain later, edit: $DEPLOYER_DIR/config/basepod.yaml"
         echo "  And set: domain.base: yourdomain.com"
     fi
 
     echo ""
-    echo "  Config:    $DEPLOYER_DIR/config/deployer.yaml"
-    echo "  Logs:      journalctl -u deployer -f"
+    echo "  Config:    $DEPLOYER_DIR/config/basepod.yaml"
+    echo "  Logs:      journalctl -u basepod -f"
     echo ""
     echo "  Commands:"
-    echo "    systemctl status deployer   # Check status"
-    echo "    systemctl restart deployer  # Restart"
-    echo "    journalctl -u deployer -f   # View logs"
-    echo "    deployer update             # Update to latest version"
+    echo "    systemctl status basepod   # Check status"
+    echo "    systemctl restart basepod  # Restart"
+    echo "    journalctl -u basepod -f   # View logs"
+    echo "    basepod update             # Update to latest version"
     echo ""
 }
 
@@ -670,7 +670,7 @@ main() {
     install_deps
     install_caddy
     create_user
-    install_deployer
+    install_basepod
     create_config
     create_caddyfile
     create_services
@@ -683,23 +683,23 @@ main() {
 uninstall() {
     echo ""
     echo -e "${RED}========================================${NC}"
-    echo -e "${RED}       Uninstalling Deployer           ${NC}"
+    echo -e "${RED}       Uninstalling Basepod           ${NC}"
     echo -e "${RED}========================================${NC}"
     echo ""
 
     # Stop services
     log "Stopping services..."
-    systemctl stop deployer 2>/dev/null || true
-    systemctl disable deployer 2>/dev/null || true
+    systemctl stop basepod 2>/dev/null || true
+    systemctl disable basepod 2>/dev/null || true
 
     # Remove systemd service
     log "Removing systemd service..."
-    rm -f /etc/systemd/system/deployer.service
+    rm -f /etc/systemd/system/basepod.service
     systemctl daemon-reload
 
     # Remove binary symlink
     log "Removing binary..."
-    rm -f /usr/local/bin/deployer
+    rm -f /usr/local/bin/basepod
 
     # Ask about data
     if [ -t 0 ]; then
@@ -722,7 +722,7 @@ uninstall() {
     fi
 
     echo ""
-    echo -e "${GREEN}Deployer uninstalled.${NC}"
+    echo -e "${GREEN}Basepod uninstalled.${NC}"
     echo ""
     echo "Note: Caddy and Podman were NOT removed."
     echo "To remove them manually:"

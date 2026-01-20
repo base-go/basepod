@@ -146,7 +146,7 @@ const activeSection = ref('getting-started')
             <h3>Connection Info</h3>
             <p>After deploying a database, view the connection details in the app detail page:</p>
             <ul>
-              <li><strong>Internal Host</strong> - Use this for container-to-container connections (e.g., <code>deployer-postgres:5432</code>)</li>
+              <li><strong>Internal Host</strong> - Use this for container-to-container connections (e.g., <code>basepod-postgres:5432</code>)</li>
               <li><strong>Credentials</strong> - Username, password, and database name from environment variables</li>
             </ul>
 

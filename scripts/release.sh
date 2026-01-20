@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Release script - builds all binaries and pushes to releases repo
+# Release script - builds all binaries and creates GitHub release
 # Usage: ./scripts/release.sh [version]  - specify version like 0.1.11
 #        ./scripts/release.sh            - auto-increment patch version
 
@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-RELEASES_DIR="${RELEASES_DIR:-../deployer-releases}"
 GO_VERSION="1.25"
 
 # Validate version format (x.x.x where x is a number)
@@ -39,8 +38,8 @@ normalize_version() {
     echo "$major.$minor.$patch"
 }
 
-# Get current version from deployerd (server)
-RAW_VERSION=$(grep 'version = "' cmd/deployerd/main.go | sed 's/.*"\(.*\)".*/\1/')
+# Get current version from basepod (server)
+RAW_VERSION=$(grep 'version = "' cmd/basepod/main.go | sed 's/.*"\(.*\)".*/\1/')
 CURRENT_VERSION=$(normalize_version "$RAW_VERSION")
 echo "Current version: $CURRENT_VERSION"
 
@@ -77,11 +76,8 @@ fi
 echo "New version: $NEW_VERSION"
 
 # Update version in both main.go files
-sed -i '' "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" cmd/deployerd/main.go
-sed -i '' "s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/" cmd/deployer/main.go
-
-# Update version in releases README
-sed -i '' "s/\*\*v$CURRENT_VERSION\*\*/\*\*v$NEW_VERSION\*\*/" "$RELEASES_DIR/README.md" 2>/dev/null || true
+sed -i '' "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" cmd/basepod/main.go
+sed -i '' "s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/" cmd/bp/main.go
 
 # Build web UI
 echo "Building web UI..."
@@ -92,63 +88,71 @@ rm -rf internal/web/dist
 mkdir -p internal/web/dist
 cp -r web/.output/public/* internal/web/dist/
 
-# Build deployerd (server) - Linux ARM64
-echo "Building deployerd linux-arm64..."
+# Build basepod (server) - Linux ARM64
+echo "Building basepod linux-arm64..."
 podman run --rm --platform linux/arm64 -v "$PWD:/app" -w /app golang:$GO_VERSION \
-    bash -c "CGO_ENABLED=1 go build -ldflags='-s -w' -o deployerd-linux-arm64 ./cmd/deployerd"
+    bash -c "CGO_ENABLED=1 go build -ldflags='-s -w' -o basepod-linux-arm64 ./cmd/basepod"
 
-# Build deployerd (server) - Linux AMD64 (without CGO)
-echo "Building deployerd linux-amd64..."
+# Build basepod (server) - Linux AMD64 (without CGO)
+echo "Building basepod linux-amd64..."
 podman run --rm --platform linux/arm64 -v "$PWD:/app" -w /app golang:$GO_VERSION \
-    bash -c "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o deployerd-linux-amd64 ./cmd/deployerd"
+    bash -c "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o basepod-linux-amd64 ./cmd/basepod"
 
-# Build deployerd (server) - macOS
-echo "Building deployerd darwin-arm64..."
-CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o deployerd-darwin-arm64 ./cmd/deployerd
+# Build basepod (server) - macOS
+echo "Building basepod darwin-arm64..."
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o basepod-darwin-arm64 ./cmd/basepod
 
-echo "Building deployerd darwin-amd64..."
-CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o deployerd-darwin-amd64 ./cmd/deployerd
+echo "Building basepod darwin-amd64..."
+CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o basepod-darwin-amd64 ./cmd/basepod
 
-# Build deployer (CLI client) - all platforms (no CGO needed for client)
-echo "Building deployer CLI linux-arm64..."
-GOOS=linux GOARCH=arm64 go build -ldflags='-s -w' -o deployer-linux-arm64 ./cmd/deployer
+# Build bp (CLI client) - all platforms (no CGO needed for client)
+echo "Building bp CLI linux-arm64..."
+GOOS=linux GOARCH=arm64 go build -ldflags='-s -w' -o bp-linux-arm64 ./cmd/bp
 
-echo "Building deployer CLI linux-amd64..."
-GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o deployer-linux-amd64 ./cmd/deployer
+echo "Building bp CLI linux-amd64..."
+GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o bp-linux-amd64 ./cmd/bp
 
-echo "Building deployer CLI darwin-arm64..."
-GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o deployer-darwin-arm64 ./cmd/deployer
+echo "Building bp CLI darwin-arm64..."
+GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o bp-darwin-arm64 ./cmd/bp
 
-echo "Building deployer CLI darwin-amd64..."
-GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o deployer-darwin-amd64 ./cmd/deployer
+echo "Building bp CLI darwin-amd64..."
+GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o bp-darwin-amd64 ./cmd/bp
 
-# Copy to releases
-cp deployerd-linux-arm64 deployerd-linux-amd64 deployerd-darwin-arm64 deployerd-darwin-amd64 \
-   deployer-linux-arm64 deployer-linux-amd64 deployer-darwin-arm64 deployer-darwin-amd64 \
-   scripts/install-server.sh "$RELEASES_DIR/install.sh"
-
-# Commit and push releases
-cd "$RELEASES_DIR"
+# Commit version bump
 git add -A
-git commit -m "v$NEW_VERSION"
+git commit -m "Release v$NEW_VERSION" || true
 git push
 
 # Create GitHub release with binaries
 echo "Creating GitHub release..."
 gh release create "v$NEW_VERSION" \
-    deployerd-linux-arm64 \
-    deployerd-linux-amd64 \
-    deployerd-darwin-arm64 \
-    deployerd-darwin-amd64 \
-    deployer-linux-arm64 \
-    deployer-linux-amd64 \
-    deployer-darwin-arm64 \
-    deployer-darwin-amd64 \
+    basepod-linux-arm64 \
+    basepod-linux-amd64 \
+    basepod-darwin-arm64 \
+    basepod-darwin-amd64 \
+    bp-linux-arm64 \
+    bp-linux-amd64 \
+    bp-darwin-arm64 \
+    bp-darwin-amd64 \
+    scripts/install-server.sh \
     --title "v$NEW_VERSION" \
     --notes "Release v$NEW_VERSION
 
-Server (deployerd): Run on your server
-CLI (deployer): Run on your local machine"
+**Server (basepod)**: Run on your server
+**CLI (bp)**: Run on your local machine
+
+## Install
+
+\`\`\`bash
+# Server
+curl -fsSL https://github.com/base-go/basepod/releases/latest/download/install-server.sh | bash
+
+# CLI (macOS)
+curl -fsSL https://github.com/base-go/basepod/releases/latest/download/bp-darwin-arm64 -o /usr/local/bin/bp && chmod +x /usr/local/bin/bp
+\`\`\`"
+
+# Cleanup binaries
+rm -f basepod-* bp-*
 
 echo ""
 echo "Released v$NEW_VERSION"

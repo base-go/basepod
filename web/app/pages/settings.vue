@@ -150,7 +150,7 @@ const restartService = async (service: string) => {
     await $api(`/system/restart/${service}`, { method: 'POST' })
     toast.add({ title: `${service} restarted`, color: 'success' })
     // If restarting deployer, wait and refresh
-    if (service === 'deployer') {
+    if (service === 'basepod') {
       toast.add({ title: 'Waiting for server...', color: 'info' })
       const ready = await waitForServer()
       if (ready) {
@@ -447,8 +447,8 @@ const pruneResources = async () => {
               <UButton
                 size="xs"
                 variant="soft"
-                :loading="restartingService === 'deployer'"
-                @click="restartService('deployer')"
+                :loading="restartingService === 'basepod'"
+                @click="restartService('basepod')"
               >
                 Restart
               </UButton>

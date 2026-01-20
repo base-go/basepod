@@ -34,7 +34,7 @@ func GetFileSystem() (fs.FS, string, error) {
 
 	// 2. Auto-detect common disk locations
 	diskPaths := []string{
-		"/opt/deployer/web",        // Production: synced frontend
+		"/opt/basepod/web",        // Production: synced frontend
 		"./web/.output/public",     // Development: nuxt output
 		"./internal/web/dist",      // Development: embedded dir
 	}

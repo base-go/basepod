@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/deployer/deployer/internal/app"
-	"github.com/deployer/deployer/internal/config"
-	"github.com/deployer/deployer/internal/storage"
+	"github.com/base-go/basepod/internal/app"
+	"github.com/base-go/basepod/internal/config"
+	"github.com/base-go/basepod/internal/storage"
 )
 
 // Manager manages the reverse proxy configuration

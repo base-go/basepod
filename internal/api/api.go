@@ -1,4 +1,4 @@
-// Package api provides the REST API for deployer.
+// Package api provides the REST API for basepod.
 package api
 
 import (
@@ -17,15 +17,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deployer/deployer/internal/app"
-	"github.com/deployer/deployer/internal/auth"
-	"github.com/deployer/deployer/internal/caddy"
-	"github.com/deployer/deployer/internal/config"
-	"github.com/deployer/deployer/internal/mlx"
-	"github.com/deployer/deployer/internal/podman"
-	"github.com/deployer/deployer/internal/storage"
-	"github.com/deployer/deployer/internal/templates"
-	"github.com/deployer/deployer/internal/web"
+	"github.com/base-go/basepod/internal/app"
+	"github.com/base-go/basepod/internal/auth"
+	"github.com/base-go/basepod/internal/caddy"
+	"github.com/base-go/basepod/internal/config"
+	"github.com/base-go/basepod/internal/mlx"
+	"github.com/base-go/basepod/internal/podman"
+	"github.com/base-go/basepod/internal/storage"
+	"github.com/base-go/basepod/internal/templates"
+	"github.com/base-go/basepod/internal/web"
 	"github.com/google/uuid"
 )
 
@@ -77,8 +77,8 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	staticPaths := []string{
 		os.Getenv("DEPLOYER_WEB_DIR"),
 		"./dist",                       // Relative to binary
-		"/opt/deployer/web/dist",       // Linux production
-		"/usr/local/deployer/web/dist", // macOS production
+		"/opt/basepod/web/dist",       // Linux production
+		"/usr/local/basepod/web/dist", // macOS production
 	}
 	for _, dir := range staticPaths {
 		if dir == "" {
@@ -178,7 +178,7 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 
 		// Check for token in cookie or Authorization header
 		token := ""
-		if cookie, err := r.Cookie("deployer_token"); err == nil {
+		if cookie, err := r.Cookie("basepod_token"); err == nil {
 			token = cookie.Value
 		}
 		if token == "" {
@@ -219,7 +219,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Set cookie - check both TLS and X-Forwarded-Proto for HTTPS detection
 	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
-		Name:     "deployer_token",
+		Name:     "basepod_token",
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
@@ -236,13 +236,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout handles logout
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie("deployer_token"); err == nil {
+	if cookie, err := r.Cookie("basepod_token"); err == nil {
 		s.auth.DeleteSession(cookie.Value)
 	}
 
 	// Clear cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     "deployer_token",
+		Name:     "basepod_token",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -259,7 +259,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 
 	if !needsSetup {
 		token := ""
-		if cookie, err := r.Cookie("deployer_token"); err == nil {
+		if cookie, err := r.Cookie("basepod_token"); err == nil {
 			token = cookie.Value
 		}
 		if token == "" {
@@ -314,7 +314,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 	// Set cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     "deployer_token",
+		Name:     "basepod_token",
 		Value:    session.Token,
 		Path:     "/",
 		Expires:  session.ExpiresAt,
@@ -455,7 +455,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// No static files embedded, return API info
 	jsonResponse(w, http.StatusOK, map[string]string{
-		"name":    "Deployer API",
+		"name":    "Basepod API",
 		"version": "0.1.0",
 		"message": "Web UI not available. Use API endpoints at /api/*",
 	})
@@ -627,7 +627,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 // AppResponse extends App with computed connection info
 type AppResponse struct {
 	*app.App
-	InternalHost string `json:"internal_host"` // e.g., "deployer-mysql"
+	InternalHost string `json:"internal_host"` // e.g., "basepod-mysql"
 	ExternalHost string `json:"external_host"` // e.g., "d.common.al:31234"
 }
 
@@ -657,7 +657,7 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	// Build response with computed fields
 	response := AppResponse{
 		App:          a,
-		InternalHost: "deployer-" + a.Name,
+		InternalHost: "basepod-" + a.Name,
 	}
 
 	// Compute external host from domain config
@@ -763,7 +763,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	// Remove Caddy route
 	if s.caddy != nil {
-		_ = s.caddy.RemoveRoute("deployer-" + a.ID)
+		_ = s.caddy.RemoveRoute("basepod-" + a.ID)
 	}
 
 	if err := s.storage.DeleteApp(id); err != nil {
@@ -890,7 +890,7 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stop and remove old container
-	containerName := "deployer-" + a.Name
+	containerName := "basepod-" + a.Name
 	if a.ContainerID != "" {
 		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
 		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
@@ -912,14 +912,14 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 		Name:     containerName,
 		Image:    a.Image,
 		Env:      a.Env,
-		Networks: []string{"deployer"},
+		Networks: []string{"basepod"},
 		Volumes:  volumeMounts,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
 		Labels: map[string]string{
-			"deployer.app":    a.Name,
-			"deployer.app.id": a.ID,
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
 		},
 	})
 	if err != nil {
@@ -994,7 +994,7 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove old container if exists (by ID and by name)
-	containerName := "deployer-" + a.Name
+	containerName := "basepod-" + a.Name
 	if a.ContainerID != "" {
 		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
 		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
@@ -1010,16 +1010,16 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 
 	// Create new container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:     "deployer-" + a.Name,
+		Name:     "basepod-" + a.Name,
 		Image:    image,
 		Env:      a.Env,
-		Networks: []string{"deployer"},
+		Networks: []string{"basepod"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
 		Labels: map[string]string{
-			"deployer.app":    a.Name,
-			"deployer.app.id": a.ID,
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
 		},
 	})
 	if err != nil {
@@ -1056,7 +1056,7 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 	// Always use localhost with host port (container IP doesn't work on macOS with Podman VM)
 	if a.Domain != "" && s.caddy != nil {
 		route := caddy.Route{
-			ID:        "deployer-" + a.Name,
+			ID:        "basepod-" + a.Name,
 			Domain:    a.Domain,
 			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
 			EnableSSL: a.SSL.Enabled,
@@ -1277,7 +1277,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download URL
-	downloadURL := fmt.Sprintf("https://github.com/base-go/dr/releases/latest/download/deployerd-linux-%s", arch)
+	downloadURL := fmt.Sprintf("https://github.com/base-go/dr/releases/latest/download/basepodd-linux-%s", arch)
 
 	// Download new binary to temp file
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -1294,7 +1294,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write to temp file
-	tmpFile, err := os.CreateTemp("", "deployerd-update-*")
+	tmpFile, err := os.CreateTemp("", "basepodd-update-*")
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Failed to create temp file: "+err.Error())
 		return
@@ -1367,7 +1367,7 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 		// For podman, we restart the podman socket service
 		cmd := exec.Command("systemctl", "restart", "podman.socket")
 		if err := cmd.Run(); err != nil {
-			// Try alternative: just reconnect by restarting deployer
+			// Try alternative: just reconnect by restarting basepod
 			errorResponse(w, http.StatusInternalServerError, "Failed to restart Podman: "+err.Error())
 			return
 		}
@@ -1388,11 +1388,11 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 			"service": "caddy",
 		})
 
-	case "deployer":
+	case "basepod":
 		// Send response first, then exit to trigger systemd restart
 		jsonResponse(w, http.StatusOK, map[string]string{
 			"status":  "restarting",
-			"service": "deployer",
+			"service": "basepod",
 		})
 		go func() {
 			time.Sleep(500 * time.Millisecond)
@@ -1442,16 +1442,16 @@ func (s *Server) deployPlaceholder(a *app.App) {
 
 	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:     "deployer-" + a.Name,
+		Name:     "basepod-" + a.Name,
 		Image:    placeholderImage,
 		Env:      a.Env,
-		Networks: []string{"deployer"},
+		Networks: []string{"basepod"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
 		Labels: map[string]string{
-			"deployer.app":    a.Name,
-			"deployer.app.id": a.ID,
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
 		},
 	})
 	if err != nil {
@@ -1477,7 +1477,7 @@ func (s *Server) deployPlaceholder(a *app.App) {
 	// Configure Caddy if domain is set
 	if a.Domain != "" && s.caddy != nil {
 		_ = s.caddy.AddRoute(caddy.Route{
-			ID:        "deployer-" + a.Name,
+			ID:        "basepod-" + a.Name,
 			Domain:    a.Domain,
 			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
 			EnableSSL: a.SSL.Enabled,
@@ -1626,18 +1626,18 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 
 	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
-		Name:     "deployer-" + a.Name,
+		Name:     "basepod-" + a.Name,
 		Image:    image,
 		Env:      a.Env,
 		Command:  tmpl.Command,
-		Networks: []string{"deployer"},
+		Networks: []string{"basepod"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
 		Labels: map[string]string{
-			"deployer.app":      a.Name,
-			"deployer.app.id":   a.ID,
-			"deployer.template": tmpl.ID,
+			"basepod.app":      a.Name,
+			"basepod.app.id":   a.ID,
+			"basepod.template": tmpl.ID,
 		},
 	})
 	if err != nil {
@@ -1662,7 +1662,7 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 	// Configure Caddy if domain is set
 	if a.Domain != "" && s.caddy != nil {
 		_ = s.caddy.AddRoute(caddy.Route{
-			ID:        "deployer-" + a.Name,
+			ID:        "basepod-" + a.Name,
 			Domain:    a.Domain,
 			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
 			EnableSSL: a.SSL.Enabled,
@@ -1895,7 +1895,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build image using Podman
-	imageName := fmt.Sprintf("deployer/%s:latest", a.Name)
+	imageName := fmt.Sprintf("basepod/%s:latest", a.Name)
 	writeLine("Building image: " + imageName)
 
 	a.Status = app.StatusDeploying
@@ -1914,7 +1914,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	writeLine("Image built successfully")
 
 	// Remove old container if exists
-	containerName := "deployer-" + a.Name
+	containerName := "basepod-" + a.Name
 	if a.ContainerID != "" {
 		writeLine("Stopping old container...")
 		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
@@ -1935,13 +1935,13 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		Name:     containerName,
 		Image:    imageName,
 		Env:      a.Env,
-		Networks: []string{"deployer"},
+		Networks: []string{"basepod"},
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
 		Labels: map[string]string{
-			"deployer.app":    a.Name,
-			"deployer.app.id": a.ID,
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
 		},
 	})
 	if err != nil {
@@ -1971,7 +1971,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	if a.Domain != "" && s.caddy != nil {
 		writeLine("Configuring routing for: " + a.Domain)
 		_ = s.caddy.AddRoute(caddy.Route{
-			ID:        "deployer-" + a.Name,
+			ID:        "basepod-" + a.Name,
 			Domain:    a.Domain,
 			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
 			EnableSSL: a.SSL.Enabled,

@@ -1,4 +1,4 @@
-module github.com/deployer/deployer
+module github.com/base-go/basepod
 
 go 1.24.0
 

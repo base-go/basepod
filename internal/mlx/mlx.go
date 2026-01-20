@@ -91,7 +91,7 @@ func GetService() *Service {
 		if err != nil {
 			home = "/tmp"
 		}
-		baseDir := filepath.Join(home, ".local", "share", "deployer", "mlx")
+		baseDir := filepath.Join(home, ".local", "share", "basepod", "mlx")
 		os.MkdirAll(baseDir, 0755)
 
 		instance = &Service{

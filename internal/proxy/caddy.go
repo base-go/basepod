@@ -15,8 +15,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/deployer/deployer/internal/app"
-	"github.com/deployer/deployer/internal/config"
+	"github.com/base-go/basepod/internal/app"
+	"github.com/base-go/basepod/internal/config"
 )
 
 // CaddyManager manages the Caddy reverse proxy
@@ -96,7 +96,7 @@ type AppRoute struct {
 
 // GenerateCaddyfile generates a Caddyfile from app routes
 func (m *CaddyManager) GenerateCaddyfile(routes []AppRoute, rootDomain string, email string) error {
-	tmpl := `# Deployer Caddy Configuration
+	tmpl := `# Basepod Caddy Configuration
 # Generated at {{ .GeneratedAt }}
 # Do not edit manually - changes will be overwritten
 
@@ -111,7 +111,7 @@ func (m *CaddyManager) GenerateCaddyfile(routes []AppRoute, rootDomain string, e
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
-# Deployer Web UI and API
+# Basepod Web UI and API
 {{ .RootDomain }} {
 	# API endpoints
 	handle /api/* {

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deployer/deployer/internal/storage"
-	"github.com/deployer/deployer/internal/templates"
+	"github.com/base-go/basepod/internal/storage"
+	"github.com/base-go/basepod/internal/templates"
 )
 
 // Syncer handles periodic synchronization of image tags from Docker Hub

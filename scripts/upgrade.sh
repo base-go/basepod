@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-# Deployer Upgrade Script
+# Basepod Upgrade Script
 # Usage: curl -fsSL https://raw.githubusercontent.com/base-go/dr/main/upgrade.sh | sudo bash
 
 DEPLOYER_VERSION="${DEPLOYER_VERSION:-latest}"
-DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/deployer}"
+DEPLOYER_DIR="${DEPLOYER_DIR:-/opt/basepod}"
 
 # Colors
 RED='\033[0;31m'
@@ -22,9 +22,9 @@ if [ "$EUID" -ne 0 ]; then
     error "Please run as root: curl -fsSL ... | sudo bash"
 fi
 
-# Check if deployer is installed
-if [ ! -f "$DEPLOYER_DIR/bin/deployer" ]; then
-    error "Deployer not found at $DEPLOYER_DIR. Please run install.sh first."
+# Check if basepod is installed
+if [ ! -f "$DEPLOYER_DIR/bin/basepod" ]; then
+    error "Basepod not found at $DEPLOYER_DIR. Please run install.sh first."
 fi
 
 echo ""
@@ -39,7 +39,7 @@ echo " Upgrade Script"
 echo ""
 
 # Get current version
-CURRENT_VERSION=$("$DEPLOYER_DIR/bin/deployer" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+CURRENT_VERSION=$("$DEPLOYER_DIR/bin/basepod" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
 log "Current version: $CURRENT_VERSION"
 
 # Detect architecture
@@ -52,12 +52,12 @@ esac
 
 # Download URL
 if [ "$DEPLOYER_VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/deployer-linux-$ARCH"
+    DOWNLOAD_URL="https://github.com/base-go/dr/releases/latest/download/basepod-linux-$ARCH"
     # Get latest version from GitHub API
     LATEST_VERSION=$(curl -sL https://api.github.com/repos/base-go/dr/releases/latest | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
     log "Latest version: $LATEST_VERSION"
 else
-    DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/deployer-linux-$ARCH"
+    DOWNLOAD_URL="https://github.com/base-go/dr/releases/download/$DEPLOYER_VERSION/basepod-linux-$ARCH"
     LATEST_VERSION="$DEPLOYER_VERSION"
 fi
 
@@ -67,48 +67,48 @@ if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
 fi
 
 # Stop service
-log "Stopping deployer service..."
-systemctl stop deployer 2>/dev/null || true
+log "Stopping basepod service..."
+systemctl stop basepod 2>/dev/null || true
 
 # Backup current binary
 log "Backing up current binary..."
-cp "$DEPLOYER_DIR/bin/deployer" "$DEPLOYER_DIR/bin/deployer.bak"
+cp "$DEPLOYER_DIR/bin/basepod" "$DEPLOYER_DIR/bin/basepod.bak"
 
 # Download new binary
 log "Downloading version $LATEST_VERSION..."
-if ! curl -fsSL "$DOWNLOAD_URL" -o "$DEPLOYER_DIR/bin/deployer.new"; then
+if ! curl -fsSL "$DOWNLOAD_URL" -o "$DEPLOYER_DIR/bin/basepod.new"; then
     warn "Download failed, restoring backup..."
-    mv "$DEPLOYER_DIR/bin/deployer.bak" "$DEPLOYER_DIR/bin/deployer"
-    systemctl start deployer
+    mv "$DEPLOYER_DIR/bin/basepod.bak" "$DEPLOYER_DIR/bin/basepod"
+    systemctl start basepod
     error "Failed to download new version"
 fi
 
 # Replace binary
-mv "$DEPLOYER_DIR/bin/deployer.new" "$DEPLOYER_DIR/bin/deployer"
-chmod +x "$DEPLOYER_DIR/bin/deployer"
+mv "$DEPLOYER_DIR/bin/basepod.new" "$DEPLOYER_DIR/bin/basepod"
+chmod +x "$DEPLOYER_DIR/bin/basepod"
 
 # Verify new binary works
-if ! "$DEPLOYER_DIR/bin/deployer" version &>/dev/null; then
+if ! "$DEPLOYER_DIR/bin/basepod" version &>/dev/null; then
     warn "New binary failed verification, restoring backup..."
-    mv "$DEPLOYER_DIR/bin/deployer.bak" "$DEPLOYER_DIR/bin/deployer"
-    systemctl start deployer
+    mv "$DEPLOYER_DIR/bin/basepod.bak" "$DEPLOYER_DIR/bin/basepod"
+    systemctl start basepod
     error "New binary verification failed"
 fi
 
 # Remove backup
-rm -f "$DEPLOYER_DIR/bin/deployer.bak"
+rm -f "$DEPLOYER_DIR/bin/basepod.bak"
 
 # Restart services
-log "Restarting deployer service..."
-systemctl restart deployer
+log "Restarting basepod service..."
+systemctl restart basepod
 
 log "Restarting caddy service..."
 systemctl restart caddy 2>/dev/null || true
 
 # Verify service is running
 sleep 2
-if systemctl is-active --quiet deployer; then
-    NEW_VERSION=$("$DEPLOYER_DIR/bin/deployer" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$LATEST_VERSION")
+if systemctl is-active --quiet basepod; then
+    NEW_VERSION=$("$DEPLOYER_DIR/bin/basepod" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$LATEST_VERSION")
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}  Upgrade successful!${NC}"
@@ -122,7 +122,7 @@ if systemctl is-active --quiet deployer; then
     echo ""
 else
     warn "Service failed to start, restoring backup..."
-    mv "$DEPLOYER_DIR/bin/deployer.bak" "$DEPLOYER_DIR/bin/deployer" 2>/dev/null || true
-    systemctl start deployer
+    mv "$DEPLOYER_DIR/bin/basepod.bak" "$DEPLOYER_DIR/bin/basepod" 2>/dev/null || true
+    systemctl start basepod
     error "Service failed to start after upgrade"
 fi
