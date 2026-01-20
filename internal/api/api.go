@@ -2133,11 +2133,20 @@ func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
 		ID           string `json:"id"`
 		Name         string `json:"name"`
 		Size         string `json:"size"`
+		Category     string `json:"category"`
+		Description  string `json:"description,omitempty"`
 		Downloaded   bool   `json:"downloaded"`
 		DownloadedAt string `json:"downloaded_at,omitempty"`
 		RequiredRAM  int    `json:"required_ram_gb"`
 		CanRun       bool   `json:"can_run"`
 		Warning      string `json:"warning,omitempty"`
+	}
+
+	// Get catalog for descriptions
+	catalog := mlx.GetModelCatalog()
+	descMap := make(map[string]string)
+	for _, c := range catalog {
+		descMap[c.ID] = c.Description
 	}
 
 	var modelsWithRAM []ModelWithRAM
@@ -2147,6 +2156,8 @@ func (s *Server) handleListMLXModels(w http.ResponseWriter, r *http.Request) {
 			ID:          m.ID,
 			Name:        m.Name,
 			Size:        m.Size,
+			Category:    m.Category,
+			Description: descMap[m.ID],
 			Downloaded:  m.Downloaded,
 			RequiredRAM: mlx.EstimateModelRAM(m.ID),
 			CanRun:      canRun,

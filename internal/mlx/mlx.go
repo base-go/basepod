@@ -32,10 +32,11 @@ type Service struct {
 
 // Model represents a downloaded model
 type Model struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Size        string    `json:"size"`
-	Downloaded  bool      `json:"downloaded"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Size         string    `json:"size"`
+	Category     string    `json:"category"`
+	Downloaded   bool      `json:"downloaded"`
 	DownloadedAt time.Time `json:"downloaded_at,omitempty"`
 }
 
@@ -45,6 +46,7 @@ type ModelInfo struct {
 	Name        string `json:"name"`
 	Size        string `json:"size"`
 	Description string `json:"description"`
+	Category    string `json:"category"` // chat, code, speech, vision, embedding
 }
 
 // Status represents the service status
@@ -252,20 +254,31 @@ func (s *Service) ListModels() []Model {
 			ID:         info.ID,
 			Name:       info.Name,
 			Size:       info.Size,
+			Category:   info.Category,
 			Downloaded: false,
 		}
-		if dlTime, ok := downloaded[info.ID]; ok {
+		if meta, ok := downloaded[info.ID]; ok {
 			model.Downloaded = true
-			model.DownloadedAt = dlTime
+			model.DownloadedAt = meta.DownloadedAt
+			// Use actual size if we have it
+			if meta.SizeBytes > 0 {
+				model.Size = formatSize(meta.SizeBytes)
+			}
 		}
 		models = append(models, model)
 	}
 	return models
 }
 
-// getDownloadedModels returns map of model ID -> download time
-func (s *Service) getDownloadedModels() map[string]time.Time {
-	result := make(map[string]time.Time)
+// ModelMeta stores metadata for downloaded models
+type ModelMeta struct {
+	DownloadedAt time.Time `json:"downloaded_at"`
+	SizeBytes    int64     `json:"size_bytes,omitempty"`
+}
+
+// getDownloadedModels returns map of model ID -> metadata
+func (s *Service) getDownloadedModels() map[string]ModelMeta {
+	result := make(map[string]ModelMeta)
 	metaFile := filepath.Join(s.baseDir, "models.json")
 
 	data, err := os.ReadFile(metaFile)
@@ -273,18 +286,41 @@ func (s *Service) getDownloadedModels() map[string]time.Time {
 		return result
 	}
 
-	json.Unmarshal(data, &result)
+	// Try new format first
+	if err := json.Unmarshal(data, &result); err != nil {
+		// Fallback to old format (map[string]time.Time)
+		oldFormat := make(map[string]time.Time)
+		if err := json.Unmarshal(data, &oldFormat); err == nil {
+			for id, t := range oldFormat {
+				result[id] = ModelMeta{DownloadedAt: t}
+			}
+		}
+	}
 	return result
 }
 
 // saveDownloadedModels saves the downloaded models metadata
-func (s *Service) saveDownloadedModels(models map[string]time.Time) error {
+func (s *Service) saveDownloadedModels(models map[string]ModelMeta) error {
 	metaFile := filepath.Join(s.baseDir, "models.json")
-	data, err := json.Marshal(models)
+	data, err := json.MarshalIndent(models, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(metaFile, data, 0644)
+}
+
+// formatSize converts bytes to human readable string
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // DownloadProgressData is a safe copy of download progress data
@@ -531,11 +567,16 @@ except Exception as e:
     print(f"DOWNLOAD_ERROR:{e}", flush=True)
     sys.exit(1)
 
-# Now load to verify
+# Try to load to verify (optional - some models like speech models won't load with mlx_lm)
 print("LOADING_MODEL", flush=True)
-from mlx_lm import load
-load(model_id)
-print("MODEL_READY", flush=True)
+try:
+    from mlx_lm import load
+    load(model_id)
+    print("MODEL_READY", flush=True)
+except Exception as e:
+    # Model downloaded but can't be loaded with mlx_lm - still consider it downloaded
+    print(f"LOAD_WARNING:{e}", flush=True)
+    print("MODEL_READY", flush=True)
 `, dp.ModelID, filepath.Join(s.baseDir, "cache"))
 
 	cmd := exec.CommandContext(ctx, pythonPath, "-c", downloadScript)
@@ -617,6 +658,9 @@ print("MODEL_READY", flush=True)
 		} else if line == "LOADING_MODEL" {
 			dp.Progress = 95
 			dp.Message = "Loading model..."
+		} else if strings.HasPrefix(line, "LOAD_WARNING:") {
+			// Model couldn't be loaded with mlx_lm but download succeeded
+			dp.Message = "Downloaded (may not be compatible with mlx_lm)"
 		} else if line == "MODEL_READY" {
 			dp.Progress = 100
 			dp.Status = "completed"
@@ -645,10 +689,13 @@ print("MODEL_READY", flush=True)
 			dp.Progress = 100
 			dp.Message = "Model ready!"
 
-			// Save to downloaded models
+			// Save to downloaded models with actual size
 			s.mu.Lock()
 			downloaded := s.getDownloadedModels()
-			downloaded[dp.ModelID] = time.Now()
+			downloaded[dp.ModelID] = ModelMeta{
+				DownloadedAt: time.Now(),
+				SizeBytes:    dp.BytesTotal,
+			}
 			s.saveDownloadedModels(downloaded)
 			s.mu.Unlock()
 		} else {
@@ -656,10 +703,13 @@ print("MODEL_READY", flush=True)
 			dp.Message = "Download failed"
 		}
 	} else if dp.Status == "completed" {
-		// Save to downloaded models
+		// Save to downloaded models with actual size
 		s.mu.Lock()
 		downloaded := s.getDownloadedModels()
-		downloaded[dp.ModelID] = time.Now()
+		downloaded[dp.ModelID] = ModelMeta{
+			DownloadedAt: time.Now(),
+			SizeBytes:    dp.BytesTotal,
+		}
 		s.saveDownloadedModels(downloaded)
 		s.mu.Unlock()
 	}
@@ -1002,6 +1052,7 @@ func fetchModelsFromHF() ([]ModelInfo, error) {
 			ID:          id,
 			Name:        name,
 			Size:        size,
+			Category:    categorizeModel(id),
 			Description: desc,
 		})
 
@@ -1012,6 +1063,45 @@ func fetchModelsFromHF() ([]ModelInfo, error) {
 	}
 
 	return models, nil
+}
+
+// categorizeModel determines the category based on model ID/name
+func categorizeModel(modelID string) string {
+	idLower := strings.ToLower(modelID)
+
+	// Speech/Audio models
+	if strings.Contains(idLower, "whisper") ||
+		strings.Contains(idLower, "parakeet") ||
+		strings.Contains(idLower, "audio") ||
+		strings.Contains(idLower, "speech") ||
+		strings.Contains(idLower, "tts") {
+		return "speech"
+	}
+
+	// Code models
+	if strings.Contains(idLower, "coder") ||
+		strings.Contains(idLower, "codegen") ||
+		strings.Contains(idLower, "code") ||
+		strings.Contains(idLower, "deepseek-coder") ||
+		strings.Contains(idLower, "starcoder") {
+		return "code"
+	}
+
+	// Embedding models
+	if strings.Contains(idLower, "embed") ||
+		strings.Contains(idLower, "embedding") {
+		return "embedding"
+	}
+
+	// Vision models
+	if strings.Contains(idLower, "vision") ||
+		strings.Contains(idLower, "llava") ||
+		strings.Contains(idLower, "clip") {
+		return "vision"
+	}
+
+	// Default to chat for everything else (LLMs)
+	return "chat"
 }
 
 // estimateModelSize estimates model size based on name
@@ -1044,25 +1134,59 @@ func estimateModelSize(modelID string) string {
 	return "~2GB"
 }
 
-// GetModelCatalog returns the list of recommended models (fetches from HF with fallback)
+// GetModelCatalog returns the curated list of recommended MLX models
 func GetModelCatalog() []ModelInfo {
-	// Try to fetch from HuggingFace
-	models, err := FetchHuggingFaceModels()
-	if err == nil && len(models) > 0 {
-		return models
-	}
-
-	// Fallback to hardcoded list
 	return []ModelInfo{
-		{ID: "mlx-community/Llama-3.2-1B-Instruct-4bit", Name: "Llama 3.2 1B", Size: "0.7GB", Description: "Ultra-fast, great for quick tasks"},
-		{ID: "mlx-community/Llama-3.2-3B-Instruct-4bit", Name: "Llama 3.2 3B", Size: "2GB", Description: "Fast and capable"},
-		{ID: "mlx-community/Qwen2.5-3B-Instruct-4bit", Name: "Qwen 2.5 3B", Size: "2GB", Description: "Strong multilingual support"},
-		{ID: "mlx-community/Qwen2.5-7B-Instruct-4bit", Name: "Qwen 2.5 7B", Size: "4GB", Description: "Powerful general purpose"},
-		{ID: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", Name: "Qwen 2.5 Coder 7B", Size: "4GB", Description: "Optimized for code"},
-		{ID: "mlx-community/Mistral-7B-Instruct-v0.3-4bit", Name: "Mistral 7B v0.3", Size: "4GB", Description: "Strong reasoning"},
-		{ID: "mlx-community/gemma-2-9b-it-4bit", Name: "Gemma 2 9B", Size: "5GB", Description: "Google's latest"},
-		{ID: "mlx-community/Phi-3.5-mini-instruct-4bit", Name: "Phi 3.5 Mini", Size: "2GB", Description: "Microsoft's efficient model"},
-		{ID: "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit", Name: "DeepSeek Coder V2", Size: "2GB", Description: "Coding specialist"},
+		// === Chat Models (General Purpose) ===
+		{ID: "mlx-community/Llama-3.2-1B-Instruct-4bit", Name: "Llama 3.2 1B", Size: "0.7GB", Category: "chat", Description: "Ultra-fast, great for quick tasks"},
+		{ID: "mlx-community/Llama-3.2-3B-Instruct-4bit", Name: "Llama 3.2 3B", Size: "2GB", Category: "chat", Description: "Fast and capable"},
+		{ID: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit", Name: "Llama 3.1 8B", Size: "4.5GB", Category: "chat", Description: "Strong general purpose"},
+		{ID: "mlx-community/Mistral-7B-Instruct-v0.3-4bit", Name: "Mistral 7B", Size: "4GB", Category: "chat", Description: "Popular, well-balanced"},
+		{ID: "mlx-community/Mistral-Nemo-Instruct-2407-4bit", Name: "Mistral Nemo 12B", Size: "7GB", Category: "chat", Description: "Multilingual, Mistral/NVIDIA"},
+		{ID: "mlx-community/gemma-2-2b-it-4bit", Name: "Gemma 2 2B", Size: "1.4GB", Category: "chat", Description: "Google's efficient model"},
+		{ID: "mlx-community/gemma-2-9b-it-4bit", Name: "Gemma 2 9B", Size: "5.5GB", Category: "chat", Description: "Google's powerful model"},
+		{ID: "mlx-community/Phi-3.5-mini-instruct-4bit", Name: "Phi 3.5 Mini", Size: "2.4GB", Category: "chat", Description: "Microsoft, reasoning-focused"},
+		{ID: "mlx-community/Phi-4-4bit", Name: "Phi 4", Size: "8GB", Category: "chat", Description: "Microsoft's latest"},
+		{ID: "mlx-community/Qwen2.5-1.5B-Instruct-4bit", Name: "Qwen 2.5 1.5B", Size: "1GB", Category: "chat", Description: "Lightweight, multilingual"},
+		{ID: "mlx-community/Qwen2.5-3B-Instruct-4bit", Name: "Qwen 2.5 3B", Size: "2GB", Category: "chat", Description: "Fast, multilingual"},
+		{ID: "mlx-community/Qwen2.5-7B-Instruct-4bit", Name: "Qwen 2.5 7B", Size: "4.5GB", Category: "chat", Description: "Powerful, multilingual"},
+		{ID: "mlx-community/Qwen2.5-14B-Instruct-4bit", Name: "Qwen 2.5 14B", Size: "8.5GB", Category: "chat", Description: "Very capable"},
+		{ID: "mlx-community/Qwen2.5-32B-Instruct-4bit", Name: "Qwen 2.5 32B", Size: "18GB", Category: "chat", Description: "Excellent quality"},
+
+		// === Code Models ===
+		{ID: "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit", Name: "Qwen Coder 1.5B", Size: "1GB", Category: "code", Description: "Fast code completion"},
+		{ID: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", Name: "Qwen Coder 7B", Size: "4.5GB", Category: "code", Description: "Strong coding assistant"},
+		{ID: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit", Name: "Qwen Coder 14B", Size: "8.5GB", Category: "code", Description: "Advanced coding"},
+		{ID: "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit", Name: "Qwen Coder 32B", Size: "18GB", Category: "code", Description: "Best-in-class coding"},
+		{ID: "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit", Name: "DeepSeek Coder V2", Size: "2.3GB", Category: "code", Description: "Efficient code specialist"},
+		{ID: "mlx-community/codestral-22B-v0.1-4bit", Name: "Codestral 22B", Size: "12GB", Category: "code", Description: "Mistral's coding model, 80+ languages"},
+		{ID: "mlx-community/starcoder2-7b-4bit", Name: "StarCoder2 7B", Size: "4GB", Category: "code", Description: "BigCode, code completion"},
+
+		// === Vision Models ===
+		{ID: "mlx-community/Qwen2-VL-2B-Instruct-4bit", Name: "Qwen2 VL 2B", Size: "1.5GB", Category: "vision", Description: "Fast image understanding"},
+		{ID: "mlx-community/Qwen2-VL-7B-Instruct-4bit", Name: "Qwen2 VL 7B", Size: "5GB", Category: "vision", Description: "Strong vision-language"},
+		{ID: "mlx-community/llava-1.5-7b-4bit", Name: "LLaVA 1.5 7B", Size: "4GB", Category: "vision", Description: "Image + text conversations"},
+		{ID: "mlx-community/paligemma-3b-mix-224-4bit", Name: "PaliGemma 3B", Size: "2GB", Category: "vision", Description: "Google's vision model"},
+
+		// === Reasoning Models ===
+		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", Name: "DeepSeek R1 1.5B", Size: "1GB", Category: "reasoning", Description: "Fast chain-of-thought"},
+		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit", Name: "DeepSeek R1 7B", Size: "4.5GB", Category: "reasoning", Description: "Strong reasoning"},
+		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit", Name: "DeepSeek R1 14B", Size: "8.5GB", Category: "reasoning", Description: "Advanced reasoning"},
+		{ID: "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit", Name: "DeepSeek R1 Llama 8B", Size: "5GB", Category: "reasoning", Description: "Reasoning on Llama base"},
+
+		// === Embedding Models ===
+		{ID: "mlx-community/bge-small-en-v1.5-mlx", Name: "BGE Small", Size: "0.1GB", Category: "embedding", Description: "Fast English embeddings"},
+		{ID: "mlx-community/bge-base-en-v1.5-mlx", Name: "BGE Base", Size: "0.4GB", Category: "embedding", Description: "Balanced embeddings"},
+		{ID: "mlx-community/bge-large-en-v1.5-mlx", Name: "BGE Large", Size: "1.2GB", Category: "embedding", Description: "High-quality embeddings"},
+		{ID: "mlx-community/gte-Qwen2-1.5B-instruct-mlx", Name: "GTE Qwen 1.5B", Size: "1GB", Category: "embedding", Description: "Alibaba text embeddings"},
+
+		// === Speech Models ===
+		{ID: "mlx-community/whisper-tiny-mlx", Name: "Whisper Tiny", Size: "0.1GB", Category: "speech", Description: "Ultra-fast transcription"},
+		{ID: "mlx-community/whisper-base-mlx", Name: "Whisper Base", Size: "0.2GB", Category: "speech", Description: "Fast transcription"},
+		{ID: "mlx-community/whisper-small-mlx", Name: "Whisper Small", Size: "0.5GB", Category: "speech", Description: "Balanced transcription"},
+		{ID: "mlx-community/whisper-medium-mlx", Name: "Whisper Medium", Size: "1.5GB", Category: "speech", Description: "Accurate transcription"},
+		{ID: "mlx-community/whisper-large-v3-mlx", Name: "Whisper Large v3", Size: "3GB", Category: "speech", Description: "Best quality transcription"},
+		{ID: "mlx-community/whisper-large-v3-turbo", Name: "Whisper Large v3 Turbo", Size: "1.6GB", Category: "speech", Description: "Fast + accurate"},
 	}
 }
 

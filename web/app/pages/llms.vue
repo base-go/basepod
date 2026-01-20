@@ -48,20 +48,64 @@ function getDescription(modelId: string): string {
   return modelCatalog[modelId] || ''
 }
 
-// Sorted models: running first, then downloaded, then by name
-const sortedModels = computed(() => {
-  if (!mlxData.value?.models) return []
-  return [...mlxData.value.models].sort((a, b) => {
-    // Running model first
-    if (mlxData.value?.active_model === a.id) return -1
-    if (mlxData.value?.active_model === b.id) return 1
-    // Downloaded before not downloaded
-    if (a.downloaded && !b.downloaded) return -1
-    if (!a.downloaded && b.downloaded) return 1
-    // Then by name
-    return a.name.localeCompare(b.name)
-  })
+// Category display info
+const categoryInfo: Record<string, { label: string; icon: string; description: string }> = {
+  chat: { label: 'Chat', icon: 'i-heroicons-chat-bubble-left-right', description: 'General purpose conversation' },
+  code: { label: 'Code', icon: 'i-heroicons-code-bracket', description: 'Programming and code generation' },
+  reasoning: { label: 'Reasoning', icon: 'i-heroicons-light-bulb', description: 'Chain-of-thought reasoning' },
+  vision: { label: 'Vision', icon: 'i-heroicons-eye', description: 'Image understanding' },
+  embedding: { label: 'Embedding', icon: 'i-heroicons-cube-transparent', description: 'Text to vector embeddings' },
+  speech: { label: 'Speech', icon: 'i-heroicons-microphone', description: 'Audio transcription' }
+}
+
+// Get ordered categories
+const categories = ['chat', 'code', 'reasoning', 'vision', 'embedding', 'speech']
+
+// Models grouped by category
+const modelsByCategory = computed(() => {
+  if (!mlxData.value?.models) return {}
+
+  const grouped: Record<string, typeof mlxData.value.models> = {}
+
+  for (const category of categories) {
+    const categoryModels = mlxData.value.models
+      .filter(m => m.category === category)
+      .sort((a, b) => {
+        // Running model first
+        if (mlxData.value?.active_model === a.id) return -1
+        if (mlxData.value?.active_model === b.id) return 1
+        // Downloaded before not downloaded
+        if (a.downloaded && !b.downloaded) return -1
+        if (!a.downloaded && b.downloaded) return 1
+        // Then by name
+        return a.name.localeCompare(b.name)
+      })
+    if (categoryModels.length > 0) {
+      grouped[category] = categoryModels
+    }
+  }
+
+  return grouped
 })
+
+// Categories with models (for rendering)
+const activeCategories = computed(() => {
+  return categories.filter(c => modelsByCategory.value[c]?.length > 0)
+})
+
+// Model detail modal
+const selectedModel = ref<typeof mlxData.value.models[0] | null>(null)
+const showModelModal = ref(false)
+
+function openModelDetail(model: typeof mlxData.value.models[0]) {
+  selectedModel.value = model
+  showModelModal.value = true
+}
+
+function closeModelModal() {
+  showModelModal.value = false
+  selectedModel.value = null
+}
 
 // Pull a model
 async function pullModel(modelId: string) {
@@ -135,7 +179,7 @@ async function runModel(modelId: string) {
     await refreshModels()
     toast.add({
       title: 'Model running',
-      description: `Server available at localhost:${mlxData.value?.port}`,
+      description: 'LLM server is ready',
       color: 'success'
     })
   } catch (error) {
@@ -230,99 +274,116 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Models Grid -->
-    <div class="space-y-3">
-      <div
-        v-for="model in sortedModels"
-        :key="model.id"
-        class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
-        :class="{
-          'ring-2 ring-orange-500': mlxData?.active_model === model.id,
-          'opacity-60': !mlxData?.supported
-        }"
-      >
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-4">
-            <div class="w-10 h-10 bg-orange-100 dark:bg-orange-900/50 rounded-lg flex items-center justify-center">
-              <UIcon name="i-heroicons-cpu-chip" class="w-5 h-5 text-orange-500" />
-            </div>
-            <div>
-              <div class="font-medium flex items-center gap-2">
-                {{ model.name }}
-                <span v-if="mlxData?.active_model === model.id" class="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-2 py-0.5 rounded">
-                  Running
-                </span>
-                <span v-else-if="model.downloaded" class="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
-                  Downloaded
-                </span>
-              </div>
-              <div class="text-sm text-gray-500">{{ getDescription(model.id) }}</div>
-            </div>
+    <!-- Models by Category -->
+    <div class="space-y-8">
+      <div v-for="category in activeCategories" :key="category">
+        <!-- Category Header -->
+        <div class="mb-4">
+          <div class="flex items-center gap-2 mb-1">
+            <UIcon :name="categoryInfo[category].icon" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <h3 class="text-lg font-semibold">{{ categoryInfo[category].label }}</h3>
           </div>
-          <div class="flex items-center gap-3">
-            <span class="text-sm text-gray-400">{{ model.size }}</span>
+          <p class="text-sm text-gray-500">{{ categoryInfo[category].description }}</p>
+        </div>
 
-            <!-- Actions -->
-            <template v-if="mlxData?.supported">
-              <!-- If pulling - show progress -->
-              <div v-if="pullingModels.has(model.id)" class="flex items-center gap-3 min-w-[200px]">
-                <div class="flex-1">
-                  <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
-                    <span v-if="downloadProgress.get(model.id)?.progress">
-                      {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
+        <!-- Models Grid for this category -->
+        <div class="space-y-3">
+          <div
+            v-for="model in modelsByCategory[category]"
+            :key="model.id"
+            class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+            :class="{
+              'ring-2 ring-orange-500': mlxData?.active_model === model.id,
+              'opacity-60': !mlxData?.supported
+            }"
+          >
+            <div class="flex items-center justify-between">
+              <div
+                class="flex items-center gap-4 cursor-pointer hover:opacity-80 transition-opacity flex-1"
+                @click="openModelDetail(model)"
+              >
+                <div class="w-10 h-10 bg-orange-100 dark:bg-orange-900/50 rounded-lg flex items-center justify-center">
+                  <UIcon :name="categoryInfo[category].icon" class="w-5 h-5 text-orange-500" />
+                </div>
+                <div>
+                  <div class="font-medium flex items-center gap-2">
+                    {{ model.name }}
+                    <span v-if="mlxData?.active_model === model.id" class="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-2 py-0.5 rounded">
+                      Running
                     </span>
-                    <span v-else>Starting...</span>
-                    <span v-if="downloadProgress.get(model.id)?.eta">
-                      ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
+                    <span v-else-if="model.downloaded" class="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
+                      Downloaded
                     </span>
                   </div>
-                  <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                    <div
-                      class="h-full bg-orange-500 transition-all duration-300"
-                      :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
-                    />
-                  </div>
-                  <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
-                    <span v-if="downloadProgress.get(model.id)?.bytes_done">
-                      {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
-                    </span>
-                    <span v-if="downloadProgress.get(model.id)?.speed">
-                      {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
-                    </span>
-                  </div>
+                  <div class="text-sm text-gray-500">{{ model.description || getDescription(model.id) }}</div>
                 </div>
               </div>
+              <div class="flex items-center gap-3">
+                <span class="text-sm text-gray-400">{{ model.size }}</span>
 
-              <!-- If running this model -->
-              <UButton
-                v-else-if="mlxData?.active_model === model.id"
-                size="sm"
-                variant="soft"
-                color="error"
-                @click="stopServer"
-              >
-                Stop
-              </UButton>
+                <!-- Actions -->
+                <template v-if="mlxData?.supported">
+                  <!-- If pulling - show progress -->
+                  <div v-if="pullingModels.has(model.id)" class="flex items-center gap-3 min-w-[200px]">
+                    <div class="flex-1">
+                      <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span v-if="downloadProgress.get(model.id)?.progress">
+                          {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
+                        </span>
+                        <span v-else>Starting...</span>
+                        <span v-if="downloadProgress.get(model.id)?.eta">
+                          ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
+                        </span>
+                      </div>
+                      <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          class="h-full bg-orange-500 transition-all duration-300"
+                          :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
+                        />
+                      </div>
+                      <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
+                        <span v-if="downloadProgress.get(model.id)?.bytes_done">
+                          {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
+                        </span>
+                        <span v-if="downloadProgress.get(model.id)?.speed">
+                          {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
+                        </span>
+                      </div>
+                    </div>
+                  </div>
 
-              <!-- If downloaded but not running -->
-              <UButton
-                v-else-if="model.downloaded"
-                size="sm"
-                @click="runModel(model.id)"
-              >
-                Run
-              </UButton>
+                  <!-- If running this model -->
+                  <UButton
+                    v-else-if="mlxData?.active_model === model.id"
+                    size="sm"
+                    variant="soft"
+                    color="error"
+                    @click="stopServer"
+                  >
+                    Stop
+                  </UButton>
 
-              <!-- Not downloaded -->
-              <UButton
-                v-else
-                size="sm"
-                variant="soft"
-                @click="pullModel(model.id)"
-              >
-                Pull
-              </UButton>
-            </template>
+                  <!-- If downloaded but not running -->
+                  <UButton
+                    v-else-if="model.downloaded"
+                    size="sm"
+                    @click="runModel(model.id)"
+                  >
+                    Run
+                  </UButton>
+
+                  <!-- Not downloaded -->
+                  <UButton
+                    v-else
+                    size="sm"
+                    variant="soft"
+                    @click="pullModel(model.id)"
+                  >
+                    Pull
+                  </UButton>
+                </template>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -338,5 +399,98 @@ onUnmounted(() => {
   -H "Content-Type: application/json" \
   -d '{"model": "{{ mlxData.active_model }}", "messages": [{"role": "user", "content": "Hello!"}]}'</pre>
     </div>
+
+    <!-- Model Detail Modal -->
+    <UModal v-model:open="showModelModal">
+      <template #content>
+        <div v-if="selectedModel" class="p-6">
+          <div class="flex items-start justify-between mb-4">
+            <div class="flex items-center gap-3">
+              <div class="w-12 h-12 bg-orange-100 dark:bg-orange-900/50 rounded-lg flex items-center justify-center">
+                <UIcon :name="categoryInfo[selectedModel.category]?.icon || 'i-heroicons-cpu-chip'" class="w-6 h-6 text-orange-500" />
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold">{{ selectedModel.name }}</h3>
+                <p class="text-sm text-gray-500">{{ selectedModel.description }}</p>
+              </div>
+            </div>
+            <UButton variant="ghost" size="sm" icon="i-heroicons-x-mark" @click="closeModelModal" />
+          </div>
+
+          <!-- Model Info -->
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Size</div>
+                <div class="font-medium">{{ selectedModel.size }}</div>
+              </div>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Category</div>
+                <div class="font-medium capitalize">{{ selectedModel.category }}</div>
+              </div>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Status</div>
+                <div class="font-medium">
+                  <span v-if="mlxData?.active_model === selectedModel.id" class="text-green-600">Running</span>
+                  <span v-else-if="selectedModel.downloaded" class="text-blue-600">Downloaded</span>
+                  <span v-else class="text-gray-500">Not Downloaded</span>
+                </div>
+              </div>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Required RAM</div>
+                <div class="font-medium">{{ selectedModel.required_ram_gb || '~' }}GB</div>
+              </div>
+            </div>
+
+            <!-- Model ID -->
+            <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="text-xs text-gray-500 mb-1">Model ID</div>
+              <code class="text-xs break-all">{{ selectedModel.id }}</code>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex gap-3 pt-2">
+              <template v-if="mlxData?.supported">
+                <UButton
+                  v-if="mlxData?.active_model === selectedModel.id"
+                  variant="soft"
+                  color="error"
+                  class="flex-1"
+                  @click="stopServer(); closeModelModal()"
+                >
+                  Stop Server
+                </UButton>
+                <UButton
+                  v-else-if="selectedModel.downloaded"
+                  class="flex-1"
+                  @click="runModel(selectedModel.id); closeModelModal()"
+                >
+                  Run Model
+                </UButton>
+                <UButton
+                  v-else-if="!pullingModels.has(selectedModel.id)"
+                  variant="soft"
+                  class="flex-1"
+                  @click="pullModel(selectedModel.id); closeModelModal()"
+                >
+                  Download Model
+                </UButton>
+                <UButton
+                  v-else
+                  variant="soft"
+                  class="flex-1"
+                  disabled
+                >
+                  Downloading...
+                </UButton>
+              </template>
+              <UButton variant="outline" @click="closeModelModal">
+                Close
+              </UButton>
+            </div>
+          </div>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

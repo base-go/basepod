@@ -94,6 +94,16 @@ func (s *Storage) migrate() error {
 		`ALTER TABLE apps ADD COLUMN type TEXT DEFAULT 'container'`,
 		// Add mlx config column for MLX apps
 		`ALTER TABLE apps ADD COLUMN mlx TEXT`,
+		// MLX models table
+		`CREATE TABLE IF NOT EXISTS mlx_models (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			size_bytes INTEGER DEFAULT 0,
+			downloaded INTEGER DEFAULT 0,
+			downloaded_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mlx_models_downloaded ON mlx_models(downloaded)`,
 	}
 
 	for _, migration := range migrations {

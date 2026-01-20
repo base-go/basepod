@@ -44,7 +44,7 @@ async function sendMessage() {
   scrollToBottom()
 
   try {
-    const response = await fetch(`http://localhost:${mlxData.value.port}/v1/chat/completions`, {
+    const response = await fetch(mlxData.value.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

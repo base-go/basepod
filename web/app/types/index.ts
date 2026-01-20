@@ -104,9 +104,12 @@ export interface MLXModel {
   id: string
   name: string
   size: string
+  category: string
   description?: string
   downloaded: boolean
   downloaded_at?: string
+  required_ram_gb?: number
+  can_run?: boolean
 }
 
 export interface MLXModelsResponse {
