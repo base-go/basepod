@@ -5,7 +5,7 @@
 ### Core Features
 - [x] Single-container app deployment via Podman
 - [x] Automatic SSL certificates via Caddy (on-demand TLS)
-- [x] Wildcard subdomain routing (*.yourdomain.com)
+- [x] Wildcard subdomain routing (*.example.com)
 - [x] Web UI dashboard with app management
 - [x] App lifecycle management (start, stop, restart, delete)
 - [x] Container logs viewing

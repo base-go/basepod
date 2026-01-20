@@ -73,8 +73,8 @@ setup_domain() {
     echo "Prerequisites:"
     echo "  1. You own this domain"
     echo "  2. DNS records pointing to this server's IP:"
-    echo "     - A record: bp.yourdomain.com (dashboard)"
-    echo "     - A record: *.yourdomain.com (apps)"
+    echo "     - A record: bp.example.com (dashboard)"
+    echo "     - A record: *.example.com (apps)"
     echo ""
 
     # Check if stdin is a terminal (interactive mode)
@@ -660,7 +660,7 @@ print_success() {
         echo "  Apps will be accessible via direct port mapping only."
         echo ""
         echo "  To add a domain later, edit: $BASEPOD_DIR/config/basepod.yaml"
-        echo "  And set: domain.root: yourdomain.com"
+        echo "  And set: domain.root: example.com"
     fi
 
     echo ""
