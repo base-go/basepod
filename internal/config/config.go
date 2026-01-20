@@ -189,7 +189,10 @@ func (c *Config) GetAppDomain(appName string) string {
 // Load loads the configuration from file
 func Load() (*Config, error) {
 	// Check for explicit config file path via environment variable
-	configFile := os.Getenv("DEPLOYER_CONFIG")
+	configFile := os.Getenv("BASEPOD_CONFIG")
+	if configFile == "" {
+		configFile = os.Getenv("DEPLOYER_CONFIG") // backwards compatibility
+	}
 	if configFile == "" {
 		paths, err := GetPaths()
 		if err != nil {

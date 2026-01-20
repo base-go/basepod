@@ -74,8 +74,12 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 
 	// Setup static file serving - prefer disk over embedded
 	// Check various paths for static files
+	webDir := os.Getenv("BASEPOD_WEB_DIR")
+	if webDir == "" {
+		webDir = os.Getenv("DEPLOYER_WEB_DIR") // backwards compatibility
+	}
 	staticPaths := []string{
-		os.Getenv("DEPLOYER_WEB_DIR"),
+		webDir,
 		"./dist",                       // Relative to binary
 		"/opt/basepod/web/dist",       // Linux production
 		"/usr/local/basepod/web/dist", // macOS production
