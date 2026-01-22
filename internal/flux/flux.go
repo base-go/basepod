@@ -849,6 +849,10 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	var mfluxGenPath string
 	var args []string
 
+	// Check if we should use low-ram mode (for systems with 24GB or less)
+	systemRAM := getSystemRAM()
+	useLowRAM := systemRAM > 0 && systemRAM <= 24
+
 	if job.Type == "edit" && len(job.ImagePaths) > 0 {
 		// Use mflux-generate-flux2-edit for image editing (only FLUX.2 Klein supports this)
 		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2-edit")
@@ -862,6 +866,9 @@ func (s *Service) runGeneration(job *GenerationJob) {
 			"--steps", strconv.Itoa(job.Steps),
 			"--output", outputPath,
 		)
+		if useLowRAM {
+			args = append(args, "--low-ram")
+		}
 	} else {
 		// Standard generation - use model-specific command
 		switch {
@@ -876,6 +883,9 @@ func (s *Service) runGeneration(job *GenerationJob) {
 				"--steps", strconv.Itoa(job.Steps),
 				"--output", outputPath,
 			}
+			if useLowRAM {
+				args = append(args, "--low-ram")
+			}
 		case job.Model == "z-image-turbo":
 			// Z-Image Turbo uses its own command
 			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-z-image-turbo")
@@ -885,6 +895,9 @@ func (s *Service) runGeneration(job *GenerationJob) {
 				"--height", strconv.Itoa(job.Height),
 				"--steps", strconv.Itoa(job.Steps),
 				"--output", outputPath,
+			}
+			if useLowRAM {
+				args = append(args, "--low-ram")
 			}
 		case job.Model == "fibo":
 			// FIBO uses its own command
@@ -896,6 +909,9 @@ func (s *Service) runGeneration(job *GenerationJob) {
 				"--steps", strconv.Itoa(job.Steps),
 				"--output", outputPath,
 			}
+			if useLowRAM {
+				args = append(args, "--low-ram")
+			}
 		default:
 			// Fallback to generic mflux-generate with --base-model
 			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate")
@@ -906,6 +922,9 @@ func (s *Service) runGeneration(job *GenerationJob) {
 				"--height", strconv.Itoa(job.Height),
 				"--steps", strconv.Itoa(job.Steps),
 				"--output", outputPath,
+			}
+			if useLowRAM {
+				args = append(args, "--low-ram")
 			}
 		}
 	}
