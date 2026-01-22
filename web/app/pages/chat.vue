@@ -95,10 +95,12 @@ const showModelSelector = ref(false)
 const switchingModel = ref(false)
 
 // Image upload state
-const uploadedImages = ref<{ url: string; preview: string }[]>([])
+const uploadedImages = ref<{ url: string; preview: string; fullUrl?: string }[]>([])
 const isDragging = ref(false)
 const fileInputRef = ref<HTMLInputElement>()
 const maxImages = 4
+const analysisMode = ref<'quick' | 'deep'>('quick')
+const lastImageMessageIndex = ref<number | null>(null) // Track last image message for "analyze deeper"
 
 // Voice input state
 const isRecording = ref(false)
@@ -181,13 +183,43 @@ async function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
+// Resize image for quick analysis (max 512px dimension)
+async function resizeImage(dataUrl: string, maxSize: number = 512): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      let { width, height } = img
+
+      // Scale down if larger than maxSize
+      if (width > maxSize || height > maxSize) {
+        if (width > height) {
+          height = (height / width) * maxSize
+          width = maxSize
+        } else {
+          width = (width / height) * maxSize
+          height = maxSize
+        }
+      }
+
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      ctx?.drawImage(img, 0, 0, width, height)
+      resolve(canvas.toDataURL('image/jpeg', 0.8))
+    }
+    img.src = dataUrl
+  })
+}
+
 async function addImage(file: File) {
   if (uploadedImages.value.length >= maxImages) return
   if (!file.type.startsWith('image/')) return
 
   const preview = URL.createObjectURL(file)
-  const url = await fileToDataUrl(file)
-  uploadedImages.value.push({ url, preview })
+  const fullUrl = await fileToDataUrl(file)
+  const url = await resizeImage(fullUrl, 512) // Quick analysis uses resized
+  uploadedImages.value.push({ url, preview, fullUrl })
 }
 
 function removeImage(index: number) {
@@ -332,9 +364,12 @@ function stopLoadingTimer() {
   loadingDuration.value = 0
 }
 
+// Store full resolution images for deep analysis
+const pendingFullImages = ref<string[]>([])
+
 // Send message
-async function sendMessage() {
-  if (!input.value.trim() && !uploadedImages.value.length) return
+async function sendMessage(deepAnalysis = false) {
+  if (!input.value.trim() && !uploadedImages.value.length && !deepAnalysis) return
   if (loading.value || !mlxData.value?.running) return
 
   const userMessage = input.value.trim()
@@ -342,37 +377,59 @@ async function sendMessage() {
 
   // Build message content
   let messageContent: string | MessageContent[]
+  let maxTokens = 2048
 
   if (hasImages) {
+    // For quick analysis: use resized images, shorter response
+    // For deep analysis: use full images, longer response
+    const imageUrls = deepAnalysis
+      ? uploadedImages.value.map(img => img.fullUrl || img.url)
+      : uploadedImages.value.map(img => img.url)
+
     messageContent = [
-      ...uploadedImages.value.map(img => ({
+      ...imageUrls.map(url => ({
         type: 'image_url' as const,
-        image_url: { url: img.url }
+        image_url: { url }
       })),
-      { type: 'text' as const, text: userMessage }
+      { type: 'text' as const, text: userMessage || (deepAnalysis ? 'Analyze this image in detail.' : 'Briefly describe what you see in this image.') }
     ]
+
+    // Quick = short response, Deep = full response
+    maxTokens = deepAnalysis ? 2048 : 200
+
+    // Store full images for potential deep analysis later
+    if (!deepAnalysis) {
+      pendingFullImages.value = uploadedImages.value.map(img => img.fullUrl || img.url)
+    }
   } else {
     messageContent = userMessage
   }
 
   // Get text content for saving to DB (don't save base64 images)
   const textContent = hasImages
-    ? userMessage || '[image message]'
+    ? userMessage || (deepAnalysis ? '[deep image analysis]' : '[quick image analysis]')
     : userMessage
 
   messages.value.push({ role: 'user', content: messageContent })
+  const userMsgIndex = messages.value.length - 1
   input.value = ''
   uploadedImages.value = []
   loading.value = true
   startLoadingTimer(hasImages)
   scrollToBottom()
 
+  // Track if this was an image message for "analyze deeper" button
+  if (hasImages && !deepAnalysis) {
+    lastImageMessageIndex.value = userMsgIndex
+  }
+
   // Save user message to database
   await saveMessageToDb('user', textContent)
 
   try {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 120000) // 2 minute timeout
+    const timeoutMs = deepAnalysis ? 180000 : 60000 // 3min for deep, 1min for quick
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
     const response = await fetch(mlxData.value.endpoint, {
       method: 'POST',
@@ -380,7 +437,7 @@ async function sendMessage() {
       body: JSON.stringify({
         model: mlxData.value.active_model,
         messages: messages.value.map(m => ({ role: m.role, content: m.content })),
-        max_tokens: 2048
+        max_tokens: maxTokens
       }),
       signal: controller.signal
     })
@@ -427,6 +484,8 @@ async function clearChat() {
   messages.value = []
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
   uploadedImages.value = []
+  pendingFullImages.value = []
+  lastImageMessageIndex.value = null
 
   // Clear from database
   if (mlxData.value?.active_model) {
@@ -438,6 +497,31 @@ async function clearChat() {
       // Ignore errors
     }
   }
+}
+
+// Check if we can offer deep analysis (last response was a quick image analysis)
+const canAnalyzeDeeper = computed(() => {
+  return lastImageMessageIndex.value !== null &&
+    pendingFullImages.value.length > 0 &&
+    !loading.value
+})
+
+// Perform deep analysis on the last image
+async function analyzeDeeper() {
+  if (!pendingFullImages.value.length || loading.value) return
+
+  // Rebuild uploadedImages with full URLs for deep analysis
+  uploadedImages.value = pendingFullImages.value.map(url => ({
+    url,
+    preview: '',
+    fullUrl: url
+  }))
+
+  input.value = 'Now analyze this image in detail. Describe everything you see.'
+  lastImageMessageIndex.value = null
+  pendingFullImages.value = []
+
+  await sendMessage(true)
 }
 
 // Get text from message content
@@ -615,6 +699,20 @@ async function manualRefresh() {
               <span class="text-sm text-gray-500">{{ loadingStatus }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- Analyze Deeper button after quick image analysis -->
+        <div v-if="canAnalyzeDeeper" class="flex justify-center">
+          <UButton
+            variant="soft"
+            color="purple"
+            size="sm"
+            @click="analyzeDeeper"
+          >
+            <UIcon name="i-heroicons-magnifying-glass-plus" class="w-4 h-4 mr-1" />
+            Analyze Deeper
+            <span class="text-xs opacity-70 ml-1">(may take 1-2 min)</span>
+          </UButton>
         </div>
       </div>
 
