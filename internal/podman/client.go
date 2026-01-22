@@ -62,6 +62,38 @@ type CreateContainerOpts struct {
 	CPUs           float64
 }
 
+// FlexibleTime handles Podman's Created field which can be int64 or string
+type FlexibleTime int64
+
+func (f *FlexibleTime) UnmarshalJSON(data []byte) error {
+	// Try int64 first
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = FlexibleTime(i)
+		return nil
+	}
+	// Try string (ISO format or Unix timestamp string)
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		// Try parsing as Unix timestamp string
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			*f = FlexibleTime(i)
+			return nil
+		}
+		// Try parsing as ISO 8601 time
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			*f = FlexibleTime(t.Unix())
+			return nil
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			*f = FlexibleTime(t.Unix())
+			return nil
+		}
+	}
+	*f = 0
+	return nil
+}
+
 // Container represents a Podman container
 type Container struct {
 	ID      string            `json:"Id"`
@@ -70,7 +102,7 @@ type Container struct {
 	ImageID string            `json:"ImageID"`
 	State   string            `json:"State"`
 	Status  string            `json:"Status"`
-	Created int64             `json:"Created"`
+	Created FlexibleTime      `json:"Created"`
 	Ports   []PortMapping     `json:"Ports"`
 	Labels  map[string]string `json:"Labels"`
 }
@@ -147,11 +179,11 @@ type BuildOpts struct {
 
 // Image represents a Podman image
 type Image struct {
-	ID          string   `json:"Id"`
-	RepoTags    []string `json:"RepoTags"`
-	RepoDigests []string `json:"RepoDigests"`
-	Created     int64    `json:"Created"`
-	Size        int64    `json:"Size"`
+	ID          string       `json:"Id"`
+	RepoTags    []string     `json:"RepoTags"`
+	RepoDigests []string     `json:"RepoDigests"`
+	Created     FlexibleTime `json:"Created"`
+	Size        int64        `json:"Size"`
 }
 
 // Network represents a Podman network
