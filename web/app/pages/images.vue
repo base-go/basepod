@@ -36,6 +36,10 @@ interface DownloadProgress {
   status: string
   progress: number
   message: string
+  bytes_done: number
+  bytes_total: number
+  speed: number
+  eta: number
 }
 
 definePageMeta({
@@ -46,7 +50,7 @@ const toast = useToast()
 
 // Fetch status and models
 const { data: status, refresh: refreshStatus } = await useApiFetch<FluxStatus>('/flux/status')
-const { data: models } = await useApiFetch<FluxModel[]>('/flux/models')
+const { data: models, refresh: refreshModels } = await useApiFetch<FluxModel[]>('/flux/models')
 const { data: generations, refresh: refreshGenerations } = await useApiFetch<FluxGeneration[]>('/flux/generations')
 
 // Form state
@@ -59,8 +63,8 @@ const seed = ref(-1)
 // UI state
 const generating = ref(false)
 const currentJobId = ref<string | null>(null)
-const downloadingModel = ref<string | null>(null)
-const downloadProgress = ref<DownloadProgress | null>(null)
+const downloadingModels = ref<Set<string>>(new Set())
+const downloadProgress = ref<Map<string, DownloadProgress>>(new Map())
 const selectedImage = ref<FluxGeneration | null>(null)
 const showImageModal = ref(false)
 
@@ -95,6 +99,16 @@ const downloadedModels = computed(() => {
 // Check if any model is downloaded
 const hasDownloadedModel = computed(() => {
   return downloadedModels.value.length > 0
+})
+
+// Sorted models - downloaded first
+const sortedModels = computed(() => {
+  if (!models.value) return []
+  return [...models.value].sort((a, b) => {
+    if (a.downloaded && !b.downloaded) return -1
+    if (!a.downloaded && b.downloaded) return 1
+    return a.name.localeCompare(b.name)
+  })
 })
 
 // Generate image
@@ -172,7 +186,7 @@ async function pollJobStatus(jobId: string) {
 
 // Download model
 async function downloadModel(modelId: string) {
-  downloadingModel.value = modelId
+  downloadingModels.value.add(modelId)
 
   try {
     await $api(`/flux/models/${modelId}`, { method: 'POST' })
@@ -183,29 +197,29 @@ async function downloadModel(modelId: string) {
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     toast.add({ title: 'Failed to start download', description: err.data?.error, color: 'error' })
-    downloadingModel.value = null
+    downloadingModels.value.delete(modelId)
   }
 }
 
 // Poll download progress
 async function pollDownloadProgress(modelId: string) {
-  while (downloadingModel.value === modelId) {
+  while (downloadingModels.value.has(modelId)) {
     try {
       const progress = await $api<DownloadProgress>(`/flux/models/${modelId}/progress`)
-      downloadProgress.value = progress
+      downloadProgress.value.set(modelId, progress)
 
       if (progress.status === 'completed') {
-        downloadingModel.value = null
-        downloadProgress.value = null
+        downloadingModels.value.delete(modelId)
+        downloadProgress.value.delete(modelId)
         toast.add({ title: 'Model downloaded!', color: 'success' })
-        // Refresh models list
+        await refreshModels()
         await refreshStatus()
         return
       }
 
       if (progress.status === 'failed') {
-        downloadingModel.value = null
-        downloadProgress.value = null
+        downloadingModels.value.delete(modelId)
+        downloadProgress.value.delete(modelId)
         toast.add({ title: 'Download failed', description: progress.message, color: 'error' })
         return
       }
@@ -224,6 +238,7 @@ async function deleteModel(modelId: string) {
   try {
     await $api(`/flux/models/${modelId}`, { method: 'DELETE' })
     toast.add({ title: 'Model deleted', color: 'success' })
+    await refreshModels()
     await refreshStatus()
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
@@ -265,212 +280,250 @@ function downloadImage(gen: FluxGeneration) {
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleString()
 }
+
+// Format bytes to human readable
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
+
+// Format seconds to human readable ETA
+function formatETA(seconds: number): string {
+  if (seconds <= 0) return ''
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
+// Auto-refresh status
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  refreshTimer = setInterval(() => {
+    if (generating.value) {
+      refreshStatus()
+    }
+  }, 2000)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <template>
   <div>
-    <!-- Unsupported Message -->
-    <UAlert
-      v-if="status && !status.supported"
-      color="warning"
-      variant="soft"
-      icon="i-heroicons-exclamation-triangle"
-      title="FLUX Not Supported"
-      :description="status.unsupported_reason || 'FLUX requires macOS with Apple Silicon (M series)'"
-      class="mb-6"
-    />
+    <!-- Header with Status -->
+    <div class="mb-6 flex items-center justify-between">
+      <div>
+        <h2 class="text-xl font-semibold">Image Generation</h2>
+        <p class="text-gray-500 dark:text-gray-400">
+          Generate images with FLUX on Apple Silicon
+        </p>
+      </div>
+      <div v-if="generating" class="flex items-center gap-2 px-3 py-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
+        <span class="w-2 h-2 bg-primary-500 rounded-full animate-pulse" />
+        <span class="text-sm font-medium text-primary-700 dark:text-primary-300">
+          Generating...
+        </span>
+      </div>
+    </div>
 
-    <div v-else class="max-w-6xl space-y-6">
-      <!-- Generation Form -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">Generate Image</h3>
-            <UBadge v-if="generating" color="primary" variant="soft">
-              <span class="flex items-center gap-1">
-                <UIcon name="i-heroicons-arrow-path" class="animate-spin" />
-                Generating...
-              </span>
-            </UBadge>
-          </div>
-        </template>
-
-        <!-- No Model Downloaded -->
-        <div v-if="!hasDownloadedModel" class="text-center py-8">
-          <UIcon name="i-heroicons-photo" class="text-4xl text-gray-400 mb-4" />
-          <h3 class="text-lg font-medium mb-2">Download a Model First</h3>
-          <p class="text-gray-500 mb-4">To generate images, you need to download a FLUX model.</p>
-
-          <div class="flex flex-col gap-3 max-w-md mx-auto">
-            <div
-              v-for="model in models"
-              :key="model.id"
-              class="flex items-center justify-between p-3 border rounded-lg"
-            >
-              <div>
-                <p class="font-medium">{{ model.name }}</p>
-                <p class="text-sm text-gray-500">{{ model.description }}</p>
-                <p class="text-xs text-gray-400">{{ model.size }}</p>
-              </div>
-              <div>
-                <UButton
-                  v-if="downloadingModel === model.id"
-                  :loading="true"
-                  disabled
-                  size="sm"
-                >
-                  {{ downloadProgress?.progress?.toFixed(0) || 0 }}%
-                </UButton>
-                <UButton
-                  v-else
-                  color="primary"
-                  size="sm"
-                  @click="downloadModel(model.id)"
-                >
-                  Download
-                </UButton>
-              </div>
-            </div>
+    <!-- Not Supported Warning -->
+    <div v-if="status && !status.supported" class="p-6 bg-amber-50 dark:bg-amber-900/20 rounded-lg mb-6 border border-amber-200 dark:border-amber-800">
+      <div class="flex items-start gap-4">
+        <UIcon name="i-heroicons-exclamation-triangle" class="w-8 h-8 text-amber-500 flex-shrink-0" />
+        <div>
+          <h3 class="font-semibold text-amber-800 dark:text-amber-200 text-lg">Image Generation Not Available</h3>
+          <p class="text-amber-700 dark:text-amber-300 mt-1">
+            {{ status.unsupported_reason || 'FLUX requires macOS with Apple Silicon (M series) and mflux installed.' }}
+          </p>
+          <div class="mt-4 p-3 bg-amber-100 dark:bg-amber-800/50 rounded text-sm">
+            <p class="text-amber-800 dark:text-amber-200">
+              <strong>To use image generation:</strong> Run Basepod on a Mac with Apple Silicon and install mflux via pip.
+            </p>
           </div>
         </div>
+      </div>
+    </div>
 
-        <!-- Generation Form -->
-        <form v-else class="space-y-4" @submit.prevent="generate">
-          <UFormField label="Prompt">
-            <UTextarea
-              v-model="prompt"
-              placeholder="Describe the image you want to create..."
-              :rows="3"
-              autofocus
-            />
-          </UFormField>
+    <template v-else>
+      <!-- Generation Form (only if model downloaded) -->
+      <div v-if="hasDownloadedModel" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+        <div class="flex items-center gap-2 mb-3">
+          <UIcon name="i-heroicons-sparkles" class="w-5 h-5 text-primary-500" />
+          <h3 class="font-medium">Generate Image</h3>
+        </div>
 
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <UFormField label="Model">
+        <form class="space-y-4" @submit.prevent="generate">
+          <UTextarea
+            v-model="prompt"
+            placeholder="Describe the image you want to create..."
+            :rows="2"
+            class="w-full"
+          />
+
+          <div class="flex flex-wrap gap-3 items-end">
+            <div class="flex-1 min-w-[120px]">
+              <label class="text-xs text-gray-500 mb-1 block">Model</label>
               <USelect
                 v-model="selectedModel"
                 :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
+                size="sm"
               />
-            </UFormField>
+            </div>
 
-            <UFormField label="Size">
+            <div class="w-[140px]">
+              <label class="text-xs text-gray-500 mb-1 block">Size</label>
               <USelect
                 v-model="selectedSize"
                 :items="sizePresets"
+                size="sm"
               />
-            </UFormField>
-
-            <UFormField label="Steps">
-              <UInput v-model.number="steps" type="number" :min="1" :max="50" />
-            </UFormField>
-
-            <UFormField label="Seed" help="-1 for random">
-              <UInput v-model.number="seed" type="number" />
-            </UFormField>
-          </div>
-
-          <div class="flex items-center justify-between">
-            <div class="text-sm text-gray-500">
-              {{ dimensions.width }}x{{ dimensions.height }} · {{ steps }} steps
             </div>
+
+            <div class="w-[80px]">
+              <label class="text-xs text-gray-500 mb-1 block">Steps</label>
+              <UInput v-model.number="steps" type="number" :min="1" :max="50" size="sm" />
+            </div>
+
+            <div class="w-[100px]">
+              <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
+              <UInput v-model.number="seed" type="number" size="sm" />
+            </div>
+
             <UButton
               type="submit"
               color="primary"
               :loading="generating"
               :disabled="!prompt.trim() || generating"
             >
-              <UIcon name="i-heroicons-sparkles" class="mr-1" />
               Generate
             </UButton>
           </div>
 
           <!-- Progress -->
-          <div v-if="generating && status?.current_job" class="mt-4">
-            <UProgress
-              :value="status.current_job.progress || 0"
-              :max="100"
-              color="primary"
-            />
-            <p class="text-sm text-gray-500 mt-1">
-              Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}
-            </p>
+          <div v-if="generating && status?.current_job" class="mt-3">
+            <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+              <span>{{ Math.round(status.current_job.progress || 0) }}%</span>
+              <span>Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}</span>
+            </div>
+            <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-primary-500 transition-all duration-300"
+                :style="{ width: `${status.current_job.progress || 0}%` }"
+              />
+            </div>
           </div>
         </form>
-      </UCard>
+      </div>
 
-      <!-- Models Management -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">Models</h3>
-        </template>
-
-        <div class="divide-y">
-          <div
-            v-for="model in models"
-            :key="model.id"
-            class="flex items-center justify-between py-3"
-          >
-            <div>
-              <div class="flex items-center gap-2">
-                <p class="font-medium">{{ model.name }}</p>
-                <UBadge v-if="model.downloaded" color="success" variant="soft" size="xs">
-                  Downloaded
-                </UBadge>
-              </div>
-              <p class="text-sm text-gray-500">{{ model.description }}</p>
-              <p class="text-xs text-gray-400">{{ model.size }}</p>
+      <!-- Models List -->
+      <div class="space-y-8">
+        <div>
+          <div class="mb-4">
+            <div class="flex items-center gap-2 mb-1">
+              <UIcon name="i-heroicons-photo" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              <h3 class="text-lg font-semibold">FLUX Models</h3>
             </div>
-            <div class="flex items-center gap-2">
-              <template v-if="model.downloaded">
-                <UButton
-                  color="error"
-                  variant="soft"
-                  size="xs"
-                  @click="deleteModel(model.id)"
-                >
-                  Delete
-                </UButton>
-              </template>
-              <template v-else>
-                <UButton
-                  v-if="downloadingModel === model.id"
-                  :loading="true"
-                  disabled
-                  size="xs"
-                >
-                  {{ downloadProgress?.message || 'Downloading...' }}
-                </UButton>
-                <UButton
-                  v-else
-                  color="primary"
-                  size="xs"
-                  @click="downloadModel(model.id)"
-                >
-                  Download
-                </UButton>
-              </template>
+            <p class="text-sm text-gray-500">Download and manage image generation models</p>
+          </div>
+
+          <div class="space-y-3">
+            <div
+              v-for="model in sortedModels"
+              :key="model.id"
+              class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-4 flex-1">
+                  <div class="w-10 h-10 bg-primary-100 dark:bg-primary-900/50 rounded-lg flex items-center justify-center">
+                    <UIcon name="i-heroicons-photo" class="w-5 h-5 text-primary-500" />
+                  </div>
+                  <div>
+                    <div class="font-medium flex items-center gap-2">
+                      {{ model.name }}
+                      <span v-if="model.downloaded" class="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-2 py-0.5 rounded">
+                        Downloaded
+                      </span>
+                    </div>
+                    <div class="text-sm text-gray-500">{{ model.description }}</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="text-sm text-gray-400">{{ model.size }}</span>
+
+                  <!-- If downloading - show progress -->
+                  <div v-if="downloadingModels.has(model.id)" class="flex items-center gap-3 min-w-[200px]">
+                    <div class="flex-1">
+                      <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span v-if="downloadProgress.get(model.id)?.progress !== undefined">
+                          {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
+                        </span>
+                        <span v-else>Starting...</span>
+                        <span v-if="downloadProgress.get(model.id)?.eta">
+                          ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
+                        </span>
+                      </div>
+                      <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          class="h-full bg-primary-500 transition-all duration-300"
+                          :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
+                        />
+                      </div>
+                      <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
+                        <span v-if="downloadProgress.get(model.id)?.bytes_done">
+                          {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
+                        </span>
+                        <span v-else>{{ downloadProgress.get(model.id)?.message || 'Downloading...' }}</span>
+                        <span v-if="downloadProgress.get(model.id)?.speed">
+                          {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- If downloaded -->
+                  <UButton
+                    v-else-if="model.downloaded"
+                    size="sm"
+                    variant="soft"
+                    color="error"
+                    @click="deleteModel(model.id)"
+                  >
+                    Delete
+                  </UButton>
+
+                  <!-- Not downloaded -->
+                  <UButton
+                    v-else
+                    size="sm"
+                    variant="soft"
+                    @click="downloadModel(model.id)"
+                  >
+                    Download
+                  </UButton>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </UCard>
+      </div>
 
       <!-- Gallery -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">Gallery</h3>
-            <UButton variant="ghost" size="xs" @click="refreshGenerations">
-              <UIcon name="i-heroicons-arrow-path" />
-            </UButton>
+      <div v-if="generations?.length" class="mt-8">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <UIcon name="i-heroicons-squares-2x2" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <h3 class="text-lg font-semibold">Gallery</h3>
           </div>
-        </template>
-
-        <div v-if="!generations?.length" class="text-center py-8 text-gray-500">
-          <UIcon name="i-heroicons-photo" class="text-3xl mb-2" />
-          <p>No images generated yet</p>
+          <UButton variant="ghost" size="xs" @click="refreshGenerations">
+            <UIcon name="i-heroicons-arrow-path" />
+          </UButton>
         </div>
 
-        <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           <div
             v-for="gen in generations"
             :key="gen.id"
@@ -502,24 +555,17 @@ function formatDate(dateStr: string) {
             </div>
           </div>
         </div>
-      </UCard>
-    </div>
+      </div>
+    </template>
 
     <!-- Image Detail Modal -->
     <UModal v-model:open="showImageModal">
       <template v-if="selectedImage" #content>
-        <UCard>
-          <template #header>
-            <div class="flex items-center justify-between">
-              <h3 class="font-semibold">Image Details</h3>
-              <UButton
-                color="neutral"
-                variant="ghost"
-                icon="i-heroicons-x-mark"
-                @click="showImageModal = false"
-              />
-            </div>
-          </template>
+        <div class="p-6">
+          <div class="flex items-start justify-between mb-4">
+            <h3 class="text-lg font-semibold">Image Details</h3>
+            <UButton variant="ghost" size="sm" icon="i-heroicons-x-mark" @click="showImageModal = false" />
+          </div>
 
           <div class="space-y-4">
             <img
@@ -529,56 +575,46 @@ function formatDate(dateStr: string) {
               class="w-full rounded-lg"
             />
 
-            <div class="space-y-2">
-              <div>
-                <p class="text-sm font-medium text-gray-500">Prompt</p>
-                <p>{{ selectedImage.prompt }}</p>
-              </div>
+            <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="text-xs text-gray-500 mb-1">Prompt</div>
+              <p class="text-sm">{{ selectedImage.prompt }}</p>
+            </div>
 
-              <div class="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <p class="font-medium text-gray-500">Model</p>
-                  <p>{{ selectedImage.model }}</p>
-                </div>
-                <div>
-                  <p class="font-medium text-gray-500">Size</p>
-                  <p>{{ selectedImage.width }}x{{ selectedImage.height }}</p>
-                </div>
-                <div>
-                  <p class="font-medium text-gray-500">Steps</p>
-                  <p>{{ selectedImage.steps }}</p>
-                </div>
-                <div>
-                  <p class="font-medium text-gray-500">Seed</p>
-                  <p>{{ selectedImage.seed }}</p>
-                </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Model</div>
+                <div class="font-medium">{{ selectedImage.model }}</div>
               </div>
-
-              <div>
-                <p class="text-sm font-medium text-gray-500">Created</p>
-                <p class="text-sm">{{ formatDate(selectedImage.created_at) }}</p>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Size</div>
+                <div class="font-medium">{{ selectedImage.width }}x{{ selectedImage.height }}</div>
+              </div>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Steps</div>
+                <div class="font-medium">{{ selectedImage.steps }}</div>
+              </div>
+              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div class="text-xs text-gray-500 mb-1">Seed</div>
+                <div class="font-medium">{{ selectedImage.seed }}</div>
               </div>
             </div>
 
-            <div class="flex gap-2">
-              <UButton
-                color="primary"
-                @click="downloadImage(selectedImage)"
-              >
+            <div class="text-xs text-gray-500">
+              Created {{ formatDate(selectedImage.created_at) }}
+            </div>
+
+            <div class="flex gap-3 pt-2">
+              <UButton class="flex-1" @click="downloadImage(selectedImage)">
                 <UIcon name="i-heroicons-arrow-down-tray" class="mr-1" />
                 Download
               </UButton>
-              <UButton
-                color="error"
-                variant="soft"
-                @click="deleteGeneration(selectedImage.id)"
-              >
+              <UButton variant="soft" color="error" @click="deleteGeneration(selectedImage.id)">
                 <UIcon name="i-heroicons-trash" class="mr-1" />
                 Delete
               </UButton>
             </div>
           </div>
-        </UCard>
+        </div>
       </template>
     </UModal>
   </div>

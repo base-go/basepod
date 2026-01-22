@@ -68,12 +68,16 @@ type Status struct {
 
 // DownloadProgress tracks model download progress
 type DownloadProgress struct {
-	ModelID   string  `json:"model_id"`
-	Status    string  `json:"status"` // pending, downloading, completed, failed
-	Progress  float64 `json:"progress"`
-	Message   string  `json:"message"`
-	cancel    context.CancelFunc
-	mu        sync.RWMutex
+	ModelID    string  `json:"model_id"`
+	Status     string  `json:"status"` // pending, downloading, completed, failed
+	Progress   float64 `json:"progress"`
+	Message    string  `json:"message"`
+	BytesDone  int64   `json:"bytes_done"`
+	BytesTotal int64   `json:"bytes_total"`
+	Speed      int64   `json:"speed"` // bytes per second
+	ETA        int     `json:"eta"`   // seconds remaining
+	cancel     context.CancelFunc
+	mu         sync.RWMutex
 }
 
 var (
@@ -243,10 +247,14 @@ func (s *Service) ListModels() []Model {
 
 // DownloadProgressData is a safe copy of download progress data
 type DownloadProgressData struct {
-	ModelID  string  `json:"model_id"`
-	Status   string  `json:"status"`
-	Progress float64 `json:"progress"`
-	Message  string  `json:"message"`
+	ModelID    string  `json:"model_id"`
+	Status     string  `json:"status"`
+	Progress   float64 `json:"progress"`
+	Message    string  `json:"message"`
+	BytesDone  int64   `json:"bytes_done"`
+	BytesTotal int64   `json:"bytes_total"`
+	Speed      int64   `json:"speed"`
+	ETA        int     `json:"eta"`
 }
 
 // GetDownloadProgress returns the current download progress as a safe copy
@@ -263,10 +271,14 @@ func GetDownloadProgress(modelID string) *DownloadProgressData {
 	defer dp.mu.RUnlock()
 
 	return &DownloadProgressData{
-		ModelID:  dp.ModelID,
-		Status:   dp.Status,
-		Progress: dp.Progress,
-		Message:  dp.Message,
+		ModelID:    dp.ModelID,
+		Status:     dp.Status,
+		Progress:   dp.Progress,
+		Message:    dp.Message,
+		BytesDone:  dp.BytesDone,
+		BytesTotal: dp.BytesTotal,
+		Speed:      dp.Speed,
+		ETA:        dp.ETA,
 	}
 }
 
@@ -410,19 +422,82 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	}
 
 	// Parse output for progress
+	// HuggingFace download output looks like:
+	// Downloading model.safetensors: 45%|████      | 1.5G/3.2G [01:23<01:40, 16.5MB/s]
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		dp.mu.Lock()
-		// Update progress based on output
-		if strings.Contains(line, "Downloading") {
+
+		// Parse HuggingFace tqdm progress bars
+		if strings.Contains(line, "%|") || strings.Contains(line, "% |") {
+			// Extract percentage
+			if idx := strings.Index(line, "%"); idx > 0 {
+				// Find the start of the number
+				start := idx - 1
+				for start > 0 && (line[start] >= '0' && line[start] <= '9' || line[start] == '.') {
+					start--
+				}
+				if pct, err := strconv.ParseFloat(strings.TrimSpace(line[start+1:idx]), 64); err == nil {
+					// Map percentage to 30-90 range (10% for setup, 90-100% for finalization)
+					dp.Progress = 30 + (pct * 0.6)
+				}
+			}
+
+			// Extract bytes: "1.5G/3.2G" or "1500M/3200M"
+			if idx := strings.Index(line, "/"); idx > 0 {
+				// Look for size pattern before and after /
+				beforeSlash := line[:idx]
+				afterSlash := line[idx+1:]
+
+				// Find bytes done (look backwards from /)
+				doneStart := idx - 1
+				for doneStart > 0 && (line[doneStart] != ' ' && line[doneStart] != '|') {
+					doneStart--
+				}
+				doneStr := strings.TrimSpace(beforeSlash[doneStart:])
+
+				// Find bytes total (look forward from /)
+				totalEnd := 0
+				for totalEnd < len(afterSlash) && afterSlash[totalEnd] != ' ' && afterSlash[totalEnd] != '[' {
+					totalEnd++
+				}
+				totalStr := afterSlash[:totalEnd]
+
+				dp.BytesDone = parseSize(doneStr)
+				dp.BytesTotal = parseSize(totalStr)
+			}
+
+			// Extract speed: "16.5MB/s"
+			if idx := strings.Index(line, "/s"); idx > 0 {
+				speedStart := idx - 1
+				for speedStart > 0 && line[speedStart] != ' ' && line[speedStart] != ',' {
+					speedStart--
+				}
+				speedStr := strings.TrimSpace(line[speedStart+1 : idx+2])
+				speedStr = strings.TrimSuffix(speedStr, "/s")
+				dp.Speed = parseSize(speedStr)
+			}
+
+			// Extract ETA: "<01:40" or "eta 01:40"
+			if idx := strings.Index(line, "<"); idx > 0 {
+				etaEnd := idx + 1
+				for etaEnd < len(line) && line[etaEnd] != ',' && line[etaEnd] != ']' {
+					etaEnd++
+				}
+				etaStr := line[idx+1 : etaEnd]
+				dp.ETA = parseETA(etaStr)
+			}
+
+			dp.Message = "Downloading model files..."
+		} else if strings.Contains(line, "Downloading") {
 			dp.Progress = 30
 			dp.Message = "Downloading model files..."
 		} else if strings.Contains(line, "Loading") {
-			dp.Progress = 70
+			dp.Progress = 90
 			dp.Message = "Loading model..."
 		} else if strings.Contains(line, "Saved") || strings.Contains(line, "saved") {
-			dp.Progress = 90
+			dp.Progress = 95
 			dp.Message = "Finalizing..."
 		}
 		dp.mu.Unlock()
@@ -449,6 +524,63 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 		delete(activeDownloads, dp.ModelID)
 		downloadsMu.Unlock()
 	}()
+}
+
+// parseSize parses a size string like "1.5G", "500M", "100K" to bytes
+func parseSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+
+	multiplier := int64(1)
+	s = strings.ToUpper(s)
+
+	if strings.HasSuffix(s, "GB") || strings.HasSuffix(s, "G") {
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "GB"), "G")
+	} else if strings.HasSuffix(s, "MB") || strings.HasSuffix(s, "M") {
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "MB"), "M")
+	} else if strings.HasSuffix(s, "KB") || strings.HasSuffix(s, "K") {
+		multiplier = 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "KB"), "K")
+	} else if strings.HasSuffix(s, "B") {
+		s = strings.TrimSuffix(s, "B")
+	}
+
+	val, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
+	}
+	return int64(val * float64(multiplier))
+}
+
+// parseETA parses an ETA string like "01:40" or "1:40:00" to seconds
+func parseETA(s string) int {
+	s = strings.TrimSpace(s)
+	parts := strings.Split(s, ":")
+	if len(parts) == 0 {
+		return 0
+	}
+
+	total := 0
+	for i, part := range parts {
+		val, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		// Work backwards: last part is seconds, then minutes, then hours
+		switch len(parts) - i {
+		case 1: // seconds
+			total += val
+		case 2: // minutes
+			total += val * 60
+		case 3: // hours
+			total += val * 3600
+		}
+	}
+	return total
 }
 
 // DeleteModel removes a downloaded model
