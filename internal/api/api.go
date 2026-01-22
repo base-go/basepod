@@ -183,6 +183,9 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/flux/generations", s.requireAuth(s.handleFluxListGenerations))
 	s.router.HandleFunc("GET /api/flux/image/{id}", s.handleFluxGetImage) // No auth - images use random IDs
 	s.router.HandleFunc("DELETE /api/flux/generations/{id}", s.requireAuth(s.handleFluxDeleteGeneration))
+	s.router.HandleFunc("GET /api/flux/sessions", s.requireAuth(s.handleFluxListSessions))
+	s.router.HandleFunc("GET /api/flux/sessions/{id}", s.requireAuth(s.handleFluxGetSession))
+	s.router.HandleFunc("DELETE /api/flux/sessions/{id}", s.requireAuth(s.handleFluxDeleteSession))
 
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
@@ -2936,12 +2939,13 @@ func (s *Server) handleFluxDownloadProgress(w http.ResponseWriter, r *http.Reque
 // handleFluxGenerate starts an image generation job
 func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Prompt string `json:"prompt"`
-		Model  string `json:"model"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
-		Steps  int    `json:"steps"`
-		Seed   int64  `json:"seed"`
+		Prompt    string `json:"prompt"`
+		Model     string `json:"model"`
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+		Steps     int    `json:"steps"`
+		Seed      int64  `json:"seed"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "invalid request body")
@@ -2978,7 +2982,7 @@ func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc := flux.GetService(s.storage.DB())
-	job, err := svc.Generate(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed)
+	job, err := svc.Generate(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.SessionID)
 	if err != nil {
 		errorResponse(w, http.StatusBadRequest, err.Error())
 		return
@@ -2997,6 +3001,7 @@ func (s *Server) handleFluxEdit(w http.ResponseWriter, r *http.Request) {
 		Steps      int      `json:"steps"`
 		Seed       int64    `json:"seed"`
 		ImagePaths []string `json:"image_paths"` // Paths to uploaded reference images
+		SessionID  string   `json:"session_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "invalid request body")
@@ -3028,7 +3033,7 @@ func (s *Server) handleFluxEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc := flux.GetService(s.storage.DB())
-	job, err := svc.GenerateEdit(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.ImagePaths)
+	job, err := svc.GenerateEdit(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.ImagePaths, req.SessionID)
 	if err != nil {
 		errorResponse(w, http.StatusBadRequest, err.Error())
 		return
@@ -3154,6 +3159,52 @@ func (s *Server) handleFluxDeleteGeneration(w http.ResponseWriter, r *http.Reque
 
 	svc := flux.GetService(s.storage.DB())
 	if err := svc.DeleteGeneration(jobID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handleFluxListSessions returns all image generation sessions
+func (s *Server) handleFluxListSessions(w http.ResponseWriter, r *http.Request) {
+	svc := flux.GetService(s.storage.DB())
+	sessions, err := svc.ListSessions()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonResponse(w, http.StatusOK, sessions)
+}
+
+// handleFluxGetSession returns a session with all its jobs
+func (s *Server) handleFluxGetSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		errorResponse(w, http.StatusBadRequest, "session ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	session, err := svc.GetSessionWithJobs(sessionID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, session)
+}
+
+// handleFluxDeleteSession deletes a session and all its jobs
+func (s *Server) handleFluxDeleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		errorResponse(w, http.StatusBadRequest, "session ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	if err := svc.DeleteSession(sessionID); err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -61,6 +61,17 @@ type GenerationJob struct {
 	CreatedAt  time.Time `json:"created_at"`
 	Type       string    `json:"type,omitempty"`        // "generate" or "edit"
 	ImagePaths []string  `json:"image_paths,omitempty"` // Reference images for edit mode
+	SessionID  string    `json:"session_id,omitempty"`  // Session this belongs to
+}
+
+// Session represents an image generation session (conversation)
+type Session struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"` // First prompt, truncated
+	Mode      string           `json:"mode"` // "generate" or "edit"
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
+	Jobs      []GenerationJob  `json:"jobs,omitempty"` // Jobs in this session
 }
 
 // Status represents the service status
@@ -327,15 +338,19 @@ func GetDownloadProgress(modelID string) *DownloadProgressData {
 // getSystemRAM returns the total system RAM in GB
 func getSystemRAM() int {
 	// Use sysctl on macOS to get total memory
-	cmd := exec.Command("sysctl", "-n", "hw.memsize")
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
+	// Try with full path first, then without
+	for _, sysctlPath := range []string{"/usr/sbin/sysctl", "sysctl"} {
+		cmd := exec.Command(sysctlPath, "-n", "hw.memsize")
+		output, err := cmd.Output()
+		if err == nil {
+			var memBytes int64
+			fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &memBytes)
+			if memBytes > 0 {
+				return int(memBytes / (1024 * 1024 * 1024)) // Convert to GB
+			}
+		}
 	}
-
-	var memBytes int64
-	fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &memBytes)
-	return int(memBytes / (1024 * 1024 * 1024)) // Convert to GB
+	return 0
 }
 
 // DownloadModel starts downloading a model
@@ -674,12 +689,12 @@ func (s *Service) DeleteModel(modelID string) error {
 }
 
 // Generate starts an image generation job (queued)
-func (s *Service) Generate(prompt, modelID string, width, height, steps int, seed int64) (*GenerationJob, error) {
-	return s.createJob(prompt, modelID, width, height, steps, seed, "generate", nil)
+func (s *Service) Generate(prompt, modelID string, width, height, steps int, seed int64, sessionID string) (*GenerationJob, error) {
+	return s.createJob(prompt, modelID, width, height, steps, seed, "generate", nil, sessionID)
 }
 
 // GenerateEdit starts an image editing job with reference images
-func (s *Service) GenerateEdit(prompt, modelID string, width, height, steps int, seed int64, imagePaths []string) (*GenerationJob, error) {
+func (s *Service) GenerateEdit(prompt, modelID string, width, height, steps int, seed int64, imagePaths []string, sessionID string) (*GenerationJob, error) {
 	// Validate that model supports editing (only flux2-klein models support edit)
 	if !strings.HasPrefix(modelID, "flux2-klein") {
 		return nil, fmt.Errorf("image editing only supported with FLUX.2 Klein models")
@@ -687,11 +702,11 @@ func (s *Service) GenerateEdit(prompt, modelID string, width, height, steps int,
 	if len(imagePaths) == 0 {
 		return nil, fmt.Errorf("at least one reference image is required for editing")
 	}
-	return s.createJob(prompt, modelID, width, height, steps, seed, "edit", imagePaths)
+	return s.createJob(prompt, modelID, width, height, steps, seed, "edit", imagePaths, sessionID)
 }
 
 // createJob creates and queues a generation job
-func (s *Service) createJob(prompt, modelID string, width, height, steps int, seed int64, jobType string, imagePaths []string) (*GenerationJob, error) {
+func (s *Service) createJob(prompt, modelID string, width, height, steps int, seed int64, jobType string, imagePaths []string, sessionID string) (*GenerationJob, error) {
 	// Validate model exists
 	valid := false
 	for _, m := range GetAvailableModels() {
@@ -702,6 +717,18 @@ func (s *Service) createJob(prompt, modelID string, width, height, steps int, se
 	}
 	if !valid {
 		return nil, fmt.Errorf("unknown model: %s", modelID)
+	}
+
+	// Handle session
+	if sessionID == "" {
+		// Create new session with prompt as name
+		session, err := s.CreateSession(truncatePrompt(prompt, 50), jobType)
+		if err == nil {
+			sessionID = session.ID
+		}
+	} else {
+		// Update existing session timestamp
+		s.UpdateSessionTimestamp(sessionID)
 	}
 
 	// Create job
@@ -718,6 +745,7 @@ func (s *Service) createJob(prompt, modelID string, width, height, steps int, se
 		CreatedAt:  time.Now(),
 		Type:       jobType,
 		ImagePaths: imagePaths,
+		SessionID:  sessionID,
 	}
 
 	// Save to database
@@ -729,9 +757,9 @@ func (s *Service) createJob(prompt, modelID string, width, height, steps int, se
 			}
 		}
 		_, err := s.db.Exec(`
-			INSERT INTO flux_generations (id, prompt, model, width, height, steps, seed, status, created_at, type, image_paths)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, job.ID, job.Prompt, job.Model, job.Width, job.Height, job.Steps, job.Seed, job.Status, job.CreatedAt, jobType, imagePathsJSON)
+			INSERT INTO flux_generations (id, prompt, model, width, height, steps, seed, status, created_at, type, image_paths, session_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, job.ID, job.Prompt, job.Model, job.Width, job.Height, job.Steps, job.Seed, job.Status, job.CreatedAt, jobType, imagePathsJSON, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to save job: %w", err)
 		}
@@ -1211,4 +1239,184 @@ func (j *GenerationJob) ToGeneration() Generation {
 // MarshalJSON implements custom JSON marshaling
 func (j *GenerationJob) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j.ToGeneration())
+}
+
+// CreateSession creates a new image generation session
+func (s *Service) CreateSession(name string, mode string) (*Session, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	session := &Session{
+		ID:        "sess_" + uuid.New().String()[:8],
+		Name:      name,
+		Mode:      mode,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO flux_sessions (id, name, mode, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, session.ID, session.Name, session.Mode, session.CreatedAt, session.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
+	}
+
+	return session, nil
+}
+
+// truncatePrompt truncates a prompt to use as session name
+func truncatePrompt(prompt string, maxLen int) string {
+	if len(prompt) <= maxLen {
+		return prompt
+	}
+	return prompt[:maxLen-3] + "..."
+}
+
+// GetOrCreateSession gets or creates a session for a prompt
+func (s *Service) GetOrCreateSession(sessionID string, prompt string, mode string) (*Session, error) {
+	if sessionID != "" {
+		// Get existing session
+		session, err := s.GetSession(sessionID)
+		if err == nil {
+			return session, nil
+		}
+	}
+
+	// Create new session with prompt as name
+	name := truncatePrompt(prompt, 50)
+	return s.CreateSession(name, mode)
+}
+
+// GetSession gets a session by ID
+func (s *Service) GetSession(sessionID string) (*Session, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	var session Session
+	err := s.db.QueryRow(`
+		SELECT id, name, mode, created_at, updated_at FROM flux_sessions WHERE id = ?
+	`, sessionID).Scan(&session.ID, &session.Name, &session.Mode, &session.CreatedAt, &session.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("session not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+
+	return &session, nil
+}
+
+// GetSessionWithJobs gets a session with all its jobs
+func (s *Service) GetSessionWithJobs(sessionID string) (*Session, error) {
+	session, err := s.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get jobs for this session
+	rows, err := s.db.Query(`
+		SELECT id, prompt, model, width, height, steps, seed, status, image_path, error, created_at,
+		       COALESCE(type, 'generate') as type, COALESCE(image_paths, '') as image_paths, session_id
+		FROM flux_generations WHERE session_id = ? ORDER BY created_at ASC
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session jobs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var job GenerationJob
+		var imagePath, errMsg, jobType, imagePathsJSON, sessID sql.NullString
+		err := rows.Scan(&job.ID, &job.Prompt, &job.Model, &job.Width, &job.Height,
+			&job.Steps, &job.Seed, &job.Status, &imagePath, &errMsg, &job.CreatedAt,
+			&jobType, &imagePathsJSON, &sessID)
+		if err != nil {
+			continue
+		}
+		job.ImagePath = imagePath.String
+		job.Error = errMsg.String
+		job.Type = jobType.String
+		job.SessionID = sessID.String
+		if imagePathsJSON.String != "" {
+			json.Unmarshal([]byte(imagePathsJSON.String), &job.ImagePaths)
+		}
+		session.Jobs = append(session.Jobs, job)
+	}
+
+	return session, nil
+}
+
+// ListSessions returns all sessions ordered by most recent
+func (s *Service) ListSessions() ([]Session, error) {
+	if s.db == nil {
+		return []Session{}, nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, name, mode, created_at, updated_at FROM flux_sessions
+		ORDER BY updated_at DESC LIMIT 50
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		var session Session
+		err := rows.Scan(&session.ID, &session.Name, &session.Mode, &session.CreatedAt, &session.UpdatedAt)
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
+// UpdateSessionTimestamp updates the session's updated_at timestamp
+func (s *Service) UpdateSessionTimestamp(sessionID string) error {
+	if s.db == nil {
+		return nil
+	}
+	_, err := s.db.Exec("UPDATE flux_sessions SET updated_at = ? WHERE id = ?", time.Now(), sessionID)
+	return err
+}
+
+// DeleteSession deletes a session and all its jobs
+func (s *Service) DeleteSession(sessionID string) error {
+	if s.db == nil {
+		return fmt.Errorf("database not available")
+	}
+
+	// Get all jobs in this session to delete their images
+	session, err := s.GetSessionWithJobs(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Delete image files
+	for _, job := range session.Jobs {
+		if job.ImagePath != "" {
+			os.Remove(job.ImagePath)
+		}
+	}
+
+	// Delete jobs
+	_, err = s.db.Exec("DELETE FROM flux_generations WHERE session_id = ?", sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete session jobs: %w", err)
+	}
+
+	// Delete session
+	_, err = s.db.Exec("DELETE FROM flux_sessions WHERE id = ?", sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete session: %w", err)
+	}
+
+	return nil
 }

@@ -138,6 +138,16 @@ func (s *Storage) migrate() error {
 		// Migration: add type and image_paths columns for edit support
 		`ALTER TABLE flux_generations ADD COLUMN type TEXT DEFAULT 'generate'`,
 		`ALTER TABLE flux_generations ADD COLUMN image_paths TEXT DEFAULT ''`,
+		// Image generation sessions
+		`CREATE TABLE IF NOT EXISTS flux_sessions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			mode TEXT NOT NULL DEFAULT 'generate',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		// Add session_id to generations
+		`ALTER TABLE flux_generations ADD COLUMN session_id TEXT`,
 	}
 
 	for _, migration := range migrations {
