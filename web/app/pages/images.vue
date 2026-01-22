@@ -35,6 +35,16 @@ interface FluxGeneration {
   created_at: string
   type?: string
   image_paths?: string[]
+  session_id?: string
+}
+
+interface FluxSession {
+  id: string
+  name: string
+  mode: string
+  created_at: string
+  updated_at: string
+  jobs?: FluxGeneration[]
 }
 
 interface DownloadProgress {
@@ -58,6 +68,11 @@ const toast = useToast()
 const { data: status, refresh: refreshStatus } = await useApiFetch<FluxStatus>('/flux/status')
 const { data: models, refresh: refreshModels } = await useApiFetch<FluxModel[]>('/flux/models')
 const { data: generations, refresh: refreshGenerations } = await useApiFetch<FluxGeneration[]>('/flux/generations')
+const { data: sessions, refresh: refreshSessions } = await useApiFetch<FluxSession[]>('/flux/sessions')
+
+// Current session
+const currentSessionId = ref<string | null>(null)
+const currentSession = ref<FluxSession | null>(null)
 
 // Form state
 const prompt = ref('')
@@ -172,11 +187,23 @@ async function generate() {
         height: dimensions.value.height,
         steps: steps.value,
         seed: seed.value,
+        session_id: currentSessionId.value || undefined,
       }
     })
 
     currentJobId.value = job.id
     generating.value = true
+
+    // If a new session was created, track it
+    if (job.session_id && !currentSessionId.value) {
+      currentSessionId.value = job.session_id
+      await loadSession(job.session_id)
+      await refreshSessions()
+    }
+
+    // Clear prompt for follow-up
+    prompt.value = ''
+
     toast.add({ title: 'Generation queued', color: 'info' })
     await refreshStatus()
 
@@ -249,12 +276,24 @@ async function generateEdit() {
         height: dimensions.value.height,
         steps: steps.value,
         seed: seed.value,
-        image_paths: uploadedImages.value.map(img => img.path)
+        image_paths: uploadedImages.value.map(img => img.path),
+        session_id: currentSessionId.value || undefined,
       }
     })
 
     currentJobId.value = job.id
     generating.value = true
+
+    // If a new session was created, track it
+    if (job.session_id && !currentSessionId.value) {
+      currentSessionId.value = job.session_id
+      await loadSession(job.session_id)
+      await refreshSessions()
+    }
+
+    // Clear prompt for follow-up
+    editPrompt.value = ''
+
     toast.add({ title: 'Edit job queued', color: 'info' })
     await refreshStatus()
 
@@ -287,8 +326,11 @@ async function pollJobStatus(jobId: string) {
         generating.value = false
         currentJobId.value = null
         toast.add({ title: 'Image generated!', color: 'success' })
-        refreshGenerations()
-        activeTab.value = 'gallery'
+        await refreshGenerations()
+        // Refresh current session to show new image in conversation
+        if (currentSessionId.value) {
+          await loadSession(currentSessionId.value)
+        }
         return
       }
 
@@ -296,6 +338,10 @@ async function pollJobStatus(jobId: string) {
         generating.value = false
         currentJobId.value = null
         toast.add({ title: 'Generation failed', description: job.error, color: 'error' })
+        // Still refresh session to show failed attempt
+        if (currentSessionId.value) {
+          await loadSession(currentSessionId.value)
+        }
         return
       }
 
@@ -433,310 +479,548 @@ onMounted(() => {
   refreshTimer = setInterval(() => {
     if (generating.value) {
       refreshStatus()
+      // Also refresh current session if active
+      if (currentSessionId.value) {
+        loadSession(currentSessionId.value)
+      }
     }
   }, 2000)
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
 })
+
+// Session management
+async function loadSession(sessionId: string) {
+  try {
+    const session = await $api<FluxSession>(`/flux/sessions/${sessionId}`)
+    currentSession.value = session
+    currentSessionId.value = sessionId
+  } catch {
+    // Session might have been deleted
+    currentSessionId.value = null
+    currentSession.value = null
+  }
+}
+
+async function selectSession(sessionId: string) {
+  await loadSession(sessionId)
+  activeTab.value = 'generate'
+}
+
+function startNewSession() {
+  currentSessionId.value = null
+  currentSession.value = null
+  prompt.value = ''
+  activeTab.value = 'generate'
+}
+
+async function deleteSession(sessionId: string) {
+  if (!confirm('Delete this session and all its images?')) return
+
+  try {
+    await $api(`/flux/sessions/${sessionId}`, { method: 'DELETE' })
+    toast.add({ title: 'Session deleted', color: 'success' })
+    if (currentSessionId.value === sessionId) {
+      startNewSession()
+    }
+    await refreshSessions()
+    await refreshGenerations()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete session', description: err.data?.error, color: 'error' })
+  }
+}
+
+// Format relative time
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(diff / 3600000)
+  const days = Math.floor(diff / 86400000)
+
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes}m ago`
+  if (hours < 24) return `${hours}h ago`
+  if (days < 7) return `${days}d ago`
+  return date.toLocaleDateString()
+}
+
+// Sorted sessions (newest first)
+const sortedSessions = computed(() => {
+  if (!sessions.value) return []
+  return [...sessions.value].sort((a, b) =>
+    new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  )
+})
 </script>
 
 <template>
-  <div>
-    <!-- Header with Status -->
-    <div class="mb-6 flex items-center justify-between">
-      <div>
-        <h2 class="text-xl font-semibold">Image Generation</h2>
-        <p class="text-gray-500 dark:text-gray-400">
-          Generate images with FLUX on Apple Silicon
-          <span v-if="status?.system_ram" class="ml-2 text-xs">({{ status.system_ram }}GB RAM)</span>
-        </p>
+  <div class="flex h-[calc(100vh-6rem)]">
+    <!-- Sessions Sidebar -->
+    <div v-if="status?.supported" class="w-64 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+      <!-- New Chat Button -->
+      <div class="p-3 border-b border-gray-200 dark:border-gray-700">
+        <UButton block @click="startNewSession" color="primary" variant="soft">
+          <UIcon name="i-heroicons-plus" class="mr-2" />
+          New Image
+        </UButton>
       </div>
-      <div class="flex items-center gap-3">
-        <div v-if="status?.queued_jobs" class="flex items-center gap-2 px-3 py-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
-          <UIcon name="i-heroicons-queue-list" class="w-4 h-4 text-amber-600 dark:text-amber-400" />
-          <span class="text-sm font-medium text-amber-700 dark:text-amber-300">
-            {{ status.queued_jobs }} in queue
-          </span>
+
+      <!-- Sessions List -->
+      <div class="flex-1 overflow-y-auto">
+        <div v-if="sortedSessions.length === 0" class="p-4 text-center text-gray-500 text-sm">
+          No sessions yet
         </div>
-        <div v-if="status?.generating" class="flex items-center gap-2 px-3 py-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
-          <span class="w-2 h-2 bg-primary-500 rounded-full animate-pulse" />
-          <span class="text-sm font-medium text-primary-700 dark:text-primary-300">
-            Generating...
-          </span>
+        <div
+          v-for="session in sortedSessions"
+          :key="session.id"
+          class="group relative"
+        >
+          <button
+            class="w-full p-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            :class="{ 'bg-primary-50 dark:bg-primary-900/30': currentSessionId === session.id }"
+            @click="selectSession(session.id)"
+          >
+            <div class="flex items-start gap-2">
+              <UIcon
+                :name="session.mode === 'edit' ? 'i-heroicons-pencil-square' : 'i-heroicons-sparkles'"
+                class="w-4 h-4 mt-0.5 flex-shrink-0"
+                :class="currentSessionId === session.id ? 'text-primary-500' : 'text-gray-400'"
+              />
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium truncate">{{ session.name }}</p>
+                <p class="text-xs text-gray-500">{{ formatRelativeTime(session.updated_at) }}</p>
+              </div>
+            </div>
+          </button>
+          <button
+            class="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
+            @click.stop="deleteSession(session.id)"
+          >
+            <UIcon name="i-heroicons-trash" class="w-4 h-4 text-gray-400 hover:text-red-500" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Status Footer -->
+      <div class="p-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500">
+        <div v-if="status?.queued_jobs" class="flex items-center gap-1 mb-1">
+          <UIcon name="i-heroicons-queue-list" class="w-3 h-3" />
+          {{ status.queued_jobs }} in queue
+        </div>
+        <div v-if="status?.system_ram">
+          {{ status.system_ram }}GB RAM
         </div>
       </div>
     </div>
 
-    <!-- Not Supported Warning -->
-    <div v-if="status && !status.supported" class="p-6 bg-amber-50 dark:bg-amber-900/20 rounded-lg mb-6 border border-amber-200 dark:border-amber-800">
-      <div class="flex items-start gap-4">
-        <UIcon name="i-heroicons-exclamation-triangle" class="w-8 h-8 text-amber-500 flex-shrink-0" />
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- Header with Status -->
+      <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
         <div>
-          <h3 class="font-semibold text-amber-800 dark:text-amber-200 text-lg">Image Generation Not Available</h3>
-          <p class="text-amber-700 dark:text-amber-300 mt-1">
-            {{ status.unsupported_reason || 'FLUX requires macOS with Apple Silicon (M series) and mflux installed.' }}
+          <h2 class="text-xl font-semibold">
+            {{ currentSession?.name || 'Image Generation' }}
+          </h2>
+          <p class="text-gray-500 dark:text-gray-400 text-sm">
+            {{ currentSession ? `${currentSession.jobs?.length || 0} images` : 'Generate images with FLUX on Apple Silicon' }}
           </p>
-          <div class="mt-4 p-3 bg-amber-100 dark:bg-amber-800/50 rounded text-sm">
-            <p class="text-amber-800 dark:text-amber-200">
-              <strong>To use image generation:</strong> Run Basepod on a Mac with Apple Silicon and install mflux via pip.
-            </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <div v-if="status?.generating" class="flex items-center gap-2 px-3 py-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
+            <span class="w-2 h-2 bg-primary-500 rounded-full animate-pulse" />
+            <span class="text-sm font-medium text-primary-700 dark:text-primary-300">
+              Generating...
+            </span>
           </div>
         </div>
       </div>
-    </div>
 
-    <template v-else>
+      <!-- Not Supported Warning -->
+      <div v-if="status && !status.supported" class="p-6 m-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+        <div class="flex items-start gap-4">
+          <UIcon name="i-heroicons-exclamation-triangle" class="w-8 h-8 text-amber-500 flex-shrink-0" />
+          <div>
+            <h3 class="font-semibold text-amber-800 dark:text-amber-200 text-lg">Image Generation Not Available</h3>
+            <p class="text-amber-700 dark:text-amber-300 mt-1">
+              {{ status.unsupported_reason || 'FLUX requires macOS with Apple Silicon (M series) and mflux installed.' }}
+            </p>
+            <div class="mt-4 p-3 bg-amber-100 dark:bg-amber-800/50 rounded text-sm">
+              <p class="text-amber-800 dark:text-amber-200">
+                <strong>To use image generation:</strong> Run Basepod on a Mac with Apple Silicon and install mflux via pip.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template v-else>
       <!-- Tabs -->
-      <UTabs v-model="activeTab" :items="tabs" class="mb-6" />
+      <div class="px-4 pt-2">
+        <UTabs v-model="activeTab" :items="tabs" />
+      </div>
 
       <!-- Generate Tab -->
-      <div v-if="activeTab === 'generate'">
-        <div v-if="!hasDownloadedModel" class="text-center py-12">
-          <UIcon name="i-heroicons-cpu-chip" class="text-5xl text-gray-400 mb-4" />
-          <h3 class="text-lg font-medium mb-2">No Models Downloaded</h3>
-          <p class="text-gray-500 mb-4">Download a FLUX model to start generating images.</p>
-          <UButton @click="activeTab = 'models'">
-            <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
-            Download Models
-          </UButton>
+      <div v-if="activeTab === 'generate'" class="flex-1 flex flex-col overflow-hidden">
+        <div v-if="!hasDownloadedModel" class="flex-1 flex items-center justify-center">
+          <div class="text-center py-12">
+            <UIcon name="i-heroicons-cpu-chip" class="text-5xl text-gray-400 mb-4" />
+            <h3 class="text-lg font-medium mb-2">No Models Downloaded</h3>
+            <p class="text-gray-500 mb-4">Download a FLUX model to start generating images.</p>
+            <UButton @click="activeTab = 'models'">
+              <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
+              Download Models
+            </UButton>
+          </div>
         </div>
 
-        <div v-else class="space-y-6">
-          <!-- Memory Warning for 16GB systems -->
-          <div v-if="status?.system_ram && status.system_ram <= 16" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
-            <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
-              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
-              <span>With {{ status.system_ram }}GB RAM, use 512x512 size for best results. Larger sizes may fail.</span>
+        <template v-else>
+          <!-- Conversation View (when session is active) -->
+          <div v-if="currentSession && currentSession.jobs?.length" class="flex-1 overflow-y-auto p-4 space-y-6">
+            <div
+              v-for="job in currentSession.jobs"
+              :key="job.id"
+              class="flex flex-col gap-3"
+            >
+              <!-- Prompt (user message) -->
+              <div class="flex justify-end">
+                <div class="max-w-[80%] p-3 bg-primary-100 dark:bg-primary-900/30 rounded-lg rounded-br-none">
+                  <p class="text-sm">{{ job.prompt }}</p>
+                  <p class="text-xs text-gray-500 mt-1">
+                    {{ job.width }}x{{ job.height }} · {{ job.steps }} steps
+                  </p>
+                </div>
+              </div>
+
+              <!-- Result (assistant message) -->
+              <div class="flex justify-start">
+                <div class="max-w-[80%]">
+                  <!-- Completed -->
+                  <div
+                    v-if="job.status === 'completed' && job.image_url"
+                    class="bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary-500 transition-all"
+                    @click="viewImage(job)"
+                  >
+                    <img
+                      :src="job.image_url"
+                      :alt="job.prompt"
+                      class="max-w-sm max-h-96 object-contain"
+                    />
+                  </div>
+
+                  <!-- Generating -->
+                  <div
+                    v-else-if="job.status === 'generating'"
+                    class="p-4 bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none"
+                  >
+                    <div class="flex items-center gap-3">
+                      <UIcon name="i-heroicons-arrow-path" class="w-5 h-5 animate-spin text-primary-500" />
+                      <div>
+                        <p class="text-sm font-medium">Generating...</p>
+                        <div class="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-full mt-2 overflow-hidden">
+                          <div
+                            class="h-full bg-primary-500 transition-all duration-300"
+                            :style="{ width: `${job.progress || 0}%` }"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Queued -->
+                  <div
+                    v-else-if="job.status === 'queued' || job.status === 'pending'"
+                    class="p-4 bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none"
+                  >
+                    <div class="flex items-center gap-3">
+                      <UIcon name="i-heroicons-clock" class="w-5 h-5 text-amber-500" />
+                      <p class="text-sm">Waiting in queue...</p>
+                    </div>
+                  </div>
+
+                  <!-- Failed -->
+                  <div
+                    v-else-if="job.status === 'failed'"
+                    class="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg rounded-bl-none border border-red-200 dark:border-red-800"
+                  >
+                    <div class="flex items-center gap-3">
+                      <UIcon name="i-heroicons-exclamation-circle" class="w-5 h-5 text-red-500" />
+                      <div>
+                        <p class="text-sm font-medium text-red-700 dark:text-red-300">Generation failed</p>
+                        <p v-if="job.error" class="text-xs text-red-600 dark:text-red-400 mt-1">{{ job.error }}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <!-- Prompt Input -->
-          <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-            <UTextarea
-              v-model="prompt"
-              placeholder="Describe the image you want to create..."
-              :rows="3"
-              class="w-full mb-4"
-              autofocus
-            />
-
-            <div class="flex flex-wrap gap-4 items-end">
-              <div v-if="downloadedModels.length > 1" class="flex-1 min-w-[150px]">
-                <label class="text-xs text-gray-500 mb-1 block">Model</label>
-                <USelect
-                  v-model="selectedModel"
-                  :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
-                />
+          <!-- Empty State (no session) -->
+          <div v-else class="flex-1 flex items-center justify-center">
+            <div class="text-center max-w-md p-8">
+              <UIcon name="i-heroicons-sparkles" class="text-5xl text-primary-400 mb-4" />
+              <h3 class="text-lg font-medium mb-2">Start Creating</h3>
+              <p class="text-gray-500 mb-4">
+                Describe what you want to see and the AI will generate it for you.
+              </p>
+              <!-- Memory Warning for 16GB systems -->
+              <div v-if="status?.system_ram && status.system_ram <= 16" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800 text-left mb-4">
+                <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
+                  <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
+                  <span>With {{ status.system_ram }}GB RAM, use 512x512 for best results.</span>
+                </div>
               </div>
-              <div v-else-if="downloadedModels.length === 1" class="flex items-center gap-2">
-                <span class="text-sm text-gray-500">Model:</span>
-                <span class="font-medium">{{ downloadedModels[0].name }}</span>
-              </div>
-
-              <div class="w-[160px]">
-                <label class="text-xs text-gray-500 mb-1 block">Size</label>
-                <USelect
-                  v-model="selectedSize"
-                  :items="sizePresets"
-                />
-              </div>
-
-              <div class="w-[100px]">
-                <label class="text-xs text-gray-500 mb-1 block">Steps</label>
-                <UInput v-model.number="steps" type="number" :min="1" :max="50" />
-              </div>
-
-              <div class="w-[120px]">
-                <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
-                <UInput v-model.number="seed" type="number" />
-              </div>
-
-              <UButton
-                color="primary"
-                size="lg"
-                :loading="generating"
-                :disabled="!prompt.trim() || generating"
-                @click="generate"
-              >
-                <UIcon name="i-heroicons-sparkles" class="mr-2" />
-                Generate
-              </UButton>
             </div>
           </div>
 
-          <!-- Progress -->
-          <div v-if="generating && status?.current_job" class="p-4 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
-            <div class="flex items-center justify-between mb-2">
-              <span class="font-medium text-primary-700 dark:text-primary-300">Generating image...</span>
-              <span class="text-sm text-primary-600 dark:text-primary-400">
-                Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}
-              </span>
+          <!-- Input Area (always visible at bottom) -->
+          <div class="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-900">
+            <!-- Progress Bar (when generating) -->
+            <div v-if="generating && status?.current_job" class="mb-4 p-3 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-primary-700 dark:text-primary-300">Generating...</span>
+                <span class="text-xs text-primary-600 dark:text-primary-400">
+                  {{ status.current_job.progress || 0 }}%
+                </span>
+              </div>
+              <div class="h-2 bg-primary-200 dark:bg-primary-800 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-primary-500 transition-all duration-300"
+                  :style="{ width: `${status.current_job.progress || 0}%` }"
+                />
+              </div>
             </div>
-            <div class="h-3 bg-primary-200 dark:bg-primary-800 rounded-full overflow-hidden">
-              <div
-                class="h-full bg-primary-500 transition-all duration-300"
-                :style="{ width: `${status.current_job.progress || 0}%` }"
+
+            <div class="flex gap-3">
+              <UTextarea
+                v-model="prompt"
+                :placeholder="currentSession ? 'Describe your next image...' : 'Describe the image you want to create...'"
+                :rows="2"
+                class="flex-1"
+                @keydown.enter.meta="generate"
+                @keydown.enter.ctrl="generate"
               />
-            </div>
-          </div>
-
-          <!-- Recent Generations Preview -->
-          <div v-if="generations?.length">
-            <div class="flex items-center justify-between mb-3">
-              <h3 class="font-medium">Recent Generations</h3>
-              <UButton variant="ghost" size="xs" @click="activeTab = 'gallery'">
-                View All
-                <UIcon name="i-heroicons-arrow-right" class="ml-1" />
-              </UButton>
-            </div>
-            <div class="flex gap-3 overflow-x-auto pb-2">
-              <div
-                v-for="gen in generations.slice(0, 6)"
-                :key="gen.id"
-                class="flex-shrink-0 w-24 h-24 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary-500 transition-all"
-                @click="viewImage(gen)"
-              >
-                <img
-                  v-if="gen.status === 'completed' && gen.image_url"
-                  :src="gen.image_url"
-                  :alt="gen.prompt"
-                  class="w-full h-full object-cover"
-                />
+              <div class="flex flex-col gap-2">
+                <UButton
+                  color="primary"
+                  :loading="generating"
+                  :disabled="!prompt.trim() || generating"
+                  @click="generate"
+                >
+                  <UIcon name="i-heroicons-sparkles" />
+                </UButton>
+                <UPopover>
+                  <UButton variant="ghost" size="sm">
+                    <UIcon name="i-heroicons-cog-6-tooth" />
+                  </UButton>
+                  <template #content>
+                    <div class="p-4 w-64 space-y-3">
+                      <div v-if="downloadedModels.length > 1">
+                        <label class="text-xs text-gray-500 mb-1 block">Model</label>
+                        <USelect
+                          v-model="selectedModel"
+                          :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
+                          size="sm"
+                        />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500 mb-1 block">Size</label>
+                        <USelect
+                          v-model="selectedSize"
+                          :items="sizePresets"
+                          size="sm"
+                        />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500 mb-1 block">Steps</label>
+                        <UInput v-model.number="steps" type="number" :min="1" :max="50" size="sm" />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
+                        <UInput v-model.number="seed" type="number" size="sm" />
+                      </div>
+                    </div>
+                  </template>
+                </UPopover>
               </div>
             </div>
+            <p class="text-xs text-gray-400 mt-2">
+              {{ downloadedModels.find(m => m.id === selectedModel)?.name || 'No model' }} · {{ selectedSize }} · {{ steps }} steps
+              <span class="ml-2">Press ⌘+Enter to generate</span>
+            </p>
           </div>
-        </div>
+        </template>
       </div>
 
       <!-- Edit Tab -->
-      <div v-if="activeTab === 'edit'">
-        <div v-if="!hasEditModel" class="text-center py-12">
-          <UIcon name="i-heroicons-pencil-square" class="text-5xl text-gray-400 mb-4" />
-          <h3 class="text-lg font-medium mb-2">No Edit Models Downloaded</h3>
-          <p class="text-gray-500 mb-4">Download a FLUX.2 Klein model to use image editing features.</p>
-          <UButton @click="activeTab = 'models'">
-            <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
-            Download Models
-          </UButton>
+      <div v-if="activeTab === 'edit'" class="flex-1 flex flex-col overflow-hidden">
+        <div v-if="!hasEditModel" class="flex-1 flex items-center justify-center">
+          <div class="text-center py-12">
+            <UIcon name="i-heroicons-pencil-square" class="text-5xl text-gray-400 mb-4" />
+            <h3 class="text-lg font-medium mb-2">No Edit Models Downloaded</h3>
+            <p class="text-gray-500 mb-4">Download a FLUX.2 Klein model to use image editing features.</p>
+            <UButton @click="activeTab = 'models'">
+              <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
+              Download Models
+            </UButton>
+          </div>
         </div>
 
-        <div v-else class="space-y-6">
-          <!-- Reference Images Upload -->
-          <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-            <h3 class="font-medium mb-3">Reference Images</h3>
-            <p class="text-sm text-gray-500 mb-4">
-              Upload one or more reference images. The AI will combine or modify them based on your prompt.
-            </p>
+        <template v-else>
+          <!-- Edit Conversation View -->
+          <div class="flex-1 overflow-y-auto p-4">
+            <!-- Reference Images Section -->
+            <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+              <h3 class="font-medium mb-3 flex items-center gap-2">
+                <UIcon name="i-heroicons-photo" class="w-5 h-5" />
+                Reference Images
+              </h3>
+              <p class="text-sm text-gray-500 mb-4">
+                Upload one or more reference images. The AI will combine or modify them based on your prompt.
+              </p>
 
-            <!-- Uploaded Images Preview -->
-            <div v-if="uploadedImages.length" class="flex flex-wrap gap-3 mb-4">
-              <div
-                v-for="(img, index) in uploadedImages"
-                :key="img.filename"
-                class="relative group"
-              >
-                <img
-                  :src="img.preview"
-                  :alt="img.filename"
-                  class="w-24 h-24 object-cover rounded-lg"
-                />
-                <button
-                  class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
-                  @click="removeUploadedImage(index)"
+              <!-- Uploaded Images Preview -->
+              <div v-if="uploadedImages.length" class="flex flex-wrap gap-3 mb-4">
+                <div
+                  v-for="(img, index) in uploadedImages"
+                  :key="img.filename"
+                  class="relative group"
                 >
-                  <UIcon name="i-heroicons-x-mark" class="w-4 h-4" />
-                </button>
+                  <img
+                    :src="img.preview"
+                    :alt="img.filename"
+                    class="w-24 h-24 object-cover rounded-lg"
+                  />
+                  <button
+                    class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    @click="removeUploadedImage(index)"
+                  >
+                    <UIcon name="i-heroicons-x-mark" class="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Upload Button -->
+              <label class="inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors">
+                <UIcon name="i-heroicons-plus" class="w-5 h-5" />
+                <span>{{ uploading ? 'Uploading...' : 'Add Image' }}</span>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  class="hidden"
+                  :disabled="uploading"
+                  @change="uploadImage"
+                />
+              </label>
+            </div>
+
+            <!-- Memory Warning for 16GB systems -->
+            <div v-if="status?.system_ram && status.system_ram <= 16" class="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+              <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
+                <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
+                <span>With {{ status.system_ram }}GB RAM, edit may fail on large images.</span>
               </div>
             </div>
 
-            <!-- Upload Button -->
-            <label class="inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors">
-              <UIcon name="i-heroicons-photo" class="w-5 h-5" />
-              <span>{{ uploading ? 'Uploading...' : 'Add Image' }}</span>
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                class="hidden"
-                :disabled="uploading"
-                @change="uploadImage"
-              />
-            </label>
-          </div>
+            <!-- Session conversation for edits -->
+            <div v-if="currentSession && currentSession.mode === 'edit' && currentSession.jobs?.length" class="space-y-6">
+              <div
+                v-for="job in currentSession.jobs"
+                :key="job.id"
+                class="flex flex-col gap-3"
+              >
+                <!-- Prompt -->
+                <div class="flex justify-end">
+                  <div class="max-w-[80%] p-3 bg-purple-100 dark:bg-purple-900/30 rounded-lg rounded-br-none">
+                    <p class="text-sm">{{ job.prompt }}</p>
+                  </div>
+                </div>
 
-          <!-- Memory Warning for 16GB systems -->
-          <div v-if="status?.system_ram && status.system_ram <= 16" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
-            <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
-              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
-              <span>With {{ status.system_ram }}GB RAM, edit may fail on large images. Use smaller reference images and close other apps.</span>
+                <!-- Result -->
+                <div class="flex justify-start">
+                  <div class="max-w-[80%]">
+                    <div
+                      v-if="job.status === 'completed' && job.image_url"
+                      class="bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all"
+                      @click="viewImage(job)"
+                    >
+                      <img
+                        :src="job.image_url"
+                        :alt="job.prompt"
+                        class="max-w-sm max-h-96 object-contain"
+                      />
+                    </div>
+                    <div
+                      v-else-if="job.status === 'generating'"
+                      class="p-4 bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none"
+                    >
+                      <div class="flex items-center gap-3">
+                        <UIcon name="i-heroicons-arrow-path" class="w-5 h-5 animate-spin text-purple-500" />
+                        <span class="text-sm">Processing edit...</span>
+                      </div>
+                    </div>
+                    <div
+                      v-else-if="job.status === 'failed'"
+                      class="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg rounded-bl-none"
+                    >
+                      <p class="text-sm text-red-600">{{ job.error || 'Edit failed' }}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <!-- Edit Prompt -->
-          <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-            <UTextarea
-              v-model="editPrompt"
-              placeholder="Describe what you want to do with the images (e.g., 'Make the woman wear the eyeglasses')..."
-              :rows="3"
-              class="w-full mb-4"
-            />
-
-            <div class="flex flex-wrap gap-4 items-end">
-              <div v-if="editModelOptions.length > 1" class="flex-1 min-w-[150px]">
-                <label class="text-xs text-gray-500 mb-1 block">Model</label>
-                <USelect
-                  v-model="editModel"
-                  :items="editModelOptions"
+          <!-- Edit Input Area -->
+          <div class="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-900">
+            <!-- Progress Bar -->
+            <div v-if="generating && status?.current_job" class="mb-4 p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-purple-700 dark:text-purple-300">Processing edit...</span>
+                <span class="text-xs text-purple-600 dark:text-purple-400">
+                  {{ status.current_job.progress || 0 }}%
+                </span>
+              </div>
+              <div class="h-2 bg-purple-200 dark:bg-purple-800 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-purple-500 transition-all duration-300"
+                  :style="{ width: `${status.current_job.progress || 0}%` }"
                 />
               </div>
-              <div v-else-if="editModelOptions.length === 1" class="flex items-center gap-2">
-                <span class="text-sm text-gray-500">Model:</span>
-                <span class="font-medium">{{ editModelOptions[0].label }}</span>
-              </div>
+            </div>
 
-              <div class="w-[100px]">
-                <label class="text-xs text-gray-500 mb-1 block">Steps</label>
-                <UInput v-model.number="steps" type="number" :min="1" :max="50" />
-              </div>
-
-              <div class="w-[120px]">
-                <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
-                <UInput v-model.number="seed" type="number" />
-              </div>
-
+            <div class="flex gap-3">
+              <UTextarea
+                v-model="editPrompt"
+                placeholder="Describe what you want to do with the images..."
+                :rows="2"
+                class="flex-1"
+                @keydown.enter.meta="generateEdit"
+                @keydown.enter.ctrl="generateEdit"
+              />
               <UButton
-                color="primary"
-                size="lg"
+                color="purple"
                 :loading="generating"
                 :disabled="!editPrompt.trim() || uploadedImages.length === 0 || generating"
                 @click="generateEdit"
               >
-                <UIcon name="i-heroicons-pencil-square" class="mr-2" />
-                Edit Image
+                <UIcon name="i-heroicons-pencil-square" />
               </UButton>
             </div>
+            <p class="text-xs text-gray-400 mt-2">
+              {{ uploadedImages.length }} reference image(s) · Press ⌘+Enter to edit
+            </p>
           </div>
-
-          <!-- Progress -->
-          <div v-if="generating && status?.current_job" class="p-4 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
-            <div class="flex items-center justify-between mb-2">
-              <span class="font-medium text-primary-700 dark:text-primary-300">Processing edit...</span>
-              <span class="text-sm text-primary-600 dark:text-primary-400">
-                Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}
-              </span>
-            </div>
-            <div class="h-3 bg-primary-200 dark:bg-primary-800 rounded-full overflow-hidden">
-              <div
-                class="h-full bg-primary-500 transition-all duration-300"
-                :style="{ width: `${status.current_job.progress || 0}%` }"
-              />
-            </div>
-          </div>
-        </div>
+        </template>
       </div>
 
       <!-- Models Tab -->
-      <div v-if="activeTab === 'models'" class="space-y-4">
+      <div v-if="activeTab === 'models'" class="flex-1 overflow-y-auto p-4 space-y-4">
         <div
           v-for="model in sortedModels"
           :key="model.id"
@@ -781,15 +1065,17 @@ onUnmounted(() => {
       </div>
 
       <!-- Gallery Tab -->
-      <div v-if="activeTab === 'gallery'">
-        <div v-if="!generations?.length" class="text-center py-12">
-          <UIcon name="i-heroicons-photo" class="text-5xl text-gray-400 mb-4" />
-          <h3 class="text-lg font-medium mb-2">No Images Yet</h3>
-          <p class="text-gray-500 mb-4">Generate your first image to see it here.</p>
-          <UButton @click="activeTab = 'generate'">
-            <UIcon name="i-heroicons-sparkles" class="mr-2" />
-            Generate Image
-          </UButton>
+      <div v-if="activeTab === 'gallery'" class="flex-1 overflow-y-auto p-4">
+        <div v-if="!generations?.length" class="flex items-center justify-center h-full">
+          <div class="text-center py-12">
+            <UIcon name="i-heroicons-photo" class="text-5xl text-gray-400 mb-4" />
+            <h3 class="text-lg font-medium mb-2">No Images Yet</h3>
+            <p class="text-gray-500 mb-4">Generate your first image to see it here.</p>
+            <UButton @click="activeTab = 'generate'">
+              <UIcon name="i-heroicons-sparkles" class="mr-2" />
+              Generate Image
+            </UButton>
+          </div>
         </div>
 
         <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -842,6 +1128,7 @@ onUnmounted(() => {
         </div>
       </div>
     </template>
+    </div>
 
     <!-- Image Detail Modal -->
     <UModal v-model:open="showImageModal">

@@ -1203,32 +1203,38 @@ func (s *Service) DeleteGeneration(jobID string) error {
 
 // Generation represents a saved generation (for JSON responses)
 type Generation struct {
-	ID        string    `json:"id"`
-	Prompt    string    `json:"prompt"`
-	Model     string    `json:"model"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	Steps     int       `json:"steps"`
-	Seed      int64     `json:"seed"`
-	Status    string    `json:"status"`
-	ImageURL  string    `json:"image_url,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Prompt     string    `json:"prompt"`
+	Model      string    `json:"model"`
+	Width      int       `json:"width"`
+	Height     int       `json:"height"`
+	Steps      int       `json:"steps"`
+	Seed       int64     `json:"seed"`
+	Status     string    `json:"status"`
+	ImageURL   string    `json:"image_url,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	Type       string    `json:"type,omitempty"`
+	ImagePaths []string  `json:"image_paths,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
 }
 
 // ToGeneration converts a job to a Generation response
 func (j *GenerationJob) ToGeneration() Generation {
 	g := Generation{
-		ID:        j.ID,
-		Prompt:    j.Prompt,
-		Model:     j.Model,
-		Width:     j.Width,
+		ID:         j.ID,
+		Prompt:     j.Prompt,
+		Model:      j.Model,
+		Width:      j.Width,
 		Height:    j.Height,
-		Steps:     j.Steps,
-		Seed:      j.Seed,
-		Status:    j.Status,
-		Error:     j.Error,
-		CreatedAt: j.CreatedAt,
+		Steps:      j.Steps,
+		Seed:       j.Seed,
+		Status:     j.Status,
+		Error:      j.Error,
+		CreatedAt:  j.CreatedAt,
+		Type:       j.Type,
+		ImagePaths: j.ImagePaths,
+		SessionID:  j.SessionID,
 	}
 	if j.Status == "completed" && j.ImagePath != "" {
 		g.ImageURL = "/api/flux/image/" + j.ID
