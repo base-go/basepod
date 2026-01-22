@@ -66,6 +66,13 @@ const selectedSize = ref('1024x1024')
 const steps = ref(4)
 const seed = ref(-1)
 
+// Set default size based on system RAM
+watch(status, (s) => {
+  if (s?.system_ram && s.system_ram <= 16 && selectedSize.value === '1024x1024') {
+    selectedSize.value = '512x512'
+  }
+}, { immediate: true })
+
 // UI state
 const generating = ref(false)
 const currentJobId = ref<string | null>(null)
@@ -496,6 +503,14 @@ onUnmounted(() => {
         </div>
 
         <div v-else class="space-y-6">
+          <!-- Memory Warning for 16GB systems -->
+          <div v-if="status?.system_ram && status.system_ram <= 16" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+            <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
+              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
+              <span>With {{ status.system_ram }}GB RAM, use 512x512 size for best results. Larger sizes may fail.</span>
+            </div>
+          </div>
+
           <!-- Prompt Input -->
           <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
             <UTextarea
@@ -649,6 +664,14 @@ onUnmounted(() => {
             </label>
           </div>
 
+          <!-- Memory Warning for 16GB systems -->
+          <div v-if="status?.system_ram && status.system_ram <= 16" class="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
+            <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
+              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
+              <span>With {{ status.system_ram }}GB RAM, edit may fail on large images. Use smaller reference images and close other apps.</span>
+            </div>
+          </div>
+
           <!-- Edit Prompt -->
           <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
             <UTextarea
@@ -659,12 +682,16 @@ onUnmounted(() => {
             />
 
             <div class="flex flex-wrap gap-4 items-end">
-              <div class="flex-1 min-w-[150px]">
+              <div v-if="editModelOptions.length > 1" class="flex-1 min-w-[150px]">
                 <label class="text-xs text-gray-500 mb-1 block">Model</label>
                 <USelect
                   v-model="editModel"
                   :items="editModelOptions"
                 />
+              </div>
+              <div v-else-if="editModelOptions.length === 1" class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">Model:</span>
+                <span class="font-medium">{{ editModelOptions[0].label }}</span>
               </div>
 
               <div class="w-[100px]">

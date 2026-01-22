@@ -227,7 +227,7 @@ func GetAvailableModels() []Model {
 		{
 			ID:          "flux2-klein-4b",
 			Name:        "FLUX.2 Klein 4B",
-			Description: "Fastest + smallest with edit capabilities, needs 16GB+ RAM",
+			Description: "Fastest + smallest with edit capabilities (use 512x512 on 16GB)",
 			Size:        "~8GB",
 			Steps:       4,
 			RAMRequired: 16,
