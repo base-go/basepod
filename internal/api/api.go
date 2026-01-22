@@ -683,6 +683,14 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
 		return
@@ -747,6 +755,14 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
 		return
@@ -787,6 +803,14 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
@@ -829,6 +853,14 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
 		return
@@ -869,6 +901,14 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
@@ -953,6 +993,14 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
@@ -1090,6 +1138,14 @@ func (s *Server) handleGetAppLogs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Try by name if not found by ID
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if a == nil {
 		errorResponse(w, http.StatusNotFound, "App not found")
@@ -1349,8 +1405,19 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSystemPrune(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Find podman path
+	podmanPath := "podman"
+	if _, err := exec.LookPath("podman"); err != nil {
+		for _, p := range []string{"/opt/homebrew/bin/podman", "/usr/local/bin/podman"} {
+			if _, err := os.Stat(p); err == nil {
+				podmanPath = p
+				break
+			}
+		}
+	}
+
 	// Run podman system prune
-	cmd := exec.CommandContext(ctx, "podman", "system", "prune", "-af", "--volumes")
+	cmd := exec.CommandContext(ctx, podmanPath, "system", "prune", "-af", "--volumes")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Prune failed: "+err.Error())
@@ -1922,8 +1989,18 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	a.Status = app.StatusDeploying
 	s.storage.UpdateApp(a)
 
-	// Build using podman build
-	buildCmd := fmt.Sprintf("cd %s && podman build -t %s -f %s .", sourceDir, imageName, dockerfile)
+	// Build using podman build (use full path for launchd compatibility)
+	podmanPath := "podman"
+	if _, err := exec.LookPath("podman"); err != nil {
+		// Try common paths
+		for _, p := range []string{"/opt/homebrew/bin/podman", "/usr/local/bin/podman"} {
+			if _, err := os.Stat(p); err == nil {
+				podmanPath = p
+				break
+			}
+		}
+	}
+	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -f %s .", sourceDir, podmanPath, imageName, dockerfile)
 	output, err := execCommandStream(ctx, "sh", []string{"-c", buildCmd}, writeLine)
 	if err != nil {
 		writeLine("ERROR: Build failed: " + err.Error())
