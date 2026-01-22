@@ -21,6 +21,7 @@ import (
 	"github.com/base-go/basepod/internal/auth"
 	"github.com/base-go/basepod/internal/caddy"
 	"github.com/base-go/basepod/internal/config"
+	"github.com/base-go/basepod/internal/flux"
 	"github.com/base-go/basepod/internal/mlx"
 	"github.com/base-go/basepod/internal/podman"
 	"github.com/base-go/basepod/internal/storage"
@@ -166,6 +167,18 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/chat/messages/{modelId}", s.requireAuth(s.handleGetChatMessages))
 	s.router.HandleFunc("POST /api/chat/messages/{modelId}", s.requireAuth(s.handleSaveChatMessage))
 	s.router.HandleFunc("DELETE /api/chat/messages/{modelId}", s.requireAuth(s.handleClearChatMessages))
+
+	// FLUX image generation (auth required)
+	s.router.HandleFunc("GET /api/flux/status", s.requireAuth(s.handleFluxStatus))
+	s.router.HandleFunc("GET /api/flux/models", s.requireAuth(s.handleFluxModels))
+	s.router.HandleFunc("POST /api/flux/models/{id}", s.requireAuth(s.handleFluxDownloadModel))
+	s.router.HandleFunc("DELETE /api/flux/models/{id}", s.requireAuth(s.handleFluxDeleteModel))
+	s.router.HandleFunc("GET /api/flux/models/{id}/progress", s.requireAuth(s.handleFluxDownloadProgress))
+	s.router.HandleFunc("POST /api/flux/generate", s.requireAuth(s.handleFluxGenerate))
+	s.router.HandleFunc("GET /api/flux/jobs/{id}", s.requireAuth(s.handleFluxGetJob))
+	s.router.HandleFunc("GET /api/flux/generations", s.requireAuth(s.handleFluxListGenerations))
+	s.router.HandleFunc("GET /api/flux/image/{id}", s.requireAuth(s.handleFluxGetImage))
+	s.router.HandleFunc("DELETE /api/flux/generations/{id}", s.requireAuth(s.handleFluxDeleteGeneration))
 
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
@@ -2681,6 +2694,202 @@ func (s *Server) handleClearChatMessages(w http.ResponseWriter, r *http.Request)
 	modelID, _ = url.PathUnescape(modelID)
 
 	if err := s.storage.ClearChatMessages(modelID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// ============================================================================
+// FLUX Image Generation Handlers
+// ============================================================================
+
+// handleFluxStatus returns FLUX service status
+func (s *Server) handleFluxStatus(w http.ResponseWriter, r *http.Request) {
+	svc := flux.GetService(s.storage.DB())
+	status := svc.GetStatus()
+	jsonResponse(w, http.StatusOK, status)
+}
+
+// handleFluxModels returns available FLUX models
+func (s *Server) handleFluxModels(w http.ResponseWriter, r *http.Request) {
+	svc := flux.GetService(s.storage.DB())
+	models := svc.ListModels()
+	jsonResponse(w, http.StatusOK, models)
+}
+
+// handleFluxDownloadModel starts downloading a model
+func (s *Server) handleFluxDownloadModel(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("id")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	progress, err := svc.DownloadModel(modelID)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusAccepted, map[string]interface{}{
+		"status":  progress.Status,
+		"message": progress.Message,
+	})
+}
+
+// handleFluxDeleteModel deletes a downloaded model
+func (s *Server) handleFluxDeleteModel(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("id")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	if err := svc.DeleteModel(modelID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handleFluxDownloadProgress returns download progress for a model
+func (s *Server) handleFluxDownloadProgress(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("id")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	progress := flux.GetDownloadProgress(modelID)
+	if progress == nil {
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "idle"})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, progress)
+}
+
+// handleFluxGenerate starts an image generation job
+func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+		Steps  int    `json:"steps"`
+		Seed   int64  `json:"seed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Prompt == "" {
+		errorResponse(w, http.StatusBadRequest, "prompt required")
+		return
+	}
+	if req.Model == "" {
+		req.Model = "schnell" // Default model
+	}
+	if req.Width == 0 {
+		req.Width = 1024
+	}
+	if req.Height == 0 {
+		req.Height = 1024
+	}
+	if req.Steps == 0 {
+		if req.Model == "schnell" {
+			req.Steps = 4
+		} else {
+			req.Steps = 20
+		}
+	}
+	if req.Seed == 0 {
+		req.Seed = -1 // Random
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	job, err := svc.Generate(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusAccepted, job)
+}
+
+// handleFluxGetJob returns a generation job status
+func (s *Server) handleFluxGetJob(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		errorResponse(w, http.StatusBadRequest, "job ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	job, err := svc.GetJob(jobID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, job)
+}
+
+// handleFluxListGenerations returns all generations
+func (s *Server) handleFluxListGenerations(w http.ResponseWriter, r *http.Request) {
+	svc := flux.GetService(s.storage.DB())
+	generations, err := svc.ListGenerations()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Convert to response format
+	var result []flux.Generation
+	for _, g := range generations {
+		result = append(result, g.ToGeneration())
+	}
+	if result == nil {
+		result = []flux.Generation{}
+	}
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// handleFluxGetImage serves a generated image
+func (s *Server) handleFluxGetImage(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		errorResponse(w, http.StatusBadRequest, "job ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	imagePath, err := svc.GetImagePath(jobID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	http.ServeFile(w, r, imagePath)
+}
+
+// handleFluxDeleteGeneration deletes a generation
+func (s *Server) handleFluxDeleteGeneration(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		errorResponse(w, http.StatusBadRequest, "job ID required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	if err := svc.DeleteGeneration(jobID); err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}

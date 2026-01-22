@@ -185,11 +185,33 @@ func (s *Service) ListModels() []Model {
 	return available
 }
 
-// GetDownloadProgress returns the current download progress
-func GetDownloadProgress(modelID string) *DownloadProgress {
+// DownloadProgressData is a safe copy of download progress data
+type DownloadProgressData struct {
+	ModelID  string  `json:"model_id"`
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress"`
+	Message  string  `json:"message"`
+}
+
+// GetDownloadProgress returns the current download progress as a safe copy
+func GetDownloadProgress(modelID string) *DownloadProgressData {
 	downloadsMu.RLock()
-	defer downloadsMu.RUnlock()
-	return activeDownloads[modelID]
+	dp := activeDownloads[modelID]
+	downloadsMu.RUnlock()
+
+	if dp == nil {
+		return nil
+	}
+
+	dp.mu.RLock()
+	defer dp.mu.RUnlock()
+
+	return &DownloadProgressData{
+		ModelID:  dp.ModelID,
+		Status:   dp.Status,
+		Progress: dp.Progress,
+		Message:  dp.Message,
+	}
 }
 
 // DownloadModel starts downloading a model

@@ -44,6 +44,11 @@ func (s *Storage) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying database connection
+func (s *Storage) DB() *sql.DB {
+	return s.db
+}
+
 // migrate runs database migrations
 func (s *Storage) migrate() error {
 	migrations := []string{

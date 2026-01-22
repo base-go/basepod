@@ -238,11 +238,20 @@ func (s *Service) GetStatus() Status {
 	defer s.mu.RUnlock()
 
 	running := s.isRunning()
+
+	// Only report active model if process is actually running
+	activeModel := ""
+	pid := 0
+	if running {
+		activeModel = s.activeModel
+		pid = s.pid
+	}
+
 	return Status{
 		Running:     running,
 		Port:        s.port,
-		PID:         s.pid,
-		ActiveModel: s.activeModel,
+		PID:         pid,
+		ActiveModel: activeModel,
 	}
 }
 
