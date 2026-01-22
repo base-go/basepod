@@ -125,6 +125,48 @@ func GetUnsupportedReason() string {
 	return ""
 }
 
+// findPython3 finds a suitable Python 3.10+ interpreter
+// mflux requires Python 3.10+ for modern type hint syntax
+func findPython3() (string, error) {
+	// Try specific versions first (prefer newer)
+	pythonPaths := []string{
+		"/opt/homebrew/bin/python3.13",
+		"/opt/homebrew/bin/python3.12",
+		"/opt/homebrew/bin/python3.11",
+		"/opt/homebrew/bin/python3.10",
+		"/usr/local/bin/python3.13",
+		"/usr/local/bin/python3.12",
+		"/usr/local/bin/python3.11",
+		"/usr/local/bin/python3.10",
+		"python3.13",
+		"python3.12",
+		"python3.11",
+		"python3.10",
+	}
+
+	for _, p := range pythonPaths {
+		if path, err := exec.LookPath(p); err == nil {
+			// Verify it's actually 3.10+
+			cmd := exec.Command(path, "--version")
+			output, err := cmd.Output()
+			if err == nil {
+				version := strings.TrimSpace(string(output))
+				// Parse version like "Python 3.12.1"
+				if strings.HasPrefix(version, "Python 3.1") || strings.HasPrefix(version, "Python 3.2") {
+					return path, nil
+				}
+			}
+		}
+	}
+
+	// Fall back to python3 and hope for the best
+	if path, err := exec.LookPath("python3"); err == nil {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("Python 3.10+ not found. Please install: brew install python@3.12")
+}
+
 // GetStatus returns the current service status
 func (s *Service) GetStatus() Status {
 	s.mu.Lock()
@@ -262,14 +304,24 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	dp.Message = "Setting up Python environment..."
 	dp.mu.Unlock()
 
+	// Find Python 3.10+ (required for mflux)
+	pythonPath, err := findPython3()
+	if err != nil {
+		dp.mu.Lock()
+		dp.Status = "failed"
+		dp.Message = err.Error()
+		dp.mu.Unlock()
+		return
+	}
+
 	// Ensure venv exists with mflux
 	venvPath := filepath.Join(s.baseDir, "venv")
 	if _, err := os.Stat(venvPath); os.IsNotExist(err) {
 		dp.mu.Lock()
-		dp.Message = "Creating Python environment..."
+		dp.Message = fmt.Sprintf("Creating Python environment with %s...", filepath.Base(pythonPath))
 		dp.mu.Unlock()
 
-		cmd := exec.CommandContext(ctx, "python3", "-m", "venv", venvPath)
+		cmd := exec.CommandContext(ctx, pythonPath, "-m", "venv", venvPath)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			dp.mu.Lock()
 			dp.Status = "failed"

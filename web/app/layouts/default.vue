@@ -39,6 +39,11 @@ const navigation = [
 
 const bottomNavigation = [
   {
+    label: 'Processes',
+    icon: 'i-heroicons-queue-list',
+    to: '/processes'
+  },
+  {
     label: 'Documentation',
     icon: 'i-heroicons-book-open',
     to: '/docs'

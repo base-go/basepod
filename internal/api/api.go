@@ -140,6 +140,7 @@ func (s *Server) setupRoutes() {
 
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
+	s.router.HandleFunc("GET /api/system/processes", s.requireAuth(s.handleSystemProcesses))
 	s.router.HandleFunc("GET /api/system/config", s.handleGetConfig) // No auth - needed for login page
 	s.router.HandleFunc("PUT /api/system/config", s.requireAuth(s.handleUpdateConfig))
 	s.router.HandleFunc("GET /api/system/version", s.requireAuth(s.handleGetVersion))
@@ -1239,6 +1240,131 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, info)
+}
+
+// ProcessInfo represents a running process
+type ProcessInfo struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"` // mlx, flux, container, system
+	Status   string `json:"status"`
+	PID      int    `json:"pid,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Image    string `json:"image,omitempty"`
+	CPU      string `json:"cpu,omitempty"`
+	Memory   string `json:"memory,omitempty"`
+	Uptime   string `json:"uptime,omitempty"`
+	AppID    string `json:"app_id,omitempty"`
+	AppName  string `json:"app_name,omitempty"`
+	Progress int    `json:"progress,omitempty"`
+}
+
+// handleSystemProcesses returns all running processes
+func (s *Server) handleSystemProcesses(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var processes []ProcessInfo
+
+	// 1. MLX Server process
+	mlxService := mlx.GetService()
+	mlxStatus := mlxService.GetStatus()
+	if mlxStatus.Running {
+		processes = append(processes, ProcessInfo{
+			ID:     "mlx-server",
+			Name:   "MLX LLM Server",
+			Type:   "mlx",
+			Status: "running",
+			PID:    mlxStatus.PID,
+			Port:   mlxStatus.Port,
+			Model:  mlxStatus.ActiveModel,
+		})
+	}
+
+	// 2. MLX Downloads in progress
+	downloads := mlx.GetAllDownloads()
+	for _, dl := range downloads {
+		if dl.Status == "downloading" || dl.Status == "pending" {
+			processes = append(processes, ProcessInfo{
+				ID:       "mlx-download-" + dl.ModelID,
+				Name:     "Downloading " + dl.ModelID,
+				Type:     "mlx-download",
+				Status:   dl.Status,
+				Model:    dl.ModelID,
+				Progress: int(dl.Progress),
+			})
+		}
+	}
+
+	// 3. FLUX generation in progress
+	fluxService := flux.GetService(s.storage.DB())
+	fluxStatus := fluxService.GetStatus()
+	if fluxStatus.Generating && fluxStatus.CurrentJob != nil {
+		processes = append(processes, ProcessInfo{
+			ID:       fluxStatus.CurrentJob.ID,
+			Name:     "Image Generation",
+			Type:     "flux",
+			Status:   "generating",
+			Model:    fluxStatus.CurrentJob.Model,
+			Progress: fluxStatus.CurrentJob.Progress,
+		})
+	}
+
+	// 4. FLUX Downloads in progress
+	fluxDownloads := []string{"schnell", "dev"}
+	for _, modelID := range fluxDownloads {
+		dp := flux.GetDownloadProgress(modelID)
+		if dp != nil && (dp.Status == "downloading" || dp.Status == "pending") {
+			processes = append(processes, ProcessInfo{
+				ID:       "flux-download-" + modelID,
+				Name:     "Downloading FLUX " + modelID,
+				Type:     "flux-download",
+				Status:   dp.Status,
+				Model:    modelID,
+				Progress: int(dp.Progress),
+			})
+		}
+	}
+
+	// 5. Running containers
+	containers, err := s.podman.ListContainers(ctx, false) // Only running
+	if err == nil {
+		// Get apps to match container IDs
+		apps, _ := s.storage.ListApps()
+		appMap := make(map[string]*struct{ ID, Name string })
+		for _, a := range apps {
+			if a.ContainerID != "" {
+				appMap[a.ContainerID] = &struct{ ID, Name string }{a.ID, a.Name}
+			}
+		}
+
+		for _, c := range containers {
+			proc := ProcessInfo{
+				ID:     c.ID[:12],
+				Name:   c.Names[0],
+				Type:   "container",
+				Status: c.State,
+				Image:  c.Image,
+			}
+
+			// Match to app if possible
+			if app, ok := appMap[c.ID]; ok {
+				proc.AppID = app.ID
+				proc.AppName = app.Name
+			}
+
+			processes = append(processes, proc)
+		}
+	}
+
+	// Return empty array instead of null
+	if processes == nil {
+		processes = []ProcessInfo{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"processes": processes,
+		"count":     len(processes),
+	})
 }
 
 // handleGetConfig returns domain configuration for frontend
