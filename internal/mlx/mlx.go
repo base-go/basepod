@@ -772,6 +772,50 @@ func (s *Service) DeleteModel(modelID string) error {
 	return nil
 }
 
+// Transcribe audio file using Whisper model
+func (s *Service) Transcribe(audioPath, modelID string) (string, error) {
+	venvPath := filepath.Join(s.baseDir, "venv")
+	pythonPath := filepath.Join(venvPath, "bin", "python")
+
+	// Check if mlx-whisper is installed, install if not
+	checkCmd := exec.Command(pythonPath, "-c", "import mlx_whisper")
+	if err := checkCmd.Run(); err != nil {
+		// Install mlx-whisper
+		installCmd := exec.Command(filepath.Join(venvPath, "bin", "pip"), "install", "mlx-whisper")
+		installCmd.Env = append(os.Environ(), "HF_HOME="+filepath.Join(s.baseDir, "cache"))
+		if err := installCmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to install mlx-whisper: %w", err)
+		}
+	}
+
+	// Use mlx-whisper for transcription
+	transcribeScript := fmt.Sprintf(`
+import mlx_whisper
+import json
+
+result = mlx_whisper.transcribe(
+    %q,
+    path_or_hf_repo=%q,
+)
+print(result.get("text", ""))
+`, audioPath, modelID)
+
+	cmd := exec.Command(pythonPath, "-c", transcribeScript)
+	cmd.Env = append(os.Environ(),
+		"HF_HOME="+filepath.Join(s.baseDir, "cache"),
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("transcription failed: %s", string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("transcription failed: %w", err)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
 // Run starts the MLX server with the specified model
 func (s *Service) Run(modelID string) error {
 	s.mu.Lock()

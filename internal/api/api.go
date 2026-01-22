@@ -159,6 +159,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.handleMLXPullCancel))
 	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.handleMLXRun))
 	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.handleMLXStop))
+	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.handleMLXTranscribe))
 	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
 
 	// Image tags (auth required)
@@ -2500,6 +2501,65 @@ func (s *Server) handleMLXStop(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"status": "stopped",
+	})
+}
+
+// handleMLXTranscribe transcribes audio using Whisper model
+func (s *Server) handleMLXTranscribe(w http.ResponseWriter, r *http.Request) {
+	// Parse multipart form (max 25MB audio)
+	if err := r.ParseMultipartForm(25 << 20); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, "Missing audio file")
+		return
+	}
+	defer file.Close()
+
+	svc := mlx.GetService()
+
+	// Find a downloaded Whisper model
+	models := svc.ListModels()
+	var whisperModel string
+	for _, m := range models {
+		if m.Category == "speech" && !m.DownloadedAt.IsZero() {
+			whisperModel = m.ID
+			break
+		}
+	}
+
+	if whisperModel == "" {
+		errorResponse(w, http.StatusBadRequest, "No Whisper model downloaded. Please download a Whisper model first.")
+		return
+	}
+
+	// Save audio to temp file
+	tempFile, err := os.CreateTemp("", "audio-*.webm")
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create temp file")
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	if _, err := io.Copy(tempFile, file); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to save audio")
+		return
+	}
+	tempFile.Close()
+
+	// Call Whisper transcription
+	text, err := svc.Transcribe(tempFile.Name(), whisperModel)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Transcription failed: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"text": text,
 	})
 }
 
