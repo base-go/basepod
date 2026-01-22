@@ -846,10 +846,8 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	if job.Type == "edit" && len(job.ImagePaths) > 0 {
 		// Use mflux-generate-flux2-edit for image editing
 		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2-edit")
-		// Extract model name (e.g., "flux2-klein-9b" -> "9b")
-		modelSize := strings.TrimPrefix(job.Model, "flux2-klein-")
 		args = []string{
-			"--model", modelSize,
+			"--model", job.Model, // Full model name like "flux2-klein-9b"
 			"--image-paths",
 		}
 		args = append(args, job.ImagePaths...)
