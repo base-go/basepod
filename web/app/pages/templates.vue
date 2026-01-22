@@ -54,7 +54,7 @@ const autoDomain = computed(() => {
   if (!deployForm.value.name) return ''
   const name = deployForm.value.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
   if (configData.value?.domain?.base) {
-    return `${name}.${configData.value.domain.base}`
+    return `${name}.${configData.value.domain.root}`
   }
   return `${name}${configData.value?.domain?.suffix || '.local'}`
 })
@@ -62,7 +62,7 @@ const autoDomain = computed(() => {
 // Domain suffix for placeholder display
 const domainPlaceholder = computed(() => {
   if (configData.value?.domain?.base) {
-    return `app-name.${configData.value.domain.base}`
+    return `app-name.${configData.value.domain.root}`
   }
   return `app-name${configData.value?.domain?.suffix || '.local'}`
 })

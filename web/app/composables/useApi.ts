@@ -74,7 +74,7 @@ export interface HealthResponse {
 }
 
 export interface DomainConfig {
-  base: string
+  root: string
   suffix: string
   wildcard: boolean
 }
@@ -85,8 +85,8 @@ export interface ConfigResponse {
 
 // Helper to generate app domain from config
 export function getAppDomain(appName: string, domainConfig: DomainConfig): string {
-  if (domainConfig.base) {
-    return `${appName}.${domainConfig.base}`
+  if (domainConfig.root) {
+    return `${appName}.${domainConfig.root}`
   }
   const suffix = domainConfig.suffix || '.pod'
   return `${appName}${suffix}`

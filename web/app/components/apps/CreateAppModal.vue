@@ -36,7 +36,7 @@ const autoDomain = computed(() => {
 // Domain suffix for placeholder display
 const domainPlaceholder = computed(() => {
   if (configData.value?.domain?.base) {
-    return `app-name.${configData.value.domain.base}`
+    return `app-name.${configData.value.domain.root}`
   }
   return `app-name${configData.value?.domain?.suffix || '.pod'}`
 })

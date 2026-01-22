@@ -101,7 +101,7 @@ onMounted(() => {
   checkVersion()
   // Load domain settings from config
   if (configData.value?.domain) {
-    settings.value.domain = configData.value.domain.base || ''
+    settings.value.domain = configData.value.domain.root || ''
     settings.value.enableWildcard = configData.value.domain.wildcard ?? true
   }
 })
@@ -126,7 +126,7 @@ const saveDomainSettings = async () => {
       method: 'PUT',
       body: {
         domain: {
-          base: settings.value.domain,
+          root: settings.value.domain,
           wildcard: settings.value.enableWildcard
         }
       }
