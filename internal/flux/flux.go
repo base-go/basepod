@@ -42,6 +42,7 @@ type Model struct {
 	Size        string `json:"size"`
 	Downloaded  bool   `json:"downloaded"`
 	Steps       int    `json:"default_steps"` // Default steps for this model
+	RAMRequired int    `json:"ram_required"`  // Minimum RAM in GB
 }
 
 // GenerationJob represents an image generation job
@@ -224,37 +225,42 @@ func GetAvailableModels() []Model {
 		{
 			ID:          "flux2-klein-4b",
 			Name:        "FLUX.2 Klein 4B",
-			Description: "Fastest + smallest with edit capabilities (4B)",
+			Description: "Fastest + smallest with edit capabilities, needs 16GB+ RAM",
 			Size:        "~8GB",
 			Steps:       4,
+			RAMRequired: 16,
 		},
 		{
 			ID:          "z-image-turbo",
 			Name:        "Z-Image Turbo",
-			Description: "Best all-rounder: fast, small, excellent quality (6B)",
+			Description: "Best all-rounder: fast, excellent quality, needs 24GB+ RAM",
 			Size:        "~12GB",
 			Steps:       4,
+			RAMRequired: 24,
 		},
 		{
 			ID:          "flux2-klein-9b",
 			Name:        "FLUX.2 Klein 9B",
-			Description: "Fast with better quality, edit capabilities (9B)",
+			Description: "Fast with better quality + edit, needs 32GB+ RAM",
 			Size:        "~18GB",
 			Steps:       4,
+			RAMRequired: 32,
 		},
 		// Quality models (slower)
 		{
 			ID:          "fibo",
 			Name:        "FIBO",
-			Description: "Great prompt understanding and editability (8B)",
+			Description: "Great prompt understanding and editability, needs 24GB+ RAM",
 			Size:        "~16GB",
 			Steps:       20,
+			RAMRequired: 24,
 		},
 		{
 			ID:          "qwen",
 			Name:        "Qwen Image",
-			Description: "Strong prompt understanding, large model (20B)",
+			Description: "Strong prompt understanding, needs 64GB+ RAM",
 			Size:        "~40GB",
+			RAMRequired: 64,
 			Steps:       20,
 		},
 	}
@@ -340,18 +346,39 @@ func GetDownloadProgress(modelID string) *DownloadProgressData {
 	}
 }
 
+// getSystemRAM returns the total system RAM in GB
+func getSystemRAM() int {
+	// Use sysctl on macOS to get total memory
+	cmd := exec.Command("sysctl", "-n", "hw.memsize")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+
+	var memBytes int64
+	fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &memBytes)
+	return int(memBytes / (1024 * 1024 * 1024)) // Convert to GB
+}
+
 // DownloadModel starts downloading a model
 func (s *Service) DownloadModel(modelID string) (*DownloadProgress, error) {
-	// Check if model exists
-	valid := false
+	// Check if model exists and get RAM requirements
+	var model *Model
 	for _, m := range GetAvailableModels() {
 		if m.ID == modelID {
-			valid = true
+			model = &m
 			break
 		}
 	}
-	if !valid {
+	if model == nil {
 		return nil, fmt.Errorf("unknown model: %s", modelID)
+	}
+
+	// Check system RAM
+	systemRAM := getSystemRAM()
+	if systemRAM > 0 && model.RAMRequired > 0 && systemRAM < model.RAMRequired {
+		return nil, fmt.Errorf("insufficient RAM: %s requires %dGB but system has %dGB. Consider %s instead",
+			model.Name, model.RAMRequired, systemRAM, "FLUX.2 Klein 4B (16GB)")
 	}
 
 	// Check if already downloading
@@ -415,13 +442,13 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 		}
 	}
 
-	// Install mflux
+	// Install mflux and huggingface_hub (for huggingface-cli)
 	dp.mu.Lock()
-	dp.Message = "Installing mflux..."
+	dp.Message = "Installing mflux and dependencies..."
 	dp.mu.Unlock()
 
 	pipPath := filepath.Join(venvPath, "bin", "pip")
-	pipCmd := exec.CommandContext(ctx, pipPath, "install", "--upgrade", "mflux")
+	pipCmd := exec.CommandContext(ctx, pipPath, "install", "--upgrade", "mflux", "huggingface_hub")
 	if output, err := pipCmd.CombinedOutput(); err != nil {
 		dp.mu.Lock()
 		dp.Status = "failed"
