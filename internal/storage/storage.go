@@ -135,6 +135,9 @@ func (s *Storage) migrate() error {
 		)`,
 		// Migration: add progress column if missing
 		`ALTER TABLE flux_generations ADD COLUMN progress INTEGER DEFAULT 0`,
+		// Migration: add type and image_paths columns for edit support
+		`ALTER TABLE flux_generations ADD COLUMN type TEXT DEFAULT 'generate'`,
+		`ALTER TABLE flux_generations ADD COLUMN image_paths TEXT DEFAULT ''`,
 	}
 
 	for _, migration := range migrations {

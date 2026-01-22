@@ -22,13 +22,16 @@ import (
 
 // Service manages the FLUX image generation service
 type Service struct {
-	baseDir    string
-	modelsDir  string
-	outputDir  string
-	db         *sql.DB
-	generating bool
-	currentJob *GenerationJob
-	mu         sync.Mutex
+	baseDir       string
+	modelsDir     string
+	outputDir     string
+	uploadsDir    string // Directory for uploaded reference images
+	db            *sql.DB
+	generating    bool
+	currentJob    *GenerationJob
+	mu            sync.Mutex
+	jobQueue      chan string // Channel for job IDs to process
+	processorDone chan struct{}
 }
 
 // Model represents a FLUX model
@@ -43,27 +46,31 @@ type Model struct {
 
 // GenerationJob represents an image generation job
 type GenerationJob struct {
-	ID        string    `json:"id"`
-	Prompt    string    `json:"prompt"`
-	Model     string    `json:"model"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	Steps     int       `json:"steps"`
-	Seed      int64     `json:"seed"`
-	Status    string    `json:"status"` // pending, generating, completed, failed
-	Progress  int       `json:"progress"`
-	ImagePath string    `json:"image_path,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Prompt     string    `json:"prompt"`
+	Model      string    `json:"model"`
+	Width      int       `json:"width"`
+	Height     int       `json:"height"`
+	Steps      int       `json:"steps"`
+	Seed       int64     `json:"seed"`
+	Status     string    `json:"status"` // queued, pending, generating, completed, failed
+	Progress   int       `json:"progress"`
+	ImagePath  string    `json:"image_path,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	Type       string    `json:"type,omitempty"`        // "generate" or "edit"
+	ImagePaths []string  `json:"image_paths,omitempty"` // Reference images for edit mode
 }
 
 // Status represents the service status
 type Status struct {
-	Supported   bool           `json:"supported"`
-	Reason      string         `json:"unsupported_reason,omitempty"`
-	Generating  bool           `json:"generating"`
-	CurrentJob  *GenerationJob `json:"current_job,omitempty"`
-	ModelsCount int            `json:"models_count"`
+	Supported    bool           `json:"supported"`
+	Reason       string         `json:"unsupported_reason,omitempty"`
+	Generating   bool           `json:"generating"`
+	CurrentJob   *GenerationJob `json:"current_job,omitempty"`
+	ModelsCount  int            `json:"models_count"`
+	QueuedJobs   int            `json:"queued_jobs"`
+	ProcessingID string         `json:"processing_id,omitempty"`
 }
 
 // DownloadProgress tracks model download progress
@@ -103,12 +110,21 @@ func GetService(db *sql.DB) *Service {
 		outputDir := filepath.Join(baseDir, "outputs")
 		os.MkdirAll(outputDir, 0755)
 
+		uploadsDir := filepath.Join(baseDir, "uploads")
+		os.MkdirAll(uploadsDir, 0755)
+
 		instance = &Service{
-			baseDir:   baseDir,
-			modelsDir: modelsDir,
-			outputDir: outputDir,
-			db:        db,
+			baseDir:       baseDir,
+			modelsDir:     modelsDir,
+			outputDir:     outputDir,
+			uploadsDir:    uploadsDir,
+			db:            db,
+			jobQueue:      make(chan string, 100), // Buffer for 100 queued jobs
+			processorDone: make(chan struct{}),
 		}
+
+		// Start the job processor
+		go instance.processJobs()
 	})
 	return instance
 }
@@ -174,7 +190,13 @@ func findPython3() (string, error) {
 // GetStatus returns the current service status
 func (s *Service) GetStatus() Status {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	generating := s.generating
+	currentJob := s.currentJob
+	var processingID string
+	if currentJob != nil {
+		processingID = currentJob.ID
+	}
+	s.mu.Unlock()
 
 	models := s.ListModels()
 	downloadedCount := 0
@@ -185,44 +207,55 @@ func (s *Service) GetStatus() Status {
 	}
 
 	return Status{
-		Supported:   IsSupported(),
-		Reason:      GetUnsupportedReason(),
-		Generating:  s.generating,
-		CurrentJob:  s.currentJob,
-		ModelsCount: downloadedCount,
+		Supported:    IsSupported(),
+		Reason:       GetUnsupportedReason(),
+		Generating:   generating,
+		CurrentJob:   currentJob,
+		ModelsCount:  downloadedCount,
+		QueuedJobs:   s.GetQueuedCount(),
+		ProcessingID: processingID,
 	}
 }
 
 // GetAvailableModels returns the list of available FLUX models
 func GetAvailableModels() []Model {
 	return []Model{
-		{
-			ID:          "schnell",
-			Name:        "FLUX.1 Schnell",
-			Description: "Fast generation, 4 steps (requires HF token + license)",
-			Size:        "~15GB",
-			Steps:       4,
-		},
-		{
-			ID:          "dev",
-			Name:        "FLUX.1 Dev",
-			Description: "High quality, 20+ steps (requires HF token + license)",
-			Size:        "~32GB",
-			Steps:       20,
-		},
+		// Fast models (recommended)
 		{
 			ID:          "flux2-klein-4b",
 			Name:        "FLUX.2 Klein 4B",
-			Description: "Compact model, fast generation, 4 steps",
+			Description: "Fastest + smallest with edit capabilities (4B)",
 			Size:        "~8GB",
+			Steps:       4,
+		},
+		{
+			ID:          "z-image-turbo",
+			Name:        "Z-Image Turbo",
+			Description: "Best all-rounder: fast, small, excellent quality (6B)",
+			Size:        "~12GB",
 			Steps:       4,
 		},
 		{
 			ID:          "flux2-klein-9b",
 			Name:        "FLUX.2 Klein 9B",
-			Description: "Larger model, better quality, 4 steps",
+			Description: "Fast with better quality, edit capabilities (9B)",
 			Size:        "~18GB",
 			Steps:       4,
+		},
+		// Quality models (slower)
+		{
+			ID:          "fibo",
+			Name:        "FIBO",
+			Description: "Great prompt understanding and editability (8B)",
+			Size:        "~16GB",
+			Steps:       20,
+		},
+		{
+			ID:          "qwen",
+			Name:        "Qwen Image",
+			Description: "Strong prompt understanding, large model (20B)",
+			Size:        "~40GB",
+			Steps:       20,
 		},
 	}
 }
@@ -635,61 +668,115 @@ func (s *Service) DeleteModel(modelID string) error {
 	return nil
 }
 
-// Generate starts an image generation job
+// Generate starts an image generation job (queued)
 func (s *Service) Generate(prompt, modelID string, width, height, steps int, seed int64) (*GenerationJob, error) {
-	s.mu.Lock()
-	if s.generating {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("generation already in progress")
-	}
+	return s.createJob(prompt, modelID, width, height, steps, seed, "generate", nil)
+}
 
-	// Check if model is available
-	// FLUX.2 models download to HuggingFace cache, not our models directory
-	isFlux2 := strings.HasPrefix(modelID, "flux2-")
-	if !isFlux2 {
-		// For FLUX.1 models, check local models directory
-		modelPath := filepath.Join(s.modelsDir, modelID)
-		if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-			s.mu.Unlock()
-			return nil, fmt.Errorf("model not downloaded: %s", modelID)
+// GenerateEdit starts an image editing job with reference images
+func (s *Service) GenerateEdit(prompt, modelID string, width, height, steps int, seed int64, imagePaths []string) (*GenerationJob, error) {
+	// Validate that model supports editing (only flux2-klein models support edit)
+	if !strings.HasPrefix(modelID, "flux2-klein") {
+		return nil, fmt.Errorf("image editing only supported with FLUX.2 Klein models")
+	}
+	if len(imagePaths) == 0 {
+		return nil, fmt.Errorf("at least one reference image is required for editing")
+	}
+	return s.createJob(prompt, modelID, width, height, steps, seed, "edit", imagePaths)
+}
+
+// createJob creates and queues a generation job
+func (s *Service) createJob(prompt, modelID string, width, height, steps int, seed int64, jobType string, imagePaths []string) (*GenerationJob, error) {
+	// Validate model exists
+	valid := false
+	for _, m := range GetAvailableModels() {
+		if m.ID == modelID {
+			valid = true
+			break
 		}
 	}
-	// FLUX.2 models will download automatically on first use
+	if !valid {
+		return nil, fmt.Errorf("unknown model: %s", modelID)
+	}
 
 	// Create job
 	job := &GenerationJob{
-		ID:        "gen_" + uuid.New().String()[:8],
-		Prompt:    prompt,
-		Model:     modelID,
-		Width:     width,
-		Height:    height,
-		Steps:     steps,
-		Seed:      seed,
-		Status:    "pending",
-		Progress:  0,
-		CreatedAt: time.Now(),
+		ID:         "gen_" + uuid.New().String()[:8],
+		Prompt:     prompt,
+		Model:      modelID,
+		Width:      width,
+		Height:     height,
+		Steps:      steps,
+		Seed:       seed,
+		Status:     "queued",
+		Progress:   0,
+		CreatedAt:  time.Now(),
+		Type:       jobType,
+		ImagePaths: imagePaths,
 	}
 
 	// Save to database
 	if s.db != nil {
+		imagePathsJSON := ""
+		if len(imagePaths) > 0 {
+			if data, err := json.Marshal(imagePaths); err == nil {
+				imagePathsJSON = string(data)
+			}
+		}
 		_, err := s.db.Exec(`
-			INSERT INTO flux_generations (id, prompt, model, width, height, steps, seed, status, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, job.ID, job.Prompt, job.Model, job.Width, job.Height, job.Steps, job.Seed, job.Status, job.CreatedAt)
+			INSERT INTO flux_generations (id, prompt, model, width, height, steps, seed, status, created_at, type, image_paths)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, job.ID, job.Prompt, job.Model, job.Width, job.Height, job.Steps, job.Seed, job.Status, job.CreatedAt, jobType, imagePathsJSON)
 		if err != nil {
-			s.mu.Unlock()
 			return nil, fmt.Errorf("failed to save job: %w", err)
 		}
 	}
 
+	// Queue the job for processing
+	select {
+	case s.jobQueue <- job.ID:
+		// Job queued successfully
+	default:
+		// Queue is full
+		return nil, fmt.Errorf("job queue is full, please try again later")
+	}
+
+	return job, nil
+}
+
+// processJobs is the background worker that processes queued jobs
+func (s *Service) processJobs() {
+	for {
+		select {
+		case jobID := <-s.jobQueue:
+			s.processJob(jobID)
+		case <-s.processorDone:
+			return
+		}
+	}
+}
+
+// processJob processes a single job from the queue
+func (s *Service) processJob(jobID string) {
+	// Load job from database
+	job, err := s.GetJob(jobID)
+	if err != nil {
+		return
+	}
+
+	// Skip if job is not in queued state (may have been cancelled)
+	if job.Status != "queued" {
+		return
+	}
+
+	// Mark as current job
+	s.mu.Lock()
 	s.generating = true
 	s.currentJob = job
 	s.mu.Unlock()
 
-	// Start generation in background
-	go s.runGeneration(job)
-
-	return job, nil
+	// Run the generation
+	s.runGeneration(job)
 }
 
 // runGeneration performs the actual image generation
@@ -725,29 +812,30 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	s.mu.Unlock()
 	s.updateJobInDB(job)
 
-	// Determine the correct mflux command based on model type
-	// FLUX.2 models use mflux-generate-flux2, FLUX.1 models use mflux-generate
+	// Determine the correct mflux command based on job type
 	var mfluxGenPath string
 	var args []string
 
-	isFlux2 := strings.HasPrefix(job.Model, "flux2-")
-	if isFlux2 {
-		// FLUX.2 models use mflux-generate-flux2 with --base-model <model-name>
-		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2")
+	if job.Type == "edit" && len(job.ImagePaths) > 0 {
+		// Use mflux-generate-flux2-edit for image editing
+		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2-edit")
+		// Extract model name (e.g., "flux2-klein-9b" -> "9b")
+		modelSize := strings.TrimPrefix(job.Model, "flux2-klein-")
 		args = []string{
-			"--base-model", job.Model,
+			"--model", modelSize,
+			"--image-paths",
+		}
+		args = append(args, job.ImagePaths...)
+		args = append(args,
 			"--prompt", job.Prompt,
-			"--width", strconv.Itoa(job.Width),
-			"--height", strconv.Itoa(job.Height),
 			"--steps", strconv.Itoa(job.Steps),
 			"--output", outputPath,
-		}
+		)
 	} else {
-		// FLUX.1 models (schnell, dev) use mflux-generate with --model <path>
+		// Standard generation with mflux-generate
 		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate")
-		modelPath := filepath.Join(s.modelsDir, job.Model)
 		args = []string{
-			"--model", modelPath,
+			"--base-model", job.Model,
 			"--prompt", job.Prompt,
 			"--width", strconv.Itoa(job.Width),
 			"--height", strconv.Itoa(job.Height),
@@ -919,12 +1007,13 @@ func (s *Service) GetJob(jobID string) (*GenerationJob, error) {
 	}
 
 	var job GenerationJob
-	var imagePath, errMsg sql.NullString
+	var imagePath, errMsg, jobType, imagePathsJSON sql.NullString
 	err := s.db.QueryRow(`
-		SELECT id, prompt, model, width, height, steps, seed, status, image_path, error, created_at
+		SELECT id, prompt, model, width, height, steps, seed, status, image_path, error, created_at,
+		       COALESCE(type, 'generate') as type, COALESCE(image_paths, '') as image_paths
 		FROM flux_generations WHERE id = ?
 	`, jobID).Scan(&job.ID, &job.Prompt, &job.Model, &job.Width, &job.Height,
-		&job.Steps, &job.Seed, &job.Status, &imagePath, &errMsg, &job.CreatedAt)
+		&job.Steps, &job.Seed, &job.Status, &imagePath, &errMsg, &job.CreatedAt, &jobType, &imagePathsJSON)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("job not found")
@@ -935,6 +1024,15 @@ func (s *Service) GetJob(jobID string) (*GenerationJob, error) {
 
 	job.ImagePath = imagePath.String
 	job.Error = errMsg.String
+	job.Type = jobType.String
+	if job.Type == "" {
+		job.Type = "generate"
+	}
+
+	// Parse image paths JSON
+	if imagePathsJSON.String != "" {
+		json.Unmarshal([]byte(imagePathsJSON.String), &job.ImagePaths)
+	}
 
 	return &job, nil
 }
@@ -946,7 +1044,8 @@ func (s *Service) ListGenerations() ([]GenerationJob, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT id, prompt, model, width, height, steps, seed, status, image_path, error, created_at
+		SELECT id, prompt, model, width, height, steps, seed, status, image_path, error, created_at,
+		       COALESCE(type, 'generate') as type, COALESCE(image_paths, '') as image_paths
 		FROM flux_generations ORDER BY created_at DESC LIMIT 100
 	`)
 	if err != nil {
@@ -957,18 +1056,40 @@ func (s *Service) ListGenerations() ([]GenerationJob, error) {
 	var jobs []GenerationJob
 	for rows.Next() {
 		var job GenerationJob
-		var imagePath, errMsg sql.NullString
+		var imagePath, errMsg, jobType, imagePathsJSON sql.NullString
 		err := rows.Scan(&job.ID, &job.Prompt, &job.Model, &job.Width, &job.Height,
-			&job.Steps, &job.Seed, &job.Status, &imagePath, &errMsg, &job.CreatedAt)
+			&job.Steps, &job.Seed, &job.Status, &imagePath, &errMsg, &job.CreatedAt, &jobType, &imagePathsJSON)
 		if err != nil {
 			continue
 		}
 		job.ImagePath = imagePath.String
 		job.Error = errMsg.String
+		job.Type = jobType.String
+		if job.Type == "" {
+			job.Type = "generate"
+		}
+		if imagePathsJSON.String != "" {
+			json.Unmarshal([]byte(imagePathsJSON.String), &job.ImagePaths)
+		}
 		jobs = append(jobs, job)
 	}
 
 	return jobs, nil
+}
+
+// GetQueuedCount returns the number of jobs in queued state
+func (s *Service) GetQueuedCount() int {
+	if s.db == nil {
+		return 0
+	}
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM flux_generations WHERE status = 'queued'").Scan(&count)
+	return count
+}
+
+// GetUploadsDir returns the path to the uploads directory for reference images
+func (s *Service) GetUploadsDir() string {
+	return s.uploadsDir
 }
 
 // GetImagePath returns the path to a generated image

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -176,6 +177,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("DELETE /api/flux/models/{id}", s.requireAuth(s.handleFluxDeleteModel))
 	s.router.HandleFunc("GET /api/flux/models/{id}/progress", s.requireAuth(s.handleFluxDownloadProgress))
 	s.router.HandleFunc("POST /api/flux/generate", s.requireAuth(s.handleFluxGenerate))
+	s.router.HandleFunc("POST /api/flux/edit", s.requireAuth(s.handleFluxEdit))
+	s.router.HandleFunc("POST /api/flux/upload", s.requireAuth(s.handleFluxUpload))
 	s.router.HandleFunc("GET /api/flux/jobs/{id}", s.requireAuth(s.handleFluxGetJob))
 	s.router.HandleFunc("GET /api/flux/generations", s.requireAuth(s.handleFluxListGenerations))
 	s.router.HandleFunc("GET /api/flux/image/{id}", s.handleFluxGetImage) // No auth - images use random IDs
@@ -2950,7 +2953,7 @@ func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Model == "" {
-		req.Model = "schnell" // Default model
+		req.Model = "z-image-turbo" // Default model
 	}
 	if req.Width == 0 {
 		req.Width = 1024
@@ -2959,10 +2962,15 @@ func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
 		req.Height = 1024
 	}
 	if req.Steps == 0 {
-		if req.Model == "schnell" {
+		// Get default steps from model config
+		for _, m := range flux.GetAvailableModels() {
+			if m.ID == req.Model {
+				req.Steps = m.Steps
+				break
+			}
+		}
+		if req.Steps == 0 {
 			req.Steps = 4
-		} else {
-			req.Steps = 20
 		}
 	}
 	if req.Seed == 0 {
@@ -2977,6 +2985,106 @@ func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusAccepted, job)
+}
+
+// handleFluxEdit starts an image editing job with reference images
+func (s *Server) handleFluxEdit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Prompt     string   `json:"prompt"`
+		Model      string   `json:"model"`
+		Width      int      `json:"width"`
+		Height     int      `json:"height"`
+		Steps      int      `json:"steps"`
+		Seed       int64    `json:"seed"`
+		ImagePaths []string `json:"image_paths"` // Paths to uploaded reference images
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Prompt == "" {
+		errorResponse(w, http.StatusBadRequest, "prompt required")
+		return
+	}
+	if len(req.ImagePaths) == 0 {
+		errorResponse(w, http.StatusBadRequest, "at least one reference image required")
+		return
+	}
+	if req.Model == "" {
+		req.Model = "flux2-klein-9b" // Default edit model
+	}
+	if req.Width == 0 {
+		req.Width = 1024
+	}
+	if req.Height == 0 {
+		req.Height = 1024
+	}
+	if req.Steps == 0 {
+		req.Steps = 4
+	}
+	if req.Seed == 0 {
+		req.Seed = -1 // Random
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	job, err := svc.GenerateEdit(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.ImagePaths)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusAccepted, job)
+}
+
+// handleFluxUpload handles image upload for editing
+func (s *Server) handleFluxUpload(w http.ResponseWriter, r *http.Request) {
+	// Max 50MB
+	r.ParseMultipartForm(50 << 20)
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, "failed to read uploaded file")
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	contentType := header.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		errorResponse(w, http.StatusBadRequest, "only JPEG, PNG, and WebP images are supported")
+		return
+	}
+
+	// Generate unique filename
+	svc := flux.GetService(s.storage.DB())
+	ext := ".jpg"
+	if contentType == "image/png" {
+		ext = ".png"
+	} else if contentType == "image/webp" {
+		ext = ".webp"
+	}
+
+	filename := fmt.Sprintf("upload_%d%s", time.Now().UnixNano(), ext)
+	filepath := filepath.Join(svc.GetUploadsDir(), filename)
+
+	// Save file
+	dst, err := os.Create(filepath)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to save file")
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to save file")
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"path":     filepath,
+		"filename": filename,
+	})
 }
 
 // handleFluxGetJob returns a generation job status
