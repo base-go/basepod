@@ -1398,9 +1398,20 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		"message": "Update complete. Restarting service...",
 	})
 
-	// Exit process after response is sent - systemd will restart us automatically
+	// Restart properly via service manager
 	go func() {
 		time.Sleep(1 * time.Second) // Give time for response to be sent
+
+		if runtime.GOOS == "darwin" {
+			// macOS: use launchctl to restart
+			exec.Command("launchctl", "kickstart", "-k", "gui/"+fmt.Sprint(os.Getuid())+"/com.basepod.server").Run()
+		} else {
+			// Linux: use systemctl to restart
+			exec.Command("systemctl", "--user", "restart", "basepod").Run()
+		}
+
+		// Fallback: exit and let service manager restart us
+		time.Sleep(2 * time.Second)
 		os.Exit(0)
 	}()
 }
