@@ -55,7 +55,7 @@ const { data: generations, refresh: refreshGenerations } = await useApiFetch<Flu
 
 // Form state
 const prompt = ref('')
-const selectedModel = ref('schnell')
+const selectedModel = ref('')
 const selectedSize = ref('1024x1024')
 const steps = ref(4)
 const seed = ref(-1)
@@ -67,6 +67,14 @@ const downloadingModels = ref<Set<string>>(new Set())
 const downloadProgress = ref<Map<string, DownloadProgress>>(new Map())
 const selectedImage = ref<FluxGeneration | null>(null)
 const showImageModal = ref(false)
+
+// Tabs
+const tabs = [
+  { label: 'Generate', value: 'generate', icon: 'i-heroicons-sparkles' },
+  { label: 'Models', value: 'models', icon: 'i-heroicons-cpu-chip' },
+  { label: 'Gallery', value: 'gallery', icon: 'i-heroicons-squares-2x2' }
+]
+const activeTab = ref('generate')
 
 // Size presets
 const sizePresets = [
@@ -83,11 +91,22 @@ const dimensions = computed(() => {
   return { width: w, height: h }
 })
 
+// Set default selected model when data loads
+watch(models, (newModels) => {
+  if (newModels && newModels.length > 0 && !selectedModel.value) {
+    const downloaded = newModels.find(m => m.downloaded)
+    if (downloaded) {
+      selectedModel.value = downloaded.id
+      steps.value = downloaded.default_steps || 4
+    }
+  }
+}, { immediate: true })
+
 // Update steps when model changes
 watch(selectedModel, (model) => {
   const m = models.value?.find(m => m.id === model)
   if (m) {
-    steps.value = m.default_steps || (model === 'schnell' ? 4 : 20)
+    steps.value = m.default_steps || 4
   }
 })
 
@@ -115,6 +134,11 @@ const sortedModels = computed(() => {
 async function generate() {
   if (!prompt.value.trim()) {
     toast.add({ title: 'Please enter a prompt', color: 'warning' })
+    return
+  }
+
+  if (!selectedModel.value) {
+    toast.add({ title: 'Please select a model', color: 'warning' })
     return
   }
 
@@ -160,6 +184,7 @@ async function pollJobStatus(jobId: string) {
         currentJobId.value = null
         toast.add({ title: 'Image generated!', color: 'success' })
         refreshGenerations()
+        activeTab.value = 'gallery'
         return
       }
 
@@ -349,181 +374,209 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-      <!-- Generation Form (only if model downloaded) -->
-      <div v-if="hasDownloadedModel" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-        <div class="flex items-center gap-2 mb-3">
-          <UIcon name="i-heroicons-sparkles" class="w-5 h-5 text-primary-500" />
-          <h3 class="font-medium">Generate Image</h3>
+      <!-- Tabs -->
+      <UTabs v-model="activeTab" :items="tabs" class="mb-6" />
+
+      <!-- Generate Tab -->
+      <div v-if="activeTab === 'generate'">
+        <div v-if="!hasDownloadedModel" class="text-center py-12">
+          <UIcon name="i-heroicons-cpu-chip" class="text-5xl text-gray-400 mb-4" />
+          <h3 class="text-lg font-medium mb-2">No Models Downloaded</h3>
+          <p class="text-gray-500 mb-4">Download a FLUX model to start generating images.</p>
+          <UButton @click="activeTab = 'models'">
+            <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
+            Download Models
+          </UButton>
         </div>
 
-        <form class="space-y-4" @submit.prevent="generate">
-          <UTextarea
-            v-model="prompt"
-            placeholder="Describe the image you want to create..."
-            :rows="2"
-            class="w-full"
-          />
+        <div v-else class="space-y-6">
+          <!-- Prompt Input -->
+          <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+            <UTextarea
+              v-model="prompt"
+              placeholder="Describe the image you want to create..."
+              :rows="3"
+              class="w-full mb-4"
+              autofocus
+            />
 
-          <div class="flex flex-wrap gap-3 items-end">
-            <div class="flex-1 min-w-[120px]">
-              <label class="text-xs text-gray-500 mb-1 block">Model</label>
-              <USelect
-                v-model="selectedModel"
-                :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
-                size="sm"
-              />
+            <div class="flex flex-wrap gap-4 items-end">
+              <div class="flex-1 min-w-[150px]">
+                <label class="text-xs text-gray-500 mb-1 block">Model</label>
+                <USelect
+                  v-model="selectedModel"
+                  :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
+                />
+              </div>
+
+              <div class="w-[160px]">
+                <label class="text-xs text-gray-500 mb-1 block">Size</label>
+                <USelect
+                  v-model="selectedSize"
+                  :items="sizePresets"
+                />
+              </div>
+
+              <div class="w-[100px]">
+                <label class="text-xs text-gray-500 mb-1 block">Steps</label>
+                <UInput v-model.number="steps" type="number" :min="1" :max="50" />
+              </div>
+
+              <div class="w-[120px]">
+                <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
+                <UInput v-model.number="seed" type="number" />
+              </div>
+
+              <UButton
+                color="primary"
+                size="lg"
+                :loading="generating"
+                :disabled="!prompt.trim() || generating"
+                @click="generate"
+              >
+                <UIcon name="i-heroicons-sparkles" class="mr-2" />
+                Generate
+              </UButton>
             </div>
-
-            <div class="w-[140px]">
-              <label class="text-xs text-gray-500 mb-1 block">Size</label>
-              <USelect
-                v-model="selectedSize"
-                :items="sizePresets"
-                size="sm"
-              />
-            </div>
-
-            <div class="w-[80px]">
-              <label class="text-xs text-gray-500 mb-1 block">Steps</label>
-              <UInput v-model.number="steps" type="number" :min="1" :max="50" size="sm" />
-            </div>
-
-            <div class="w-[100px]">
-              <label class="text-xs text-gray-500 mb-1 block">Seed (-1 = random)</label>
-              <UInput v-model.number="seed" type="number" size="sm" />
-            </div>
-
-            <UButton
-              type="submit"
-              color="primary"
-              :loading="generating"
-              :disabled="!prompt.trim() || generating"
-            >
-              Generate
-            </UButton>
           </div>
 
           <!-- Progress -->
-          <div v-if="generating && status?.current_job" class="mt-3">
-            <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
-              <span>{{ Math.round(status.current_job.progress || 0) }}%</span>
-              <span>Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}</span>
+          <div v-if="generating && status?.current_job" class="p-4 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-medium text-primary-700 dark:text-primary-300">Generating image...</span>
+              <span class="text-sm text-primary-600 dark:text-primary-400">
+                Step {{ Math.round((status.current_job.progress || 0) / 100 * steps) }}/{{ steps }}
+              </span>
             </div>
-            <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div class="h-3 bg-primary-200 dark:bg-primary-800 rounded-full overflow-hidden">
               <div
                 class="h-full bg-primary-500 transition-all duration-300"
                 :style="{ width: `${status.current_job.progress || 0}%` }"
               />
             </div>
           </div>
-        </form>
-      </div>
 
-      <!-- Models List -->
-      <div class="space-y-8">
-        <div>
-          <div class="mb-4">
-            <div class="flex items-center gap-2 mb-1">
-              <UIcon name="i-heroicons-photo" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
-              <h3 class="text-lg font-semibold">FLUX Models</h3>
+          <!-- Recent Generations Preview -->
+          <div v-if="generations?.length">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-medium">Recent Generations</h3>
+              <UButton variant="ghost" size="xs" @click="activeTab = 'gallery'">
+                View All
+                <UIcon name="i-heroicons-arrow-right" class="ml-1" />
+              </UButton>
             </div>
-            <p class="text-sm text-gray-500">Download and manage image generation models</p>
-          </div>
-
-          <div class="space-y-3">
-            <div
-              v-for="model in sortedModels"
-              :key="model.id"
-              class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
-            >
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-4 flex-1">
-                  <div class="w-10 h-10 bg-primary-100 dark:bg-primary-900/50 rounded-lg flex items-center justify-center">
-                    <UIcon name="i-heroicons-photo" class="w-5 h-5 text-primary-500" />
-                  </div>
-                  <div>
-                    <div class="font-medium flex items-center gap-2">
-                      {{ model.name }}
-                      <span v-if="model.downloaded" class="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-2 py-0.5 rounded">
-                        Downloaded
-                      </span>
-                    </div>
-                    <div class="text-sm text-gray-500">{{ model.description }}</div>
-                  </div>
-                </div>
-                <div class="flex items-center gap-3">
-                  <span class="text-sm text-gray-400">{{ model.size }}</span>
-
-                  <!-- If downloading - show progress -->
-                  <div v-if="downloadingModels.has(model.id)" class="flex items-center gap-3 min-w-[200px]">
-                    <div class="flex-1">
-                      <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
-                        <span v-if="downloadProgress.get(model.id)?.progress !== undefined">
-                          {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
-                        </span>
-                        <span v-else>Starting...</span>
-                        <span v-if="downloadProgress.get(model.id)?.eta">
-                          ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
-                        </span>
-                      </div>
-                      <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                        <div
-                          class="h-full bg-primary-500 transition-all duration-300"
-                          :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
-                        />
-                      </div>
-                      <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
-                        <span v-if="downloadProgress.get(model.id)?.bytes_done">
-                          {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
-                        </span>
-                        <span v-else>{{ downloadProgress.get(model.id)?.message || 'Downloading...' }}</span>
-                        <span v-if="downloadProgress.get(model.id)?.speed">
-                          {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- If downloaded -->
-                  <UButton
-                    v-else-if="model.downloaded"
-                    size="sm"
-                    variant="soft"
-                    color="error"
-                    @click="deleteModel(model.id)"
-                  >
-                    Delete
-                  </UButton>
-
-                  <!-- Not downloaded -->
-                  <UButton
-                    v-else
-                    size="sm"
-                    variant="soft"
-                    @click="downloadModel(model.id)"
-                  >
-                    Download
-                  </UButton>
-                </div>
+            <div class="flex gap-3 overflow-x-auto pb-2">
+              <div
+                v-for="gen in generations.slice(0, 6)"
+                :key="gen.id"
+                class="flex-shrink-0 w-24 h-24 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary-500 transition-all"
+                @click="viewImage(gen)"
+              >
+                <img
+                  v-if="gen.status === 'completed' && gen.image_url"
+                  :src="`/api${gen.image_url}`"
+                  :alt="gen.prompt"
+                  class="w-full h-full object-cover"
+                />
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Gallery -->
-      <div v-if="generations?.length" class="mt-8">
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex items-center gap-2">
-            <UIcon name="i-heroicons-squares-2x2" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            <h3 class="text-lg font-semibold">Gallery</h3>
+      <!-- Models Tab -->
+      <div v-if="activeTab === 'models'" class="space-y-4">
+        <div
+          v-for="model in sortedModels"
+          :key="model.id"
+          class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4 flex-1">
+              <div class="w-12 h-12 bg-primary-100 dark:bg-primary-900/50 rounded-lg flex items-center justify-center">
+                <UIcon name="i-heroicons-cpu-chip" class="w-6 h-6 text-primary-500" />
+              </div>
+              <div>
+                <div class="font-medium flex items-center gap-2">
+                  {{ model.name }}
+                  <UBadge v-if="model.downloaded" color="success" variant="soft" size="xs">
+                    Ready
+                  </UBadge>
+                </div>
+                <div class="text-sm text-gray-500">{{ model.description }}</div>
+                <div class="text-xs text-gray-400 mt-1">{{ model.size }} · {{ model.default_steps }} steps</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <!-- If downloading - show progress -->
+              <div v-if="downloadingModels.has(model.id)" class="w-[220px]">
+                <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                  <span v-if="downloadProgress.get(model.id)?.progress !== undefined">
+                    {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
+                  </span>
+                  <span v-else>Starting...</span>
+                  <span v-if="downloadProgress.get(model.id)?.eta">
+                    ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
+                  </span>
+                </div>
+                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-primary-500 transition-all duration-300"
+                    :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
+                  />
+                </div>
+                <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
+                  <span v-if="downloadProgress.get(model.id)?.bytes_done">
+                    {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
+                  </span>
+                  <span v-else>{{ downloadProgress.get(model.id)?.message || 'Downloading...' }}</span>
+                  <span v-if="downloadProgress.get(model.id)?.speed">
+                    {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
+                  </span>
+                </div>
+              </div>
+
+              <!-- If downloaded -->
+              <template v-else-if="model.downloaded">
+                <UButton variant="soft" @click="activeTab = 'generate'; selectedModel = model.id">
+                  Use
+                </UButton>
+                <UButton
+                  variant="soft"
+                  color="error"
+                  @click="deleteModel(model.id)"
+                >
+                  Delete
+                </UButton>
+              </template>
+
+              <!-- Not downloaded -->
+              <UButton
+                v-else
+                color="primary"
+                @click="downloadModel(model.id)"
+              >
+                <UIcon name="i-heroicons-arrow-down-tray" class="mr-1" />
+                Download
+              </UButton>
+            </div>
           </div>
-          <UButton variant="ghost" size="xs" @click="refreshGenerations">
-            <UIcon name="i-heroicons-arrow-path" />
+        </div>
+      </div>
+
+      <!-- Gallery Tab -->
+      <div v-if="activeTab === 'gallery'">
+        <div v-if="!generations?.length" class="text-center py-12">
+          <UIcon name="i-heroicons-photo" class="text-5xl text-gray-400 mb-4" />
+          <h3 class="text-lg font-medium mb-2">No Images Yet</h3>
+          <p class="text-gray-500 mb-4">Generate your first image to see it here.</p>
+          <UButton @click="activeTab = 'generate'">
+            <UIcon name="i-heroicons-sparkles" class="mr-2" />
+            Generate Image
           </UButton>
         </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           <div
             v-for="gen in generations"
             :key="gen.id"
@@ -550,8 +603,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Hover overlay -->
-            <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
-              <p class="text-white text-xs line-clamp-2">{{ gen.prompt }}</p>
+            <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
+              <p class="text-white text-sm line-clamp-2">{{ gen.prompt }}</p>
             </div>
           </div>
         </div>

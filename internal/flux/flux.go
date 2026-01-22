@@ -232,12 +232,37 @@ func (s *Service) ListModels() []Model {
 	available := GetAvailableModels()
 
 	for i := range available {
-		modelPath := filepath.Join(s.modelsDir, available[i].ID)
-		if info, err := os.Stat(modelPath); err == nil && info.IsDir() {
-			// Check if model has actual files
-			entries, _ := os.ReadDir(modelPath)
-			if len(entries) > 0 {
-				available[i].Downloaded = true
+		modelID := available[i].ID
+		isFlux2 := strings.HasPrefix(modelID, "flux2-")
+
+		if isFlux2 {
+			// FLUX.2 models are stored in HuggingFace cache
+			// Check ~/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-*
+			home, _ := os.UserHomeDir()
+			var hfModelName string
+			switch modelID {
+			case "flux2-klein-4b":
+				hfModelName = "FLUX.2-klein-4B"
+			case "flux2-klein-9b":
+				hfModelName = "FLUX.2-klein-9B"
+			}
+			hfCachePath := filepath.Join(home, ".cache", "huggingface", "hub", "models--black-forest-labs--"+hfModelName)
+			if info, err := os.Stat(hfCachePath); err == nil && info.IsDir() {
+				// Check if it has blobs (actual model files)
+				blobsPath := filepath.Join(hfCachePath, "blobs")
+				if entries, err := os.ReadDir(blobsPath); err == nil && len(entries) > 0 {
+					available[i].Downloaded = true
+				}
+			}
+		} else {
+			// FLUX.1 models are stored in our models directory
+			modelPath := filepath.Join(s.modelsDir, modelID)
+			if info, err := os.Stat(modelPath); err == nil && info.IsDir() {
+				// Check if model has actual files
+				entries, _ := os.ReadDir(modelPath)
+				if len(entries) > 0 {
+					available[i].Downloaded = true
+				}
 			}
 		}
 	}
@@ -363,8 +388,8 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	dp.mu.Unlock()
 
 	pipPath := filepath.Join(venvPath, "bin", "pip")
-	cmd := exec.CommandContext(ctx, pipPath, "install", "--upgrade", "mflux")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	pipCmd := exec.CommandContext(ctx, pipPath, "install", "--upgrade", "mflux")
+	if output, err := pipCmd.CombinedOutput(); err != nil {
 		dp.mu.Lock()
 		dp.Status = "failed"
 		dp.Message = fmt.Sprintf("Failed to install mflux: %s", string(output))
@@ -383,7 +408,7 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	default:
 	}
 
-	// Download model using mflux-save
+	// Download model
 	dp.mu.Lock()
 	dp.Message = fmt.Sprintf("Downloading %s model (this may take a while)...", dp.ModelID)
 	dp.Progress = 10
@@ -392,10 +417,28 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	// Load config to get HuggingFace token
 	cfg, _ := config.Load()
 
-	modelPath := filepath.Join(s.modelsDir, dp.ModelID)
-	mfluxSavePath := filepath.Join(venvPath, "bin", "mflux-save")
+	// FLUX.2 models use huggingface-cli download (they're stored in HF cache)
+	// FLUX.1 models use mflux-save (stored in our models directory)
+	isFlux2 := strings.HasPrefix(dp.ModelID, "flux2-")
 
-	cmd = exec.CommandContext(ctx, mfluxSavePath, "--model", dp.ModelID, "--path", modelPath)
+	var cmd *exec.Cmd
+	if isFlux2 {
+		// Use huggingface-cli to download FLUX.2 models
+		hfCliPath := filepath.Join(venvPath, "bin", "huggingface-cli")
+		var hfModelName string
+		switch dp.ModelID {
+		case "flux2-klein-4b":
+			hfModelName = "black-forest-labs/FLUX.2-klein-4B"
+		case "flux2-klein-9b":
+			hfModelName = "black-forest-labs/FLUX.2-klein-9B"
+		}
+		cmd = exec.CommandContext(ctx, hfCliPath, "download", hfModelName)
+	} else {
+		// Use mflux-save for FLUX.1 models
+		modelPath := filepath.Join(s.modelsDir, dp.ModelID)
+		mfluxSavePath := filepath.Join(venvPath, "bin", "mflux-save")
+		cmd = exec.CommandContext(ctx, mfluxSavePath, "--model", dp.ModelID, "--path", modelPath)
+	}
 	cmd.Env = os.Environ()
 
 	// Add HuggingFace token if configured
@@ -600,12 +643,18 @@ func (s *Service) Generate(prompt, modelID string, width, height, steps int, see
 		return nil, fmt.Errorf("generation already in progress")
 	}
 
-	// Check if model is downloaded
-	modelPath := filepath.Join(s.modelsDir, modelID)
-	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("model not downloaded: %s", modelID)
+	// Check if model is available
+	// FLUX.2 models download to HuggingFace cache, not our models directory
+	isFlux2 := strings.HasPrefix(modelID, "flux2-")
+	if !isFlux2 {
+		// For FLUX.1 models, check local models directory
+		modelPath := filepath.Join(s.modelsDir, modelID)
+		if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("model not downloaded: %s", modelID)
+		}
 	}
+	// FLUX.2 models will download automatically on first use
 
 	// Create job
 	job := &GenerationJob{
@@ -659,19 +708,37 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	s.updateJobInDB(job)
 
 	venvPath := filepath.Join(s.baseDir, "venv")
-	mfluxGenPath := filepath.Join(venvPath, "bin", "mflux-generate")
-	modelPath := filepath.Join(s.modelsDir, job.Model)
 	outputPath := filepath.Join(s.outputDir, job.ID+".png")
 
-	// Build command args
-	args := []string{
-		"--model", job.Model,
-		"--path", modelPath,
-		"--prompt", job.Prompt,
-		"--width", strconv.Itoa(job.Width),
-		"--height", strconv.Itoa(job.Height),
-		"--steps", strconv.Itoa(job.Steps),
-		"--output", outputPath,
+	// Determine the correct mflux command based on model type
+	// FLUX.2 models use mflux-generate-flux2, FLUX.1 models use mflux-generate
+	var mfluxGenPath string
+	var args []string
+
+	isFlux2 := strings.HasPrefix(job.Model, "flux2-")
+	if isFlux2 {
+		// FLUX.2 models use mflux-generate-flux2 with --model <model-name>
+		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2")
+		args = []string{
+			"--model", job.Model,
+			"--prompt", job.Prompt,
+			"--width", strconv.Itoa(job.Width),
+			"--height", strconv.Itoa(job.Height),
+			"--steps", strconv.Itoa(job.Steps),
+			"--output", outputPath,
+		}
+	} else {
+		// FLUX.1 models (schnell, dev) use mflux-generate with --model <path>
+		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate")
+		modelPath := filepath.Join(s.modelsDir, job.Model)
+		args = []string{
+			"--model", modelPath,
+			"--prompt", job.Prompt,
+			"--width", strconv.Itoa(job.Width),
+			"--height", strconv.Itoa(job.Height),
+			"--steps", strconv.Itoa(job.Steps),
+			"--output", outputPath,
+		}
 	}
 
 	if job.Seed >= 0 {
