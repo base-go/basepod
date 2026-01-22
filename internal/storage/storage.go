@@ -128,10 +128,13 @@ func (s *Storage) migrate() error {
 			steps INTEGER NOT NULL,
 			seed INTEGER NOT NULL,
 			status TEXT NOT NULL DEFAULT 'pending',
+			progress INTEGER DEFAULT 0,
 			image_path TEXT,
 			error TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Migration: add progress column if missing
+		`ALTER TABLE flux_generations ADD COLUMN progress INTEGER DEFAULT 0`,
 	}
 
 	for _, migration := range migrations {
