@@ -36,63 +36,77 @@ const checkVersion = async () => {
   }
 }
 
-const waitForServer = async (maxAttempts = 10, delayMs = 2000): Promise<boolean> => {
+const waitForServer = async (maxAttempts = 30, delayMs = 1000): Promise<boolean> => {
+  // First, wait for server to go down (max 5 seconds)
+  updateMessage.value = 'Waiting for server to restart...'
+  let serverWentDown = false
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    try {
+      await fetch('/api/health', { method: 'GET' })
+      // Server still up, keep waiting
+    } catch {
+      serverWentDown = true
+      break
+    }
+  }
+
+  // Now wait for server to come back up
+  updateMessage.value = 'Server restarting, waiting for it to come back...'
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(resolve => setTimeout(resolve, delayMs))
     try {
-      await $api('/health')
-      return true
+      const response = await fetch('/api/health', { method: 'GET' })
+      if (response.ok) {
+        return true
+      }
     } catch {
-      // Server not ready yet
+      // Server not ready yet, keep trying
     }
+    updateMessage.value = `Waiting for server... (${i + 1}/${maxAttempts})`
   }
   return false
 }
 
 const performUpdate = async () => {
   updating.value = true
-  updateMessage.value = ''
+  updateMessage.value = 'Starting update...'
   updateError.value = ''
   try {
     const result = await $api<{ status: string; message: string }>('/system/update', {
       method: 'POST'
     })
-    updateMessage.value = result.message
+    updateMessage.value = result.message || 'Update initiated...'
 
-    // If server is restarting, wait for it to come back
-    if (result.message?.includes('Restarting')) {
-      updateMessage.value = 'Update complete. Restarting service...'
-      const serverReady = await waitForServer()
-      if (serverReady) {
-        updateMessage.value = 'Update successful! Refreshing...'
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        window.location.reload()
-      } else {
-        updateError.value = 'Server did not restart in time. Please refresh manually.'
-      }
+    // Always wait for server to come back after update
+    const serverReady = await waitForServer()
+    if (serverReady) {
+      updateMessage.value = 'Update successful! Refreshing...'
+      await new Promise(resolve => setTimeout(resolve, 500))
+      window.location.reload()
     } else {
-      // Refresh version after update
-      await checkVersion()
+      updateError.value = 'Server did not restart in time. Please refresh manually.'
+      updating.value = false
     }
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
-    // Connection error during restart is expected
-    if (err.data?.error) {
+    // Connection error during restart is expected - server went down
+    if (err.data?.error && !err.data.error.includes('fetch')) {
       updateError.value = err.data.error
+      updating.value = false
     } else {
       // Assume restart in progress, wait for server
-      updateMessage.value = 'Update complete. Restarting service...'
+      updateMessage.value = 'Update in progress...'
       const serverReady = await waitForServer()
       if (serverReady) {
         updateMessage.value = 'Update successful! Refreshing...'
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        await new Promise(resolve => setTimeout(resolve, 500))
         window.location.reload()
       } else {
         updateError.value = 'Server did not restart in time. Please refresh manually.'
+        updating.value = false
       }
     }
-  } finally {
-    updating.value = false
   }
 }
 

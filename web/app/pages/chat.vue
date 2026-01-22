@@ -455,18 +455,23 @@ function getMessageImages(content: string | MessageContent[]): string[] {
     .map(c => c.image_url.url)
 }
 
-// Setup paste listener and refresh timer
-let refreshTimer: ReturnType<typeof setInterval> | null = null
+// Setup paste listener (no auto-refresh - use manual refresh button)
 onMounted(() => {
-  refreshTimer = setInterval(refreshStatus, 10000)
   document.addEventListener('paste', handlePaste)
 })
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
   if (loadingTimer) clearInterval(loadingTimer)
   document.removeEventListener('paste', handlePaste)
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
 })
+
+// Manual refresh
+const refreshing = ref(false)
+async function manualRefresh() {
+  refreshing.value = true
+  await refreshStatus()
+  refreshing.value = false
+}
 </script>
 
 <template>
@@ -533,6 +538,9 @@ onUnmounted(() => {
           <UIcon name="i-heroicons-eye" class="w-3 h-3 mr-1" />
           Vision
         </UBadge>
+        <UButton variant="ghost" color="neutral" size="sm" :loading="refreshing" @click="manualRefresh">
+          <UIcon name="i-heroicons-arrow-path" class="w-4 h-4" />
+        </UButton>
         <UButton v-if="messages.length" variant="ghost" color="neutral" size="sm" @click="clearChat">
           <UIcon name="i-heroicons-trash" class="w-4 h-4 mr-1" />
           Clear
