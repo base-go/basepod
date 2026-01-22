@@ -1383,12 +1383,28 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Replace current binary (atomic move)
 	if err := os.Rename(tmpPath, execPath); err != nil {
-		// Try copy if rename fails (cross-device)
-		srcFile, _ := os.Open(tmpPath)
-		dstFile, _ := os.Create(execPath)
-		io.Copy(dstFile, srcFile)
-		srcFile.Close()
-		dstFile.Close()
+		// Try copy if rename fails (cross-device or permission issue)
+		srcFile, err := os.Open(tmpPath)
+		if err != nil {
+			os.Remove(tmpPath)
+			errorResponse(w, http.StatusInternalServerError, "Failed to open temp file: "+err.Error())
+			return
+		}
+		defer srcFile.Close()
+
+		dstFile, err := os.Create(execPath)
+		if err != nil {
+			os.Remove(tmpPath)
+			errorResponse(w, http.StatusInternalServerError, "Failed to replace binary (permission denied?): "+err.Error())
+			return
+		}
+		defer dstFile.Close()
+
+		if _, err := io.Copy(dstFile, srcFile); err != nil {
+			os.Remove(tmpPath)
+			errorResponse(w, http.StatusInternalServerError, "Failed to write binary: "+err.Error())
+			return
+		}
 		os.Remove(tmpPath)
 	}
 
@@ -1403,11 +1419,16 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(1 * time.Second) // Give time for response to be sent
 
 		if runtime.GOOS == "darwin" {
-			// macOS: use launchctl to restart
-			exec.Command("launchctl", "kickstart", "-k", "gui/"+fmt.Sprint(os.Getuid())+"/com.basepod.server").Run()
+			// macOS: try system daemon first (server install), then user daemon
+			if err := exec.Command("launchctl", "kickstart", "-k", "system/com.basepod").Run(); err != nil {
+				// Fallback to user daemon
+				exec.Command("launchctl", "kickstart", "-k", "gui/"+fmt.Sprint(os.Getuid())+"/com.basepod").Run()
+			}
 		} else {
-			// Linux: use systemctl to restart
-			exec.Command("systemctl", "--user", "restart", "basepod").Run()
+			// Linux: try system service first, then user service
+			if err := exec.Command("systemctl", "restart", "basepod").Run(); err != nil {
+				exec.Command("systemctl", "--user", "restart", "basepod").Run()
+			}
 		}
 
 		// Fallback: exit and let service manager restart us
