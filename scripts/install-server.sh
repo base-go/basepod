@@ -741,6 +741,16 @@ main() {
         create_services
         set_permissions
         start_services
+
+        # Wait for server to fully restart
+        echo ""
+        echo -n "  Waiting for server to restart"
+        for i in {1..15}; do
+            echo -n "."
+            sleep 1
+        done
+        echo " done"
+
         print_update_success
     else
         # Fresh install - ask for domain configuration
