@@ -6,6 +6,7 @@ interface FluxModel {
   size: string
   downloaded: boolean
   default_steps: number
+  ram_required: number
 }
 
 interface FluxStatus {
@@ -16,6 +17,7 @@ interface FluxStatus {
   models_count: number
   queued_jobs: number
   processing_id?: string
+  system_ram: number
 }
 
 interface FluxGeneration {
@@ -440,6 +442,7 @@ onUnmounted(() => {
         <h2 class="text-xl font-semibold">Image Generation</h2>
         <p class="text-gray-500 dark:text-gray-400">
           Generate images with FLUX on Apple Silicon
+          <span v-if="status?.system_ram" class="ml-2 text-xs">({{ status.system_ram }}GB RAM)</span>
         </p>
       </div>
       <div class="flex items-center gap-3">
@@ -504,12 +507,16 @@ onUnmounted(() => {
             />
 
             <div class="flex flex-wrap gap-4 items-end">
-              <div class="flex-1 min-w-[150px]">
+              <div v-if="downloadedModels.length > 1" class="flex-1 min-w-[150px]">
                 <label class="text-xs text-gray-500 mb-1 block">Model</label>
                 <USelect
                   v-model="selectedModel"
                   :items="downloadedModels.map(m => ({ label: m.name, value: m.id }))"
                 />
+              </div>
+              <div v-else-if="downloadedModels.length === 1" class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">Model:</span>
+                <span class="font-medium">{{ downloadedModels[0].name }}</span>
               </div>
 
               <div class="w-[160px]">
@@ -717,65 +724,30 @@ onUnmounted(() => {
                 <div class="font-medium flex items-center gap-2">
                   {{ model.name }}
                   <UBadge v-if="model.downloaded" color="success" variant="soft" size="xs">
-                    Ready
+                    Compatible
+                  </UBadge>
+                  <UBadge v-else color="amber" variant="soft" size="xs">
+                    {{ model.ram_required }}GB+ RAM needed
                   </UBadge>
                 </div>
                 <div class="text-sm text-gray-500">{{ model.description }}</div>
-                <div class="text-xs text-gray-400 mt-1">{{ model.size }} · {{ model.default_steps }} steps</div>
+                <div class="text-xs text-gray-400 mt-1">{{ model.size }} · {{ model.default_steps }} steps · Requires {{ model.ram_required }}GB RAM</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <!-- If downloading - show progress -->
-              <div v-if="downloadingModels.has(model.id)" class="w-[220px]">
-                <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
-                  <span v-if="downloadProgress.get(model.id)?.progress !== undefined">
-                    {{ Math.round(downloadProgress.get(model.id)!.progress) }}%
-                  </span>
-                  <span v-else>Starting...</span>
-                  <span v-if="downloadProgress.get(model.id)?.eta">
-                    ETA: {{ formatETA(downloadProgress.get(model.id)!.eta) }}
-                  </span>
-                </div>
-                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    class="h-full bg-primary-500 transition-all duration-300"
-                    :style="{ width: `${downloadProgress.get(model.id)?.progress || 0}%` }"
-                  />
-                </div>
-                <div class="flex items-center justify-between text-xs text-gray-400 mt-1">
-                  <span v-if="downloadProgress.get(model.id)?.bytes_done">
-                    {{ formatBytes(downloadProgress.get(model.id)!.bytes_done) }} / {{ formatBytes(downloadProgress.get(model.id)!.bytes_total) }}
-                  </span>
-                  <span v-else>{{ downloadProgress.get(model.id)?.message || 'Downloading...' }}</span>
-                  <span v-if="downloadProgress.get(model.id)?.speed">
-                    {{ formatBytes(downloadProgress.get(model.id)!.speed) }}/s
-                  </span>
-                </div>
-              </div>
-
-              <!-- If downloaded -->
-              <template v-else-if="model.downloaded">
+              <!-- If compatible (enough RAM) -->
+              <template v-if="model.downloaded">
                 <UButton variant="soft" @click="activeTab = 'generate'; selectedModel = model.id">
                   Use
                 </UButton>
-                <UButton
-                  variant="soft"
-                  color="error"
-                  @click="deleteModel(model.id)"
-                >
-                  Delete
-                </UButton>
               </template>
 
-              <!-- Not downloaded -->
-              <UButton
-                v-else
-                color="primary"
-                @click="downloadModel(model.id)"
-              >
-                <UIcon name="i-heroicons-arrow-down-tray" class="mr-1" />
-                Download
-              </UButton>
+              <!-- Not enough RAM -->
+              <template v-else>
+                <UBadge color="amber" variant="soft">
+                  Needs {{ model.ram_required }}GB RAM
+                </UBadge>
+              </template>
             </div>
           </div>
         </div>

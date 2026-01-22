@@ -72,6 +72,7 @@ type Status struct {
 	ModelsCount  int            `json:"models_count"`
 	QueuedJobs   int            `json:"queued_jobs"`
 	ProcessingID string         `json:"processing_id,omitempty"`
+	SystemRAM    int            `json:"system_ram"` // System RAM in GB
 }
 
 // DownloadProgress tracks model download progress
@@ -215,6 +216,7 @@ func (s *Service) GetStatus() Status {
 		ModelsCount:  downloadedCount,
 		QueuedJobs:   s.GetQueuedCount(),
 		ProcessingID: processingID,
+		SystemRAM:    getSystemRAM(),
 	}
 }
 
@@ -269,40 +271,16 @@ func GetAvailableModels() []Model {
 // ListModels returns all models with download status
 func (s *Service) ListModels() []Model {
 	available := GetAvailableModels()
+	systemRAM := getSystemRAM()
 
+	// All mflux models auto-download on first use
+	// Mark as "downloaded" only if system has enough RAM to run them
 	for i := range available {
-		modelID := available[i].ID
-		isFlux2 := strings.HasPrefix(modelID, "flux2-")
-
-		if isFlux2 {
-			// FLUX.2 models are stored in HuggingFace cache
-			// Check ~/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-*
-			home, _ := os.UserHomeDir()
-			var hfModelName string
-			switch modelID {
-			case "flux2-klein-4b":
-				hfModelName = "FLUX.2-klein-4B"
-			case "flux2-klein-9b":
-				hfModelName = "FLUX.2-klein-9B"
-			}
-			hfCachePath := filepath.Join(home, ".cache", "huggingface", "hub", "models--black-forest-labs--"+hfModelName)
-			if info, err := os.Stat(hfCachePath); err == nil && info.IsDir() {
-				// Check if it has blobs (actual model files)
-				blobsPath := filepath.Join(hfCachePath, "blobs")
-				if entries, err := os.ReadDir(blobsPath); err == nil && len(entries) > 0 {
-					available[i].Downloaded = true
-				}
-			}
+		if systemRAM > 0 && available[i].RAMRequired > 0 {
+			// Only mark as ready if system has enough RAM
+			available[i].Downloaded = systemRAM >= available[i].RAMRequired
 		} else {
-			// FLUX.1 models are stored in our models directory
-			modelPath := filepath.Join(s.modelsDir, modelID)
-			if info, err := os.Stat(modelPath); err == nil && info.IsDir() {
-				// Check if model has actual files
-				entries, _ := os.ReadDir(modelPath)
-				if len(entries) > 0 {
-					available[i].Downloaded = true
-				}
-			}
+			available[i].Downloaded = true
 		}
 	}
 
@@ -839,15 +817,15 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	s.mu.Unlock()
 	s.updateJobInDB(job)
 
-	// Determine the correct mflux command based on job type
+	// Determine the correct mflux command based on model and job type
 	var mfluxGenPath string
 	var args []string
 
 	if job.Type == "edit" && len(job.ImagePaths) > 0 {
-		// Use mflux-generate-flux2-edit for image editing
+		// Use mflux-generate-flux2-edit for image editing (only FLUX.2 Klein supports this)
 		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2-edit")
 		args = []string{
-			"--model", job.Model, // Full model name like "flux2-klein-9b"
+			"--model", job.Model,
 			"--image-paths",
 		}
 		args = append(args, job.ImagePaths...)
@@ -857,15 +835,50 @@ func (s *Service) runGeneration(job *GenerationJob) {
 			"--output", outputPath,
 		)
 	} else {
-		// Standard generation with mflux-generate
-		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate")
-		args = []string{
-			"--base-model", job.Model,
-			"--prompt", job.Prompt,
-			"--width", strconv.Itoa(job.Width),
-			"--height", strconv.Itoa(job.Height),
-			"--steps", strconv.Itoa(job.Steps),
-			"--output", outputPath,
+		// Standard generation - use model-specific command
+		switch {
+		case strings.HasPrefix(job.Model, "flux2-"):
+			// FLUX.2 models use mflux-generate-flux2
+			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2")
+			args = []string{
+				"--model", job.Model,
+				"--prompt", job.Prompt,
+				"--width", strconv.Itoa(job.Width),
+				"--height", strconv.Itoa(job.Height),
+				"--steps", strconv.Itoa(job.Steps),
+				"--output", outputPath,
+			}
+		case job.Model == "z-image-turbo":
+			// Z-Image Turbo uses its own command
+			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-z-image-turbo")
+			args = []string{
+				"--prompt", job.Prompt,
+				"--width", strconv.Itoa(job.Width),
+				"--height", strconv.Itoa(job.Height),
+				"--steps", strconv.Itoa(job.Steps),
+				"--output", outputPath,
+			}
+		case job.Model == "fibo":
+			// FIBO uses its own command
+			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-fibo")
+			args = []string{
+				"--prompt", job.Prompt,
+				"--width", strconv.Itoa(job.Width),
+				"--height", strconv.Itoa(job.Height),
+				"--steps", strconv.Itoa(job.Steps),
+				"--output", outputPath,
+			}
+		default:
+			// Fallback to generic mflux-generate with --base-model
+			mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate")
+			args = []string{
+				"--base-model", job.Model,
+				"--prompt", job.Prompt,
+				"--width", strconv.Itoa(job.Width),
+				"--height", strconv.Itoa(job.Height),
+				"--steps", strconv.Itoa(job.Steps),
+				"--output", outputPath,
+			}
 		}
 	}
 
