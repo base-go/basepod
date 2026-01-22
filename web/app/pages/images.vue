@@ -296,7 +296,7 @@ async function deleteGeneration(id: string) {
 function downloadImage(gen: FluxGeneration) {
   if (!gen.image_url) return
   const link = document.createElement('a')
-  link.href = `/api${gen.image_url}`
+  link.href = gen.image_url
   link.download = `${gen.id}.png`
   link.click()
 }
@@ -474,7 +474,7 @@ onUnmounted(() => {
               >
                 <img
                   v-if="gen.status === 'completed' && gen.image_url"
-                  :src="`/api${gen.image_url}`"
+                  :src="gen.image_url"
                   :alt="gen.prompt"
                   class="w-full h-full object-cover"
                 />
@@ -585,7 +585,7 @@ onUnmounted(() => {
           >
             <img
               v-if="gen.status === 'completed' && gen.image_url"
-              :src="`/api${gen.image_url}`"
+              :src="gen.image_url"
               :alt="gen.prompt"
               class="w-full h-full object-cover"
             />
@@ -623,7 +623,7 @@ onUnmounted(() => {
           <div class="space-y-4">
             <img
               v-if="selectedImage.image_url"
-              :src="`/api${selectedImage.image_url}`"
+              :src="selectedImage.image_url"
               :alt="selectedImage.prompt"
               class="w-full rounded-lg"
             />

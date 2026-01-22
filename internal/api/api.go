@@ -178,7 +178,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/flux/generate", s.requireAuth(s.handleFluxGenerate))
 	s.router.HandleFunc("GET /api/flux/jobs/{id}", s.requireAuth(s.handleFluxGetJob))
 	s.router.HandleFunc("GET /api/flux/generations", s.requireAuth(s.handleFluxListGenerations))
-	s.router.HandleFunc("GET /api/flux/image/{id}", s.requireAuth(s.handleFluxGetImage))
+	s.router.HandleFunc("GET /api/flux/image/{id}", s.handleFluxGetImage) // No auth - images use random IDs
 	s.router.HandleFunc("DELETE /api/flux/generations/{id}", s.requireAuth(s.handleFluxDeleteGeneration))
 
 	// Image tags (auth required)
