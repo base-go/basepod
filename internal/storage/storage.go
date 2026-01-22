@@ -104,6 +104,29 @@ func (s *Storage) migrate() error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_mlx_models_downloaded ON mlx_models(downloaded)`,
+		// Chat messages table - stores conversations per model
+		`CREATE TABLE IF NOT EXISTS chat_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			model_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_model ON chat_messages(model_id)`,
+		// FLUX generations table
+		`CREATE TABLE IF NOT EXISTS flux_generations (
+			id TEXT PRIMARY KEY,
+			prompt TEXT NOT NULL,
+			model TEXT NOT NULL,
+			width INTEGER NOT NULL,
+			height INTEGER NOT NULL,
+			steps INTEGER NOT NULL,
+			seed INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			image_path TEXT,
+			error TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, migration := range migrations {
@@ -433,4 +456,72 @@ func (s *Storage) GetAllImageTags() (map[string][]string, error) {
 		result[image] = tags
 	}
 	return result, nil
+}
+
+// ChatMessage represents a chat message
+type ChatMessage struct {
+	ID        int64     `json:"id"`
+	ModelID   string    `json:"model_id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SaveChatMessage saves a chat message
+func (s *Storage) SaveChatMessage(modelID, role, content string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO chat_messages (model_id, role, content, created_at)
+		VALUES (?, ?, ?, ?)
+	`, modelID, role, content, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to save chat message: %w", err)
+	}
+	return nil
+}
+
+// GetChatMessages retrieves chat messages for a model
+func (s *Storage) GetChatMessages(modelID string, limit int) ([]ChatMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, model_id, role, content, created_at
+		FROM chat_messages
+		WHERE model_id = ?
+		ORDER BY created_at ASC
+		LIMIT ?
+	`, modelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get chat messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []ChatMessage
+	for rows.Next() {
+		var msg ChatMessage
+		if err := rows.Scan(&msg.ID, &msg.ModelID, &msg.Role, &msg.Content, &msg.CreatedAt); err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+	return messages, nil
+}
+
+// ClearChatMessages deletes all chat messages for a model
+func (s *Storage) ClearChatMessages(modelID string) error {
+	_, err := s.db.Exec("DELETE FROM chat_messages WHERE model_id = ?", modelID)
+	if err != nil {
+		return fmt.Errorf("failed to clear chat messages: %w", err)
+	}
+	return nil
+}
+
+// ClearAllChatMessages deletes all chat messages
+func (s *Storage) ClearAllChatMessages() error {
+	_, err := s.db.Exec("DELETE FROM chat_messages")
+	if err != nil {
+		return fmt.Errorf("failed to clear all chat messages: %w", err)
+	}
+	return nil
 }

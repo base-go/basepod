@@ -162,6 +162,11 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.handleMLXTranscribe))
 	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
 
+	// Chat messages (auth required)
+	s.router.HandleFunc("GET /api/chat/messages/{modelId}", s.requireAuth(s.handleGetChatMessages))
+	s.router.HandleFunc("POST /api/chat/messages/{modelId}", s.requireAuth(s.handleSaveChatMessage))
+	s.router.HandleFunc("DELETE /api/chat/messages/{modelId}", s.requireAuth(s.handleClearChatMessages))
+
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
 
@@ -2606,4 +2611,79 @@ func (s *Server) stopMLXApp(a *app.App) error {
 // deleteMLXApp - DEPRECATED
 func (s *Server) deleteMLXApp(a *app.App) error {
 	return nil
+}
+
+// handleGetChatMessages returns chat messages for a model
+func (s *Server) handleGetChatMessages(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("modelId")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	// URL decode the model ID
+	modelID, _ = url.PathUnescape(modelID)
+
+	messages, err := s.storage.GetChatMessages(modelID, 100)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if messages == nil {
+		messages = []storage.ChatMessage{}
+	}
+	jsonResponse(w, http.StatusOK, messages)
+}
+
+// handleSaveChatMessage saves a chat message
+func (s *Server) handleSaveChatMessage(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("modelId")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	// URL decode the model ID
+	modelID, _ = url.PathUnescape(modelID)
+
+	var req struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Role == "" || req.Content == "" {
+		errorResponse(w, http.StatusBadRequest, "role and content required")
+		return
+	}
+
+	if err := s.storage.SaveChatMessage(modelID, req.Role, req.Content); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handleClearChatMessages clears chat messages for a model
+func (s *Server) handleClearChatMessages(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("modelId")
+	if modelID == "" {
+		errorResponse(w, http.StatusBadRequest, "model ID required")
+		return
+	}
+
+	// URL decode the model ID
+	modelID, _ = url.PathUnescape(modelID)
+
+	if err := s.storage.ClearChatMessages(modelID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
 }

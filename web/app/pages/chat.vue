@@ -48,7 +48,47 @@ const { data: mlxData, refresh: refreshStatus } = await useApiFetch<MLXData>('/m
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const loading = ref(false)
+const loadingStatus = ref('') // Status message during loading
+const loadingDuration = ref(0) // Seconds elapsed
 const messagesContainer = ref<HTMLElement>()
+let loadingTimer: ReturnType<typeof setInterval> | null = null
+
+// Load chat history from database when model changes
+watch(() => mlxData.value?.active_model, async (newModel) => {
+  if (!newModel) return
+  await loadChatHistory(newModel)
+}, { immediate: true })
+
+async function loadChatHistory(modelId: string) {
+  try {
+    const data = await $api<{ id: number; role: string; content: string }[]>(
+      `/chat/messages/${encodeURIComponent(modelId)}`
+    )
+    if (data && Array.isArray(data)) {
+      messages.value = data.map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content
+      }))
+      scrollToBottom()
+    }
+  } catch (error) {
+    // Ignore load errors, start fresh
+    messages.value = []
+  }
+}
+
+// Save message to database
+async function saveMessageToDb(role: string, content: string) {
+  if (!mlxData.value?.active_model) return
+  try {
+    await $api(`/chat/messages/${encodeURIComponent(mlxData.value.active_model)}`, {
+      method: 'POST',
+      body: { role, content }
+    })
+  } catch {
+    // Ignore save errors
+  }
+}
 
 // Model selector state
 const showModelSelector = ref(false)
@@ -251,17 +291,59 @@ async function transcribeAudio() {
   }
 }
 
+// Start loading timer
+function startLoadingTimer(hasImages: boolean) {
+  loadingDuration.value = 0
+  loadingStatus.value = hasImages ? 'Processing image...' : 'Thinking...'
+
+  loadingTimer = setInterval(() => {
+    loadingDuration.value++
+
+    // Update status message based on duration
+    if (hasImages) {
+      if (loadingDuration.value < 5) {
+        loadingStatus.value = 'Processing image...'
+      } else if (loadingDuration.value < 15) {
+        loadingStatus.value = 'Analyzing image content...'
+      } else if (loadingDuration.value < 30) {
+        loadingStatus.value = 'Generating response...'
+      } else {
+        loadingStatus.value = `Still processing... (${loadingDuration.value}s)`
+      }
+    } else {
+      if (loadingDuration.value < 3) {
+        loadingStatus.value = 'Thinking...'
+      } else if (loadingDuration.value < 10) {
+        loadingStatus.value = 'Generating response...'
+      } else {
+        loadingStatus.value = `Still working... (${loadingDuration.value}s)`
+      }
+    }
+  }, 1000)
+}
+
+// Stop loading timer
+function stopLoadingTimer() {
+  if (loadingTimer) {
+    clearInterval(loadingTimer)
+    loadingTimer = null
+  }
+  loadingStatus.value = ''
+  loadingDuration.value = 0
+}
+
 // Send message
 async function sendMessage() {
   if (!input.value.trim() && !uploadedImages.value.length) return
   if (loading.value || !mlxData.value?.running) return
 
   const userMessage = input.value.trim()
+  const hasImages = uploadedImages.value.length > 0 && isVisionModel.value
 
   // Build message content
   let messageContent: string | MessageContent[]
 
-  if (uploadedImages.value.length > 0 && isVisionModel.value) {
+  if (hasImages) {
     messageContent = [
       ...uploadedImages.value.map(img => ({
         type: 'image_url' as const,
@@ -273,13 +355,25 @@ async function sendMessage() {
     messageContent = userMessage
   }
 
+  // Get text content for saving to DB (don't save base64 images)
+  const textContent = hasImages
+    ? userMessage || '[image message]'
+    : userMessage
+
   messages.value.push({ role: 'user', content: messageContent })
   input.value = ''
   uploadedImages.value = []
   loading.value = true
+  startLoadingTimer(hasImages)
   scrollToBottom()
 
+  // Save user message to database
+  await saveMessageToDb('user', textContent)
+
   try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 120000) // 2 minute timeout
+
     const response = await fetch(mlxData.value.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -287,31 +381,63 @@ async function sendMessage() {
         model: mlxData.value.active_model,
         messages: messages.value.map(m => ({ role: m.role, content: m.content })),
         max_tokens: 2048
-      })
+      }),
+      signal: controller.signal
     })
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.error?.message || `HTTP ${response.status}`)
+    }
 
     const data = await response.json()
     const assistantMessage = data.choices?.[0]?.message?.content || 'No response'
     messages.value.push({ role: 'assistant', content: assistantMessage })
+
+    // Save assistant message to database
+    await saveMessageToDb('assistant', assistantMessage)
+
     scrollToBottom()
   } catch (error) {
+    let errorMsg = 'Failed to get response'
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        errorMsg = 'Request timed out. The model may be overloaded or the image is too complex.'
+      } else {
+        errorMsg = error.message
+      }
+    }
     toast.add({
       title: 'Error',
-      description: error instanceof Error ? error.message : 'Failed to get response',
+      description: errorMsg,
       color: 'error'
     })
+    // Remove the last user message on error so they can retry
+    messages.value.pop()
   } finally {
     loading.value = false
+    stopLoadingTimer()
   }
 }
 
 // Clear chat
-function clearChat() {
+async function clearChat() {
   messages.value = []
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
   uploadedImages.value = []
+
+  // Clear from database
+  if (mlxData.value?.active_model) {
+    try {
+      await $api(`/chat/messages/${encodeURIComponent(mlxData.value.active_model)}`, {
+        method: 'DELETE'
+      })
+    } catch {
+      // Ignore errors
+    }
+  }
 }
 
 // Get text from message content
@@ -337,6 +463,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
+  if (loadingTimer) clearInterval(loadingTimer)
   document.removeEventListener('paste', handlePaste)
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
 })
@@ -468,13 +595,16 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Loading indicator -->
+        <!-- Loading indicator with status -->
         <div v-if="loading" class="flex justify-start">
           <div class="bg-gray-100 dark:bg-gray-800 px-4 py-3 rounded-2xl rounded-bl-md">
-            <div class="flex items-center gap-1">
-              <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0ms" />
-              <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 150ms" />
-              <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 300ms" />
+            <div class="flex items-center gap-2">
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style="animation-delay: 0ms" />
+                <span class="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style="animation-delay: 150ms" />
+                <span class="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style="animation-delay: 300ms" />
+              </div>
+              <span class="text-sm text-gray-500">{{ loadingStatus }}</span>
             </div>
           </div>
         </div>
