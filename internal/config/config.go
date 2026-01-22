@@ -90,13 +90,22 @@ type Paths struct {
 	Tmp    string // ~/.basepod/tmp
 }
 
-// GetBaseDir returns the base directory for basepod (~/.basepod)
+// GetBaseDir returns the base directory for basepod
+// Priority: BASEPOD_HOME env var > ~/.basepod
+// Server installs set BASEPOD_HOME=/usr/local/basepod
+// Local/dev installs use ~/.basepod (hidden in home dir)
 func GetBaseDir() (string, error) {
+	// Check for explicit base directory via environment variable
+	if baseDir := os.Getenv("BASEPOD_HOME"); baseDir != "" {
+		return baseDir, nil
+	}
+
+	// Default to ~/.basepod
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
-	return filepath.Join(home, "basepod"), nil
+	return filepath.Join(home, ".basepod"), nil
 }
 
 // GetPaths returns all paths used by basepod
