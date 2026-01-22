@@ -118,18 +118,51 @@ onMounted(() => {
     settings.value.domain = configData.value.domain.root || ''
     settings.value.enableWildcard = configData.value.domain.wildcard ?? true
   }
+  // Load AI settings from config
+  if (configData.value?.ai) {
+    settings.value.hfToken = configData.value.ai.huggingface_token || ''
+  }
 })
 
 const settings = ref({
   domain: '',
   email: '',
-  enableWildcard: true
+  enableWildcard: true,
+  hfToken: ''
 })
 
 // Domain settings
 const savingDomain = ref(false)
 const domainSuccess = ref(false)
 const domainError = ref('')
+
+// AI settings
+const savingAI = ref(false)
+const aiSuccess = ref(false)
+const aiError = ref('')
+
+const saveAISettings = async () => {
+  savingAI.value = true
+  aiError.value = ''
+  aiSuccess.value = false
+  try {
+    await $api('/system/config', {
+      method: 'PUT',
+      body: {
+        ai: {
+          huggingface_token: settings.value.hfToken
+        }
+      }
+    })
+    aiSuccess.value = true
+    toast.add({ title: 'AI settings saved', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    aiError.value = err.data?.error || 'Failed to save AI settings'
+  } finally {
+    savingAI.value = false
+  }
+}
 
 const saveDomainSettings = async () => {
   savingDomain.value = true
@@ -348,6 +381,48 @@ const pruneResources = async () => {
 
           <UButton type="submit" :loading="savingDomain">
             Save Domain Settings
+          </UButton>
+        </form>
+      </UCard>
+
+      <!-- AI Settings -->
+      <UCard>
+        <template #header>
+          <h3 class="font-semibold">AI Settings</h3>
+        </template>
+
+        <form class="space-y-4" @submit.prevent="saveAISettings">
+          <UFormField label="HuggingFace Token" help="Required for downloading gated FLUX models. Get your token from huggingface.co/settings/tokens">
+            <UInput
+              v-model="settings.hfToken"
+              type="password"
+              placeholder="hf_xxxxxxxxxxxx"
+            />
+          </UFormField>
+
+          <UAlert
+            color="info"
+            variant="soft"
+            title="Some FLUX models require license acceptance"
+            description="Visit the model page on HuggingFace and accept the license before downloading."
+          />
+
+          <UAlert
+            v-if="aiError"
+            color="error"
+            variant="soft"
+            :title="aiError"
+          />
+
+          <UAlert
+            v-if="aiSuccess"
+            color="success"
+            variant="soft"
+            title="AI settings saved successfully"
+          />
+
+          <UButton type="submit" :loading="savingAI">
+            Save AI Settings
           </UButton>
         </form>
       </UCard>

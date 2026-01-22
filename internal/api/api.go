@@ -1369,23 +1369,40 @@ func (s *Server) handleSystemProcesses(w http.ResponseWriter, r *http.Request) {
 
 // handleGetConfig returns domain configuration for frontend
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	// Mask the HF token for display (show first 6 chars if set)
+	maskedToken := ""
+	if s.config.AI.HuggingFaceToken != "" {
+		token := s.config.AI.HuggingFaceToken
+		if len(token) > 10 {
+			maskedToken = token[:6] + "****" + token[len(token)-4:]
+		} else {
+			maskedToken = "****"
+		}
+	}
+
 	cfg := map[string]interface{}{
 		"domain": map[string]interface{}{
 			"root":     s.config.Domain.Root,
 			"suffix":   s.config.Domain.Suffix,
 			"wildcard": s.config.Domain.Wildcard,
 		},
+		"ai": map[string]interface{}{
+			"huggingface_token": maskedToken,
+		},
 	}
 	jsonResponse(w, http.StatusOK, cfg)
 }
 
-// handleUpdateConfig updates domain configuration
+// handleUpdateConfig updates domain and AI configuration
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Domain struct {
 			Root     string `json:"root"`
 			Wildcard bool   `json:"wildcard"`
 		} `json:"domain"`
+		AI struct {
+			HuggingFaceToken string `json:"huggingface_token"`
+		} `json:"ai"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request body")
@@ -1395,6 +1412,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Update config
 	s.config.Domain.Root = req.Domain.Root
 	s.config.Domain.Wildcard = req.Domain.Wildcard
+
+	// Update AI config if provided
+	if req.AI.HuggingFaceToken != "" {
+		s.config.AI.HuggingFaceToken = req.AI.HuggingFaceToken
+	}
 
 	// Save to file
 	if err := s.config.Save(); err != nil {

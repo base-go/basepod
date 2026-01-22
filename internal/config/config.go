@@ -35,6 +35,14 @@ type Config struct {
 
 	// DNS settings
 	DNS DNSConfig `yaml:"dns"`
+
+	// AI settings (HuggingFace, etc.)
+	AI AIConfig `yaml:"ai"`
+}
+
+// AIConfig holds AI-related configuration
+type AIConfig struct {
+	HuggingFaceToken string `yaml:"huggingface_token"` // HuggingFace API token for gated models
 }
 
 // DNSConfig holds DNS server configuration

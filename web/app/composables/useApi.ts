@@ -79,8 +79,13 @@ export interface DomainConfig {
   wildcard: boolean
 }
 
+export interface AIConfig {
+  huggingface_token: string
+}
+
 export interface ConfigResponse {
   domain: DomainConfig
+  ai?: AIConfig
 }
 
 // Helper to generate app domain from config

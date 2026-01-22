@@ -195,16 +195,30 @@ func GetAvailableModels() []Model {
 		{
 			ID:          "schnell",
 			Name:        "FLUX.1 Schnell",
-			Description: "Fast generation, 4 steps, good quality",
+			Description: "Fast generation, 4 steps (requires HF token + license)",
 			Size:        "~15GB",
 			Steps:       4,
 		},
 		{
 			ID:          "dev",
 			Name:        "FLUX.1 Dev",
-			Description: "High quality, 20+ steps, best results",
+			Description: "High quality, 20+ steps (requires HF token + license)",
 			Size:        "~32GB",
 			Steps:       20,
+		},
+		{
+			ID:          "flux2-klein-4b",
+			Name:        "FLUX.2 Klein 4B",
+			Description: "Compact model, fast generation, 4 steps",
+			Size:        "~8GB",
+			Steps:       4,
+		},
+		{
+			ID:          "flux2-klein-9b",
+			Name:        "FLUX.2 Klein 9B",
+			Description: "Larger model, better quality, 4 steps",
+			Size:        "~18GB",
+			Steps:       4,
 		},
 	}
 }
@@ -363,11 +377,19 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 	dp.Progress = 10
 	dp.mu.Unlock()
 
+	// Load config to get HuggingFace token
+	cfg, _ := config.Load()
+
 	modelPath := filepath.Join(s.modelsDir, dp.ModelID)
 	mfluxSavePath := filepath.Join(venvPath, "bin", "mflux-save")
 
 	cmd = exec.CommandContext(ctx, mfluxSavePath, "--model", dp.ModelID, "--path", modelPath)
 	cmd.Env = os.Environ()
+
+	// Add HuggingFace token if configured
+	if cfg != nil && cfg.AI.HuggingFaceToken != "" {
+		cmd.Env = append(cmd.Env, "HF_TOKEN="+cfg.AI.HuggingFaceToken)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
