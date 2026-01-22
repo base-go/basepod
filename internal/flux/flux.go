@@ -703,12 +703,27 @@ func (s *Service) runGeneration(job *GenerationJob) {
 
 	s.mu.Lock()
 	job.Status = "generating"
-	job.Progress = 10
+	job.Progress = 5
 	s.mu.Unlock()
 	s.updateJobInDB(job)
 
 	venvPath := filepath.Join(s.baseDir, "venv")
 	outputPath := filepath.Join(s.outputDir, job.ID+".png")
+
+	// Ensure venv and mflux are installed
+	if err := s.ensureMfluxInstalled(job); err != nil {
+		s.mu.Lock()
+		job.Status = "failed"
+		job.Error = fmt.Sprintf("Failed to setup mflux: %v", err)
+		s.mu.Unlock()
+		s.updateJobInDB(job)
+		return
+	}
+
+	s.mu.Lock()
+	job.Progress = 10
+	s.mu.Unlock()
+	s.updateJobInDB(job)
 
 	// Determine the correct mflux command based on model type
 	// FLUX.2 models use mflux-generate-flux2, FLUX.1 models use mflux-generate
@@ -820,6 +835,61 @@ func (s *Service) updateJobInDB(job *GenerationJob) {
 		UPDATE flux_generations SET status = ?, progress = ?, image_path = ?, error = ?
 		WHERE id = ?
 	`, job.Status, job.Progress, job.ImagePath, job.Error, job.ID)
+}
+
+// ensureMfluxInstalled creates venv and installs mflux if not already present
+func (s *Service) ensureMfluxInstalled(job *GenerationJob) error {
+	venvPath := filepath.Join(s.baseDir, "venv")
+	mfluxGenPath := filepath.Join(venvPath, "bin", "mflux-generate")
+
+	// Check if mflux is already installed
+	if _, err := os.Stat(mfluxGenPath); err == nil {
+		return nil
+	}
+
+	// Find Python
+	pythonPath := "python3"
+	for _, p := range []string{"/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"} {
+		if _, err := os.Stat(p); err == nil {
+			pythonPath = p
+			break
+		}
+	}
+
+	// Create venv if needed
+	if _, err := os.Stat(venvPath); os.IsNotExist(err) {
+		s.mu.Lock()
+		job.Status = "generating"
+		job.Error = "Setting up Python environment..."
+		s.mu.Unlock()
+		s.updateJobInDB(job)
+
+		cmd := exec.Command(pythonPath, "-m", "venv", venvPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to create venv: %s", string(output))
+		}
+	}
+
+	// Install mflux
+	s.mu.Lock()
+	job.Status = "generating"
+	job.Error = "Installing mflux (this may take a few minutes)..."
+	s.mu.Unlock()
+	s.updateJobInDB(job)
+
+	pipPath := filepath.Join(venvPath, "bin", "pip")
+	cmd := exec.Command(pipPath, "install", "--upgrade", "mflux")
+	cmd.Env = os.Environ()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to install mflux: %s", string(output))
+	}
+
+	// Clear the error message
+	s.mu.Lock()
+	job.Error = ""
+	s.mu.Unlock()
+
+	return nil
 }
 
 // GetJob returns a generation job by ID
