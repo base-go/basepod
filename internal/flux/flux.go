@@ -784,17 +784,23 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	}
 
 	// Parse output for step progress
+	// mflux outputs progress like: " 50%|█████     | 1/2 [00:07<00:07,  7.80s/it]"
+	var lastOutput string
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Try to parse step progress (e.g., "Step 2/4")
-		if strings.Contains(line, "Step") || strings.Contains(line, "step") {
-			// Extract step numbers
+		lastOutput = line // Keep last line for error reporting
+
+		// Try to parse mflux progress format: "X%|...| current/total"
+		// Look for pattern like "| 1/4 [" or "| 2/4 ["
+		if idx := strings.Index(line, "| "); idx != -1 {
+			remainder := line[idx+2:]
 			var current, total int
-			if _, err := fmt.Sscanf(line, "Step %d/%d", &current, &total); err == nil {
+			if _, err := fmt.Sscanf(remainder, "%d/%d", &current, &total); err == nil && total > 0 {
 				s.mu.Lock()
 				job.Progress = 10 + int(float64(current)/float64(total)*80)
 				s.mu.Unlock()
+				s.updateJobInDB(job)
 			}
 		}
 	}
@@ -802,7 +808,11 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	if err := cmd.Wait(); err != nil {
 		s.mu.Lock()
 		job.Status = "failed"
-		job.Error = fmt.Sprintf("Generation failed: %v", err)
+		errMsg := fmt.Sprintf("Generation failed: %v", err)
+		if lastOutput != "" {
+			errMsg += " - " + lastOutput
+		}
+		job.Error = errMsg
 		s.mu.Unlock()
 		s.updateJobInDB(job)
 		return
