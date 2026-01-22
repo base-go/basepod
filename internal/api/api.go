@@ -665,10 +665,14 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Compute external host from domain config
-	if s.config != nil && s.config.Domain.Root != "" {
-		response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Root, a.Ports.HostPort)
-	} else {
-		response.ExternalHost = fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+	if s.config != nil && a.Ports.HostPort > 0 {
+		if s.config.Domain.Root != "" {
+			response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Root, a.Ports.HostPort)
+		} else if s.config.Domain.Base != "" {
+			response.ExternalHost = fmt.Sprintf("%s:%d", s.config.Domain.Base, a.Ports.HostPort)
+		} else {
+			response.ExternalHost = fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, response)
