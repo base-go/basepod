@@ -424,6 +424,7 @@ WorkingDirectory=$BASEPOD_DIR
 ExecStart=$BASEPOD_DIR/bin/basepod
 Restart=always
 RestartSec=5
+Environment=BASEPOD_HOME=$BASEPOD_DIR
 Environment=BASEPOD_CONFIG=$BASEPOD_DIR/config/basepod.yaml
 Environment=PODMAN_SOCKET=/run/podman/podman.sock
 
@@ -523,6 +524,8 @@ create_macos_services() {
     <dict>
         <key>HOME</key>
         <string>$USER_HOME</string>
+        <key>BASEPOD_HOME</key>
+        <string>$BASEPOD_DIR</string>
         <key>BASEPOD_CONFIG</key>
         <string>$BASEPOD_DIR/config/basepod.yaml</string>
         <key>PATH</key>
