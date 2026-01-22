@@ -732,10 +732,10 @@ func (s *Service) runGeneration(job *GenerationJob) {
 
 	isFlux2 := strings.HasPrefix(job.Model, "flux2-")
 	if isFlux2 {
-		// FLUX.2 models use mflux-generate-flux2 with --model <model-name>
+		// FLUX.2 models use mflux-generate-flux2 with --base-model <model-name>
 		mfluxGenPath = filepath.Join(venvPath, "bin", "mflux-generate-flux2")
 		args = []string{
-			"--model", job.Model,
+			"--base-model", job.Model,
 			"--prompt", job.Prompt,
 			"--width", strconv.Itoa(job.Width),
 			"--height", strconv.Itoa(job.Height),
