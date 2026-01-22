@@ -39,20 +39,18 @@ const checkVersion = async () => {
 const waitForServer = async (maxAttempts = 30, delayMs = 1000): Promise<boolean> => {
   // First, wait for server to go down (max 5 seconds)
   updateMessage.value = 'Waiting for server to restart...'
-  let serverWentDown = false
   for (let i = 0; i < 5; i++) {
     await new Promise(resolve => setTimeout(resolve, 1000))
     try {
       await fetch('/api/health', { method: 'GET' })
       // Server still up, keep waiting
     } catch {
-      serverWentDown = true
       break
     }
   }
 
   // Now wait for server to come back up
-  updateMessage.value = 'Server restarting, waiting for it to come back...'
+  updateMessage.value = 'Server restarting...'
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(resolve => setTimeout(resolve, delayMs))
     try {
@@ -63,7 +61,7 @@ const waitForServer = async (maxAttempts = 30, delayMs = 1000): Promise<boolean>
     } catch {
       // Server not ready yet, keep trying
     }
-    updateMessage.value = `Waiting for server... (${i + 1}/${maxAttempts})`
+    updateMessage.value = 'Waiting for server...'
   }
   return false
 }
@@ -110,26 +108,29 @@ const performUpdate = async () => {
   }
 }
 
+// Initialize settings from configData
+const settings = ref({
+  domain: configData.value?.domain?.root || '',
+  email: '',
+  enableWildcard: configData.value?.domain?.wildcard ?? true,
+  hfToken: configData.value?.ai?.huggingface_token || ''
+})
+
 // Check version on load
 onMounted(() => {
   checkVersion()
-  // Load domain settings from config
-  if (configData.value?.domain) {
-    settings.value.domain = configData.value.domain.root || ''
-    settings.value.enableWildcard = configData.value.domain.wildcard ?? true
-  }
-  // Load AI settings from config
-  if (configData.value?.ai) {
-    settings.value.hfToken = configData.value.ai.huggingface_token || ''
-  }
 })
 
-const settings = ref({
-  domain: '',
-  email: '',
-  enableWildcard: true,
-  hfToken: ''
-})
+// Watch for configData changes (handles SSR hydration)
+watch(configData, (newConfig) => {
+  if (newConfig?.domain) {
+    settings.value.domain = newConfig.domain.root || ''
+    settings.value.enableWildcard = newConfig.domain.wildcard ?? true
+  }
+  if (newConfig?.ai) {
+    settings.value.hfToken = newConfig.ai.huggingface_token || ''
+  }
+}, { immediate: true })
 
 // Domain settings
 const savingDomain = ref(false)

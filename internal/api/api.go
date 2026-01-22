@@ -1395,27 +1395,35 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateConfig updates domain and AI configuration
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Domain struct {
-			Root     string `json:"root"`
-			Wildcard bool   `json:"wildcard"`
-		} `json:"domain"`
-		AI struct {
-			HuggingFaceToken string `json:"huggingface_token"`
-		} `json:"ai"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Use map to detect which fields were actually provided
+	var rawReq map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&rawReq); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// Update config
-	s.config.Domain.Root = req.Domain.Root
-	s.config.Domain.Wildcard = req.Domain.Wildcard
+	// Update domain config only if domain field was provided
+	if domainRaw, ok := rawReq["domain"]; ok {
+		var domainReq struct {
+			Root     string `json:"root"`
+			Wildcard bool   `json:"wildcard"`
+		}
+		if err := json.Unmarshal(domainRaw, &domainReq); err == nil {
+			s.config.Domain.Root = domainReq.Root
+			s.config.Domain.Wildcard = domainReq.Wildcard
+		}
+	}
 
-	// Update AI config if provided
-	if req.AI.HuggingFaceToken != "" {
-		s.config.AI.HuggingFaceToken = req.AI.HuggingFaceToken
+	// Update AI config only if ai field was provided
+	if aiRaw, ok := rawReq["ai"]; ok {
+		var aiReq struct {
+			HuggingFaceToken string `json:"huggingface_token"`
+		}
+		if err := json.Unmarshal(aiRaw, &aiReq); err == nil {
+			if aiReq.HuggingFaceToken != "" {
+				s.config.AI.HuggingFaceToken = aiReq.HuggingFaceToken
+			}
+		}
 	}
 
 	// Save to file
