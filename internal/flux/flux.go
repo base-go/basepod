@@ -887,7 +887,15 @@ func (s *Service) runGeneration(job *GenerationJob) {
 	}
 
 	cmd := exec.Command(mfluxGenPath, args...)
-	cmd.Env = os.Environ()
+	// Ensure PATH includes standard macOS paths for system tools like system_profiler
+	env := os.Environ()
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = e + ":/usr/bin:/usr/sbin:/bin:/sbin"
+			break
+		}
+	}
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
