@@ -98,18 +98,16 @@ const showImageModal = ref(false)
 
 // Tabs
 const tabs = [
-  { label: 'Generate', value: 'generate', icon: 'i-heroicons-sparkles' },
-  { label: 'Edit', value: 'edit', icon: 'i-heroicons-pencil-square' },
+  { label: 'Create', value: 'generate', icon: 'i-heroicons-sparkles' },
   { label: 'Models', value: 'models', icon: 'i-heroicons-cpu-chip' },
   { label: 'Gallery', value: 'gallery', icon: 'i-heroicons-squares-2x2' }
 ]
 const activeTab = ref('generate')
 
-// Edit mode state
-const editPrompt = ref('')
-const editModel = ref('flux2-klein-9b')
+// Reference images (for image-to-image generation)
 const uploadedImages = ref<{ path: string, filename: string, preview: string }[]>([])
 const uploading = ref(false)
+const showReferenceImages = ref(false)
 
 // Size presets
 const sizePresets = [
@@ -165,7 +163,7 @@ const sortedModels = computed(() => {
   })
 })
 
-// Generate image
+// Generate image (handles both text-to-image and image-to-image)
 async function generate() {
   if (!prompt.value.trim()) {
     toast.add({ title: 'Please enter a prompt', color: 'warning' })
@@ -177,19 +175,48 @@ async function generate() {
     return
   }
 
+  // Check if we have reference images (image-to-image mode)
+  const hasReferenceImages = uploadedImages.value.length > 0
+
+  // For image-to-image, we need an edit-capable model
+  if (hasReferenceImages && !selectedModel.value.startsWith('flux2-klein')) {
+    toast.add({ title: 'Image-to-image requires FLUX.2 Klein model', color: 'warning' })
+    return
+  }
+
   try {
-    const job = await $api<FluxGeneration>('/flux/generate', {
-      method: 'POST',
-      body: {
-        prompt: prompt.value,
-        model: selectedModel.value,
-        width: dimensions.value.width,
-        height: dimensions.value.height,
-        steps: steps.value,
-        seed: seed.value,
-        session_id: currentSessionId.value || undefined,
-      }
-    })
+    let job: FluxGeneration
+
+    if (hasReferenceImages) {
+      // Image-to-image (edit) mode
+      job = await $api<FluxGeneration>('/flux/edit', {
+        method: 'POST',
+        body: {
+          prompt: prompt.value,
+          model: selectedModel.value,
+          width: dimensions.value.width,
+          height: dimensions.value.height,
+          steps: steps.value,
+          seed: seed.value,
+          image_paths: uploadedImages.value.map(img => img.path),
+          session_id: currentSessionId.value || undefined,
+        }
+      })
+    } else {
+      // Text-to-image mode
+      job = await $api<FluxGeneration>('/flux/generate', {
+        method: 'POST',
+        body: {
+          prompt: prompt.value,
+          model: selectedModel.value,
+          width: dimensions.value.width,
+          height: dimensions.value.height,
+          steps: steps.value,
+          seed: seed.value,
+          session_id: currentSessionId.value || undefined,
+        }
+      })
+    }
 
     currentJobId.value = job.id
     generating.value = true
@@ -204,7 +231,7 @@ async function generate() {
     // Clear prompt for follow-up
     prompt.value = ''
 
-    toast.add({ title: 'Generation queued', color: 'info' })
+    toast.add({ title: hasReferenceImages ? 'Edit job queued' : 'Generation queued', color: 'info' })
     await refreshStatus()
 
     // Poll for completion
@@ -254,64 +281,10 @@ function removeUploadedImage(index: number) {
   uploadedImages.value.splice(index, 1)
 }
 
-// Generate edited image
-async function generateEdit() {
-  if (!editPrompt.value.trim()) {
-    toast.add({ title: 'Please enter a prompt', color: 'warning' })
-    return
-  }
-
-  if (uploadedImages.value.length === 0) {
-    toast.add({ title: 'Please upload at least one reference image', color: 'warning' })
-    return
-  }
-
-  try {
-    const job = await $api<FluxGeneration>('/flux/edit', {
-      method: 'POST',
-      body: {
-        prompt: editPrompt.value,
-        model: editModel.value,
-        width: dimensions.value.width,
-        height: dimensions.value.height,
-        steps: steps.value,
-        seed: seed.value,
-        image_paths: uploadedImages.value.map(img => img.path),
-        session_id: currentSessionId.value || undefined,
-      }
-    })
-
-    currentJobId.value = job.id
-    generating.value = true
-
-    // If a new session was created, track it
-    if (job.session_id && !currentSessionId.value) {
-      currentSessionId.value = job.session_id
-      await loadSession(job.session_id)
-      await refreshSessions()
-    }
-
-    // Clear prompt for follow-up
-    editPrompt.value = ''
-
-    toast.add({ title: 'Edit job queued', color: 'info' })
-    await refreshStatus()
-
-    // Poll for completion
-    pollJobStatus(job.id)
-  } catch (e: unknown) {
-    const err = e as { data?: { error?: string } }
-    toast.add({ title: 'Failed to start edit', description: err.data?.error, color: 'error' })
-  }
-}
-
-// Edit model options (only FLUX.2 Klein supports editing)
-const editModelOptions = computed(() => {
-  return models.value?.filter(m => m.id.startsWith('flux2-klein') && m.downloaded)
-    .map(m => ({ label: m.name, value: m.id })) || []
+// Check if current model supports image-to-image
+const canUseReferenceImages = computed(() => {
+  return selectedModel.value?.startsWith('flux2-klein') || false
 })
-
-const hasEditModel = computed(() => editModelOptions.value.length > 0)
 
 // Poll job status
 async function pollJobStatus(jobId: string) {
@@ -783,7 +756,9 @@ const sortedSessions = computed(() => {
             <!-- Progress Bar (when generating) -->
             <div v-if="generating && status?.current_job" class="mb-4 p-3 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
               <div class="flex items-center justify-between mb-2">
-                <span class="text-sm font-medium text-primary-700 dark:text-primary-300">Generating...</span>
+                <span class="text-sm font-medium text-primary-700 dark:text-primary-300">
+                  {{ uploadedImages.length > 0 ? 'Processing edit...' : 'Generating...' }}
+                </span>
                 <span class="text-xs text-primary-600 dark:text-primary-400">
                   {{ Math.max(0, Math.min(100, status.current_job.progress ?? 0)) }}%
                 </span>
@@ -796,10 +771,73 @@ const sortedSessions = computed(() => {
               </div>
             </div>
 
+            <!-- Reference Images Section (collapsed by default) -->
+            <div v-if="canUseReferenceImages || uploadedImages.length > 0" class="mb-3">
+              <button
+                class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-primary-500 transition-colors"
+                @click="showReferenceImages = !showReferenceImages"
+              >
+                <UIcon :name="showReferenceImages ? 'i-heroicons-chevron-down' : 'i-heroicons-chevron-right'" class="w-4 h-4" />
+                <UIcon name="i-heroicons-photo" class="w-4 h-4" />
+                <span>Reference Images</span>
+                <UBadge v-if="uploadedImages.length" color="primary" variant="soft" size="xs">
+                  {{ uploadedImages.length }}
+                </UBadge>
+              </button>
+
+              <div v-if="showReferenceImages" class="mt-3 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                <p class="text-xs text-gray-500 mb-3">
+                  Add reference images to modify or combine them based on your prompt (image-to-image).
+                </p>
+
+                <!-- Uploaded Images Preview -->
+                <div v-if="uploadedImages.length" class="flex flex-wrap gap-2 mb-3">
+                  <div
+                    v-for="(img, index) in uploadedImages"
+                    :key="img.filename"
+                    class="relative group"
+                  >
+                    <img
+                      :src="img.preview"
+                      :alt="img.filename"
+                      class="w-16 h-16 object-cover rounded-lg"
+                    />
+                    <button
+                      class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs"
+                      @click="removeUploadedImage(index)"
+                    >
+                      <UIcon name="i-heroicons-x-mark" class="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Upload Button -->
+                <label class="inline-flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors text-sm">
+                  <UIcon name="i-heroicons-plus" class="w-4 h-4" />
+                  <span>{{ uploading ? 'Uploading...' : 'Add Image' }}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    class="hidden"
+                    :disabled="uploading"
+                    @change="uploadImage"
+                  />
+                </label>
+
+                <!-- Memory Warning for 16GB systems with reference images -->
+                <div v-if="status?.system_ram && status.system_ram <= 16 && uploadedImages.length > 0" class="mt-3 p-2 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-800">
+                  <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-xs">
+                    <UIcon name="i-heroicons-exclamation-triangle" class="w-4 h-4 flex-shrink-0" />
+                    <span>With {{ status.system_ram }}GB RAM, edit may fail on large images.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="flex gap-3">
               <UTextarea
                 v-model="prompt"
-                :placeholder="currentSession ? 'Describe your next image...' : 'Describe the image you want to create...'"
+                :placeholder="uploadedImages.length > 0 ? 'Describe what to do with these images...' : (currentSession ? 'Describe your next image...' : 'Describe the image you want to create...')"
                 :rows="2"
                 class="flex-1"
                 @keydown.enter.meta="generate"
@@ -812,7 +850,7 @@ const sortedSessions = computed(() => {
                   :disabled="!prompt.trim() || generating"
                   @click="generate"
                 >
-                  <UIcon name="i-heroicons-sparkles" />
+                  <UIcon :name="uploadedImages.length > 0 ? 'i-heroicons-pencil-square' : 'i-heroicons-sparkles'" />
                 </UButton>
                 <UPopover>
                   <UButton variant="ghost" size="sm">
@@ -851,169 +889,10 @@ const sortedSessions = computed(() => {
             </div>
             <p class="text-xs text-gray-400 mt-2">
               {{ downloadedModels.find(m => m.id === selectedModel)?.name || 'No model' }} · {{ selectedSize }} · {{ steps }} steps
-              <span class="ml-2">Press ⌘+Enter to generate</span>
-            </p>
-          </div>
-        </template>
-      </div>
-
-      <!-- Edit Tab -->
-      <div v-if="activeTab === 'edit'" class="flex-1 flex flex-col overflow-hidden">
-        <div v-if="!hasEditModel" class="flex-1 flex items-center justify-center">
-          <div class="text-center py-12">
-            <UIcon name="i-heroicons-pencil-square" class="text-5xl text-gray-400 mb-4" />
-            <h3 class="text-lg font-medium mb-2">No Edit Models Downloaded</h3>
-            <p class="text-gray-500 mb-4">Download a FLUX.2 Klein model to use image editing features.</p>
-            <UButton @click="activeTab = 'models'">
-              <UIcon name="i-heroicons-arrow-down-tray" class="mr-2" />
-              Download Models
-            </UButton>
-          </div>
-        </div>
-
-        <template v-else>
-          <!-- Edit Conversation View -->
-          <div class="flex-1 overflow-y-auto p-4">
-            <!-- Reference Images Section -->
-            <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-              <h3 class="font-medium mb-3 flex items-center gap-2">
-                <UIcon name="i-heroicons-photo" class="w-5 h-5" />
-                Reference Images
-              </h3>
-              <p class="text-sm text-gray-500 mb-4">
-                Upload one or more reference images. The AI will combine or modify them based on your prompt.
-              </p>
-
-              <!-- Uploaded Images Preview -->
-              <div v-if="uploadedImages.length" class="flex flex-wrap gap-3 mb-4">
-                <div
-                  v-for="(img, index) in uploadedImages"
-                  :key="img.filename"
-                  class="relative group"
-                >
-                  <img
-                    :src="img.preview"
-                    :alt="img.filename"
-                    class="w-24 h-24 object-cover rounded-lg"
-                  />
-                  <button
-                    class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
-                    @click="removeUploadedImage(index)"
-                  >
-                    <UIcon name="i-heroicons-x-mark" class="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <!-- Upload Button -->
-              <label class="inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors">
-                <UIcon name="i-heroicons-plus" class="w-5 h-5" />
-                <span>{{ uploading ? 'Uploading...' : 'Add Image' }}</span>
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  class="hidden"
-                  :disabled="uploading"
-                  @change="uploadImage"
-                />
-              </label>
-            </div>
-
-            <!-- Memory Warning for 16GB systems -->
-            <div v-if="status?.system_ram && status.system_ram <= 16" class="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
-              <div class="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm">
-                <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 flex-shrink-0" />
-                <span>With {{ status.system_ram }}GB RAM, edit may fail on large images.</span>
-              </div>
-            </div>
-
-            <!-- Session conversation for edits -->
-            <div v-if="currentSession && currentSession.mode === 'edit' && currentSession.jobs?.length" class="space-y-6">
-              <div
-                v-for="job in currentSession.jobs"
-                :key="job.id"
-                class="flex flex-col gap-3"
-              >
-                <!-- Prompt -->
-                <div class="flex justify-end">
-                  <div class="max-w-[80%] p-3 bg-purple-100 dark:bg-purple-900/30 rounded-lg rounded-br-none">
-                    <p class="text-sm">{{ job.prompt }}</p>
-                  </div>
-                </div>
-
-                <!-- Result -->
-                <div class="flex justify-start">
-                  <div class="max-w-[80%]">
-                    <div
-                      v-if="job.status === 'completed' && job.image_url"
-                      class="bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all"
-                      @click="viewImage(job)"
-                    >
-                      <img
-                        :src="job.image_url"
-                        :alt="job.prompt"
-                        class="max-w-sm max-h-96 object-contain"
-                      />
-                    </div>
-                    <div
-                      v-else-if="job.status === 'generating'"
-                      class="p-4 bg-gray-100 dark:bg-gray-800 rounded-lg rounded-bl-none"
-                    >
-                      <div class="flex items-center gap-3">
-                        <UIcon name="i-heroicons-arrow-path" class="w-5 h-5 animate-spin text-purple-500" />
-                        <span class="text-sm">Processing edit...</span>
-                      </div>
-                    </div>
-                    <div
-                      v-else-if="job.status === 'failed'"
-                      class="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg rounded-bl-none"
-                    >
-                      <p class="text-sm text-red-600">{{ job.error || 'Edit failed' }}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Edit Input Area -->
-          <div class="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-900">
-            <!-- Progress Bar -->
-            <div v-if="generating && status?.current_job" class="mb-4 p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
-              <div class="flex items-center justify-between mb-2">
-                <span class="text-sm font-medium text-purple-700 dark:text-purple-300">Processing edit...</span>
-                <span class="text-xs text-purple-600 dark:text-purple-400">
-                  {{ Math.max(0, Math.min(100, status.current_job.progress ?? 0)) }}%
-                </span>
-              </div>
-              <div class="h-2 bg-purple-200 dark:bg-purple-800 rounded-full overflow-hidden">
-                <div
-                  class="h-full bg-purple-500 transition-all duration-300"
-                  :style="{ width: Math.max(0, Math.min(100, status.current_job.progress ?? 0)) + '%' }"
-                />
-              </div>
-            </div>
-
-            <div class="flex gap-3">
-              <UTextarea
-                v-model="editPrompt"
-                placeholder="Describe what you want to do with the images..."
-                :rows="2"
-                class="flex-1"
-                @keydown.enter.meta="generateEdit"
-                @keydown.enter.ctrl="generateEdit"
-              />
-              <UButton
-                color="purple"
-                :loading="generating"
-                :disabled="!editPrompt.trim() || uploadedImages.length === 0 || generating"
-                @click="generateEdit"
-              >
-                <UIcon name="i-heroicons-pencil-square" />
-              </UButton>
-            </div>
-            <p class="text-xs text-gray-400 mt-2">
-              {{ uploadedImages.length }} reference image(s) · Press ⌘+Enter to edit
+              <template v-if="uploadedImages.length > 0">
+                · {{ uploadedImages.length }} reference image(s)
+              </template>
+              <span class="ml-2">Press ⌘+Enter to {{ uploadedImages.length > 0 ? 'edit' : 'generate' }}</span>
             </p>
           </div>
         </template>

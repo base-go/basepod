@@ -1388,6 +1388,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Video enabled setting (default to false if nil)
+	videoEnabled := false
+	if s.config.AI.VideoEnabled != nil {
+		videoEnabled = *s.config.AI.VideoEnabled
+	}
+
 	cfg := map[string]interface{}{
 		"domain": map[string]interface{}{
 			"root":     s.config.Domain.Root,
@@ -1396,6 +1402,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"ai": map[string]interface{}{
 			"huggingface_token": maskedToken,
+			"video_enabled":     videoEnabled,
 		},
 	}
 	jsonResponse(w, http.StatusOK, cfg)
@@ -1426,10 +1433,14 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if aiRaw, ok := rawReq["ai"]; ok {
 		var aiReq struct {
 			HuggingFaceToken string `json:"huggingface_token"`
+			VideoEnabled     *bool  `json:"video_enabled"`
 		}
 		if err := json.Unmarshal(aiRaw, &aiReq); err == nil {
 			if aiReq.HuggingFaceToken != "" {
 				s.config.AI.HuggingFaceToken = aiReq.HuggingFaceToken
+			}
+			if aiReq.VideoEnabled != nil {
+				s.config.AI.VideoEnabled = aiReq.VideoEnabled
 			}
 		}
 	}

@@ -108,13 +108,20 @@ const performUpdate = async () => {
   }
 }
 
+// Fetch flux status for RAM info
+const { data: fluxStatus } = await useApiFetch<{ system_ram: number }>('/flux/status')
+
 // Initialize settings from configData
 const settings = ref({
   domain: configData.value?.domain?.root || '',
   email: '',
   enableWildcard: configData.value?.domain?.wildcard ?? true,
-  hfToken: configData.value?.ai?.huggingface_token || ''
+  hfToken: configData.value?.ai?.huggingface_token || '',
+  videoEnabled: configData.value?.ai?.video_enabled ?? false
 })
+
+// Check if video is available (32GB+ RAM)
+const videoAvailable = computed(() => (fluxStatus.value?.system_ram ?? 0) >= 32)
 
 // Check version on load
 onMounted(() => {
@@ -129,6 +136,7 @@ watch(configData, (newConfig) => {
   }
   if (newConfig?.ai) {
     settings.value.hfToken = newConfig.ai.huggingface_token || ''
+    settings.value.videoEnabled = newConfig.ai.video_enabled ?? false
   }
 }, { immediate: true })
 
@@ -151,7 +159,8 @@ const saveAISettings = async () => {
       method: 'PUT',
       body: {
         ai: {
-          huggingface_token: settings.value.hfToken
+          huggingface_token: settings.value.hfToken,
+          video_enabled: settings.value.videoEnabled
         }
       }
     })
@@ -400,6 +409,35 @@ const pruneResources = async () => {
               placeholder="hf_xxxxxxxxxxxx"
             />
           </UFormField>
+
+          <!-- Video Generation Toggle -->
+          <div class="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="font-medium">Video Generation</p>
+                <p class="text-sm text-gray-500">
+                  <template v-if="videoAvailable">
+                    Enable AI video generation with Wan2.1
+                  </template>
+                  <template v-else>
+                    Requires 32GB+ RAM (you have {{ fluxStatus?.system_ram || 0 }}GB)
+                  </template>
+                </p>
+              </div>
+              <UToggle
+                v-model="settings.videoEnabled"
+                :disabled="!videoAvailable"
+              />
+            </div>
+            <UAlert
+              v-if="!videoAvailable"
+              color="warning"
+              variant="soft"
+              class="mt-3"
+              title="Insufficient RAM"
+              description="Video generation requires at least 32GB of RAM for stable performance."
+            />
+          </div>
 
           <UAlert
             color="info"

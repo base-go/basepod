@@ -43,6 +43,7 @@ type Config struct {
 // AIConfig holds AI-related configuration
 type AIConfig struct {
 	HuggingFaceToken string `yaml:"huggingface_token"` // HuggingFace API token for gated models
+	VideoEnabled     *bool  `yaml:"video_enabled"`     // Enable video generation (requires 32GB+ RAM, nil = auto)
 }
 
 // DNSConfig holds DNS server configuration
