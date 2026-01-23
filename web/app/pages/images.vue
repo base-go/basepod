@@ -724,7 +724,7 @@ const sortedSessions = computed(() => {
                         <div class="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-full mt-2 overflow-hidden">
                           <div
                             class="h-full bg-primary-500 transition-all duration-300"
-                            :style="{ width: `${job.progress || 0}%` }"
+                            :style="{ width: Math.max(0, Math.min(100, job.progress ?? 0)) + '%' }"
                           />
                         </div>
                       </div>
@@ -785,13 +785,13 @@ const sortedSessions = computed(() => {
               <div class="flex items-center justify-between mb-2">
                 <span class="text-sm font-medium text-primary-700 dark:text-primary-300">Generating...</span>
                 <span class="text-xs text-primary-600 dark:text-primary-400">
-                  {{ status.current_job.progress || 0 }}%
+                  {{ Math.max(0, Math.min(100, status.current_job.progress ?? 0)) }}%
                 </span>
               </div>
               <div class="h-2 bg-primary-200 dark:bg-primary-800 rounded-full overflow-hidden">
                 <div
                   class="h-full bg-primary-500 transition-all duration-300"
-                  :style="{ width: `${status.current_job.progress || 0}%` }"
+                  :style="{ width: Math.max(0, Math.min(100, status.current_job.progress ?? 0)) + '%' }"
                 />
               </div>
             </div>
@@ -983,13 +983,13 @@ const sortedSessions = computed(() => {
               <div class="flex items-center justify-between mb-2">
                 <span class="text-sm font-medium text-purple-700 dark:text-purple-300">Processing edit...</span>
                 <span class="text-xs text-purple-600 dark:text-purple-400">
-                  {{ status.current_job.progress || 0 }}%
+                  {{ Math.max(0, Math.min(100, status.current_job.progress ?? 0)) }}%
                 </span>
               </div>
               <div class="h-2 bg-purple-200 dark:bg-purple-800 rounded-full overflow-hidden">
                 <div
                   class="h-full bg-purple-500 transition-all duration-300"
-                  :style="{ width: `${status.current_job.progress || 0}%` }"
+                  :style="{ width: Math.max(0, Math.min(100, status.current_job.progress ?? 0)) + '%' }"
                 />
               </div>
             </div>

@@ -186,6 +186,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/flux/sessions", s.requireAuth(s.handleFluxListSessions))
 	s.router.HandleFunc("GET /api/flux/sessions/{id}", s.requireAuth(s.handleFluxGetSession))
 	s.router.HandleFunc("DELETE /api/flux/sessions/{id}", s.requireAuth(s.handleFluxDeleteSession))
+	s.router.HandleFunc("GET /api/flux/storage", s.requireAuth(s.handleFluxStorage))
+	s.router.HandleFunc("GET /api/flux/storage/{type}", s.requireAuth(s.handleFluxStorageFiles))
 
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
@@ -3210,4 +3212,24 @@ func (s *Server) handleFluxDeleteSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handleFluxStorage returns storage usage information
+func (s *Server) handleFluxStorage(w http.ResponseWriter, r *http.Request) {
+	svc := flux.GetService(s.storage.DB())
+	info := svc.GetStorageInfo()
+	jsonResponse(w, http.StatusOK, info)
+}
+
+// handleFluxStorageFiles returns detailed file list for a storage type
+func (s *Server) handleFluxStorageFiles(w http.ResponseWriter, r *http.Request) {
+	storageType := r.PathValue("type")
+	if storageType == "" {
+		errorResponse(w, http.StatusBadRequest, "storage type required")
+		return
+	}
+
+	svc := flux.GetService(s.storage.DB())
+	files := svc.GetStorageFiles(storageType)
+	jsonResponse(w, http.StatusOK, files)
 }

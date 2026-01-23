@@ -86,6 +86,36 @@ type Status struct {
 	SystemRAM    int            `json:"system_ram"` // System RAM in GB
 }
 
+// StorageInfo represents disk usage information
+type StorageInfo struct {
+	Models       StorageItem   `json:"models"`
+	Generations  StorageItem   `json:"generations"`
+	Uploads      StorageItem   `json:"uploads"`
+	Venv         StorageItem   `json:"venv"`
+	Total        int64         `json:"total"`        // Total bytes
+	TotalFormatted string      `json:"total_formatted"`
+	Items        []StorageFile `json:"items,omitempty"` // Individual files for detail view
+}
+
+// StorageItem represents a storage category
+type StorageItem struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`    // Size in bytes
+	Formatted string `json:"formatted"` // Human readable size
+	Count   int    `json:"count"`   // Number of items
+}
+
+// StorageFile represents a single file in storage
+type StorageFile struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Formatted string `json:"formatted"`
+	Type      string `json:"type"` // model, generation, upload
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
 // DownloadProgress tracks model download progress
 type DownloadProgress struct {
 	ModelID    string  `json:"model_id"`
@@ -229,6 +259,137 @@ func (s *Service) GetStatus() Status {
 		ProcessingID: processingID,
 		SystemRAM:    getSystemRAM(),
 	}
+}
+
+// GetStorageInfo returns storage usage information
+func (s *Service) GetStorageInfo() StorageInfo {
+	info := StorageInfo{}
+
+	// Models
+	info.Models = s.getDirStorage(s.modelsDir, "model")
+
+	// Generations (outputs)
+	info.Generations = s.getDirStorage(s.outputDir, "generation")
+
+	// Uploads
+	uploadsDir := filepath.Join(s.baseDir, "uploads")
+	info.Uploads = s.getDirStorage(uploadsDir, "upload")
+
+	// Venv
+	venvDir := filepath.Join(s.baseDir, "venv")
+	info.Venv = s.getDirStorage(venvDir, "venv")
+
+	// Total
+	info.Total = info.Models.Size + info.Generations.Size + info.Uploads.Size + info.Venv.Size
+	info.TotalFormatted = formatBytes(info.Total)
+
+	return info
+}
+
+// getDirStorage calculates storage for a directory
+func (s *Service) getDirStorage(dir string, itemType string) StorageItem {
+	item := StorageItem{Path: dir}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return item
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			// For directories (like models), calculate recursively
+			if entry.IsDir() {
+				size := getDirSize(filepath.Join(dir, entry.Name()))
+				item.Size += size
+				item.Count++
+			}
+		} else {
+			info, err := entry.Info()
+			if err == nil {
+				item.Size += info.Size()
+				item.Count++
+			}
+		}
+	}
+
+	item.Formatted = formatBytes(item.Size)
+	return item
+}
+
+// getDirSize calculates total size of a directory recursively
+func getDirSize(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
+
+// formatBytes converts bytes to human readable format
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// GetStorageFiles returns detailed file list for a storage type
+func (s *Service) GetStorageFiles(storageType string) []StorageFile {
+	var files []StorageFile
+	var dir string
+
+	switch storageType {
+	case "models":
+		dir = s.modelsDir
+	case "generations":
+		dir = s.outputDir
+	case "uploads":
+		dir = filepath.Join(s.baseDir, "uploads")
+	default:
+		return files
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		var size int64
+		var createdAt string
+
+		if entry.IsDir() {
+			size = getDirSize(path)
+		} else {
+			info, err := entry.Info()
+			if err == nil {
+				size = info.Size()
+				createdAt = info.ModTime().Format("2006-01-02 15:04:05")
+			}
+		}
+
+		files = append(files, StorageFile{
+			ID:        entry.Name(),
+			Name:      entry.Name(),
+			Path:      path,
+			Size:      size,
+			Formatted: formatBytes(size),
+			Type:      storageType,
+			CreatedAt: createdAt,
+		})
+	}
+
+	return files
 }
 
 // GetAvailableModels returns the list of available FLUX models
