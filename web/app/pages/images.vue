@@ -1131,9 +1131,9 @@ const sortedSessions = computed(() => {
     </div>
 
     <!-- Image Detail Modal -->
-    <UModal v-model:open="showImageModal">
+    <UModal v-model:open="showImageModal" :overlay="true">
       <template v-if="selectedImage" #content>
-        <div class="p-6">
+        <div class="p-6 max-h-[85vh] overflow-y-auto">
           <div class="flex items-start justify-between mb-4">
             <h3 class="text-lg font-semibold">Image Details</h3>
             <UButton variant="ghost" size="sm" icon="i-heroicons-x-mark" @click="showImageModal = false" />
@@ -1144,7 +1144,7 @@ const sortedSessions = computed(() => {
               v-if="selectedImage.image_url"
               :src="selectedImage.image_url"
               :alt="selectedImage.prompt"
-              class="w-full rounded-lg"
+              class="w-full max-h-[50vh] object-contain rounded-lg"
             />
 
             <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
