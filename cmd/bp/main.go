@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.40"
+	version = "1.0.41"
 )
 
 // ServerConfig holds configuration for a single server
@@ -64,6 +64,8 @@ func main() {
 	// Project commands
 	case "init":
 		cmdInit(args)
+	case "run":
+		cmdRun(args)
 	case "deploy":
 		cmdDeploy(args)
 	case "push":
@@ -128,6 +130,7 @@ Connection Commands:
 
 Project Commands:
   init                    Initialize basepod.yaml config
+  run [path]              Run app locally with Podman
   deploy [path]           Deploy app (local, image, or git)
 
 App Commands:
@@ -166,6 +169,9 @@ Options:
 Examples:
   bp login bp.example.com
   bp init
+  bp run                           # Run app locally with Podman
+  bp run -d                        # Run in background (detached)
+  bp run -p 8080                   # Run on custom port
   bp deploy                        # Deploy from local source
   bp deploy --image nginx:latest   # Deploy Docker image
   bp template deploy postgres
@@ -967,6 +973,285 @@ func createTarball(dir string) (*bytes.Buffer, error) {
 	}
 
 	return &buf, nil
+}
+
+// cmdRun runs the app locally using Podman
+func cmdRun(args []string) {
+	var dir string
+	var port int
+	var detach bool
+
+	// Parse flags
+	positionalArgs := []string{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--port", "-p":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &port)
+				i++
+			}
+		case "--detach", "-d":
+			detach = true
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				positionalArgs = append(positionalArgs, args[i])
+			}
+		}
+	}
+
+	if len(positionalArgs) > 0 {
+		dir = positionalArgs[0]
+	} else {
+		dir = "."
+	}
+
+	// Load app config
+	appCfg, err := loadAppConfig(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "No basepod.yaml found. Run 'bp init' first.")
+		} else {
+			fmt.Fprintf(os.Stderr, "Failed to load basepod.yaml: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if appCfg.Name == "" {
+		fmt.Fprintln(os.Stderr, "App name is required in basepod.yaml")
+		os.Exit(1)
+	}
+
+	// Determine port
+	if port == 0 {
+		port = appCfg.Port
+	}
+	if port == 0 {
+		port = 3000 // Default port
+	}
+
+	// Run local build command if specified
+	if appCfg.Build.Command != "" {
+		fmt.Printf("Running build command: %s\n", appCfg.Build.Command)
+		if err := runBuildCommand(dir, appCfg.Build.Command); err != nil {
+			fmt.Fprintf(os.Stderr, "Build failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Build completed successfully!")
+	}
+
+	// Check if podman is available
+	if _, err := exec.LookPath("podman"); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: podman is not installed or not in PATH")
+		fmt.Fprintln(os.Stderr, "Install podman: https://podman.io/getting-started/installation")
+		os.Exit(1)
+	}
+
+	// Stop and remove existing container with same name
+	containerName := appCfg.Name
+	fmt.Printf("Stopping existing container (if any)...\n")
+	exec.Command("podman", "stop", containerName).Run()
+	exec.Command("podman", "rm", containerName).Run()
+
+	// Handle based on app type
+	if appCfg.Type == "static" && appCfg.Public != "" {
+		// Static site: serve with Caddy
+		runStaticSite(dir, appCfg, port, detach)
+	} else if appCfg.Build.Dockerfile != "" {
+		// Container with Dockerfile
+		runContainerApp(dir, appCfg, port, detach)
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: Cannot determine how to run this app.")
+		fmt.Fprintln(os.Stderr, "Set 'type: static' with 'public: <dir>' for static sites,")
+		fmt.Fprintln(os.Stderr, "or set 'build.dockerfile: <path>' for container apps.")
+		os.Exit(1)
+	}
+}
+
+// runStaticSite runs a static site locally by building a container image
+func runStaticSite(dir string, appCfg *AppConfig, port int, detach bool) {
+	absDir, _ := filepath.Abs(dir)
+	publicPath := filepath.Join(absDir, appCfg.Public)
+
+	// Check if public directory exists
+	if _, err := os.Stat(publicPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Error: Public directory '%s' does not exist.\n", appCfg.Public)
+		fmt.Fprintln(os.Stderr, "Run the build command first if needed.")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Running static site: %s\n", appCfg.Name)
+	fmt.Printf("Source: %s\n", publicPath)
+
+	imageName := appCfg.Name + ":local"
+
+	// Create a temporary Containerfile
+	containerfile := `FROM docker.io/caddy:2-alpine
+WORKDIR /srv
+COPY . .
+CMD ["caddy", "file-server", "--root", "/srv", "--listen", ":80"]
+`
+
+	// Write Containerfile to public directory temporarily
+	containerfilePath := filepath.Join(publicPath, "Containerfile.tmp")
+	if err := os.WriteFile(containerfilePath, []byte(containerfile), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create Containerfile: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(containerfilePath)
+
+	// Build the image
+	fmt.Printf("Building container image: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", containerfilePath, publicPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build image: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Image built successfully!")
+
+	// Build environment variables
+	envArgs := []string{}
+	for key, val := range appCfg.Env {
+		envArgs = append(envArgs, "-e", fmt.Sprintf("%s=%s", key, val))
+	}
+
+	// Run container
+	runArgs := []string{"run"}
+	if detach {
+		runArgs = append(runArgs, "-d")
+	}
+	runArgs = append(runArgs,
+		"--name", appCfg.Name,
+		"-p", fmt.Sprintf("%d:80", port),
+	)
+	runArgs = append(runArgs, envArgs...)
+	runArgs = append(runArgs, imageName)
+
+	fmt.Printf("\nContainer: %s\n", appCfg.Name)
+	fmt.Printf("URL: http://localhost:%d\n\n", port)
+
+	if detach {
+		cmd := exec.Command("podman", runArgs...)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start container: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Container started in background.\n")
+		fmt.Printf("View logs: podman logs -f %s\n", appCfg.Name)
+		fmt.Printf("Stop: podman stop %s\n", appCfg.Name)
+	} else {
+		fmt.Println("Press Ctrl+C to stop...")
+		cmd := exec.Command("podman", runArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			// Ignore interrupt errors
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+		}
+	}
+}
+
+// runContainerApp builds and runs a container app locally
+func runContainerApp(dir string, appCfg *AppConfig, port int, detach bool) {
+	absDir, _ := filepath.Abs(dir)
+
+	// Determine Dockerfile and context
+	dockerfile := appCfg.Build.Dockerfile
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	context := appCfg.Build.Context
+	if context == "" {
+		context = "."
+	}
+
+	dockerfilePath := filepath.Join(absDir, dockerfile)
+	contextPath := filepath.Join(absDir, context)
+
+	// Check if Dockerfile exists
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		// Try Containerfile as fallback
+		containerfilePath := filepath.Join(absDir, "Containerfile")
+		if _, err := os.Stat(containerfilePath); err == nil {
+			dockerfilePath = containerfilePath
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: Dockerfile '%s' not found.\n", dockerfile)
+			os.Exit(1)
+		}
+	}
+
+	imageName := appCfg.Name + ":local"
+
+	fmt.Printf("Building container: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", dockerfilePath, contextPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Build failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Build completed!")
+
+	// Build environment variables
+	envArgs := []string{}
+	for key, val := range appCfg.Env {
+		envArgs = append(envArgs, "-e", fmt.Sprintf("%s=%s", key, val))
+	}
+
+	// Build volume mounts
+	volumeArgs := []string{}
+	for _, vol := range appCfg.Volumes {
+		volumeArgs = append(volumeArgs, "-v", vol)
+	}
+
+	// Determine container port
+	containerPort := appCfg.Port
+	if containerPort == 0 {
+		containerPort = 3000
+	}
+
+	// Run container
+	runArgs := []string{"run"}
+	if detach {
+		runArgs = append(runArgs, "-d")
+	}
+	runArgs = append(runArgs,
+		"--name", appCfg.Name,
+		"-p", fmt.Sprintf("%d:%d", port, containerPort),
+	)
+	runArgs = append(runArgs, envArgs...)
+	runArgs = append(runArgs, volumeArgs...)
+	runArgs = append(runArgs, imageName)
+
+	fmt.Printf("\nContainer: %s\n", appCfg.Name)
+	fmt.Printf("URL: http://localhost:%d\n\n", port)
+
+	if detach {
+		cmd := exec.Command("podman", runArgs...)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start container: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Container started in background.\n")
+		fmt.Printf("View logs: podman logs -f %s\n", appCfg.Name)
+		fmt.Printf("Stop: podman stop %s\n", appCfg.Name)
+	} else {
+		fmt.Println("Press Ctrl+C to stop...")
+		cmd := exec.Command("podman", runArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			// Ignore interrupt errors
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+		}
+	}
 }
 
 func cmdDeploy(args []string) {
@@ -2094,62 +2379,44 @@ func cmdPrune(args []string) {
 func cmdUpgrade(args []string) {
 	fmt.Println("Checking for updates...")
 
-	resp, err := apiRequest("GET", "/api/system/version", nil)
+	// Check GitHub for latest CLI release
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/base-go/basepod/releases/latest")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	var versionInfo struct {
-		Current string `json:"current"`
-		Latest  string `json:"latest"`
-		Update  bool   `json:"updateAvailable"`
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "Error: GitHub API returned status %d\n", resp.StatusCode)
+		os.Exit(1)
 	}
-	json.NewDecoder(resp.Body).Decode(&versionInfo)
 
-	fmt.Printf("Current version: %s\n", versionInfo.Current)
-	fmt.Printf("Latest version: %s\n", versionInfo.Latest)
+	var release struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing release info: %v\n", err)
+		os.Exit(1)
+	}
 
-	if !versionInfo.Update {
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	currentVersion := version
+
+	fmt.Printf("Current version: %s\n", currentVersion)
+	fmt.Printf("Latest version:  %s\n", latestVersion)
+
+	if currentVersion == latestVersion {
 		fmt.Println("You are running the latest version!")
 		return
 	}
 
-	fmt.Print("Update available! Install now? (y/N): ")
-	var confirm string
-	fmt.Scanln(&confirm)
-	if strings.ToLower(confirm) != "y" {
-		fmt.Println("Cancelled")
-		return
-	}
-
-	fmt.Println("Upgrading...")
-	resp, err = apiRequest("POST", "/api/system/upgrade", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	// Stream upgrade output
-	buf := make([]byte, 256)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			fmt.Print(string(buf[:n]))
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		fmt.Println("\nUpgrade complete!")
-	} else {
-		fmt.Println("\nUpgrade failed")
-		os.Exit(1)
-	}
+	fmt.Println("\nUpdate available!")
+	fmt.Printf("Download: %s\n", release.HTMLURL)
+	fmt.Println("\nTo upgrade, run:")
+	fmt.Println("  curl -fsSL https://pod.base.al/install.sh | bash")
 }
 
 func cmdCompletion(args []string) {
