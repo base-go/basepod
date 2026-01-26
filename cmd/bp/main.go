@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.41"
+	version = "1.0.42"
 )
 
 // ServerConfig holds configuration for a single server
@@ -49,9 +49,15 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Check for updates in background (skip for version/upgrade commands)
+	if cmd != "version" && cmd != "-v" && cmd != "--version" && cmd != "upgrade" {
+		go checkForUpdates()
+	}
+
 	switch cmd {
 	case "version", "-v", "--version":
 		fmt.Printf("bp version %s\n", version)
+		checkForUpdatesSync() // Show update notice after version
 	case "help", "-h", "--help":
 		printUsage()
 	// Connection commands
@@ -2376,47 +2382,75 @@ func cmdPrune(args []string) {
 	}
 }
 
-func cmdUpgrade(args []string) {
-	fmt.Println("Checking for updates...")
-
-	// Check GitHub for latest CLI release
-	client := &http.Client{Timeout: 10 * time.Second}
+// getLatestVersion fetches the latest version from GitHub
+func getLatestVersion() (string, error) {
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("https://api.github.com/repos/base-go/basepod/releases/latest")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
-		os.Exit(1)
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Error: GitHub API returned status %d\n", resp.StatusCode)
-		os.Exit(1)
+		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var release struct {
 		TagName string `json:"tag_name"`
-		HTMLURL string `json:"html_url"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing release info: %v\n", err)
+		return "", err
+	}
+
+	return strings.TrimPrefix(release.TagName, "v"), nil
+}
+
+// checkForUpdates checks for updates in the background and prints a notice
+func checkForUpdates() {
+	latest, err := getLatestVersion()
+	if err != nil {
+		return // Silently fail
+	}
+
+	if latest != version && latest != "" {
+		fmt.Fprintf(os.Stderr, "\n📦 Update available: %s → %s\n", version, latest)
+		fmt.Fprintf(os.Stderr, "   Run: curl -fsSL https://pod.base.al/cli | bash\n\n")
+	}
+}
+
+// checkForUpdatesSync checks for updates synchronously (used after bp version)
+func checkForUpdatesSync() {
+	latest, err := getLatestVersion()
+	if err != nil {
+		return
+	}
+
+	if latest != version && latest != "" {
+		fmt.Printf("\n📦 Update available: %s → %s\n", version, latest)
+		fmt.Printf("   Run: curl -fsSL https://pod.base.al/cli | bash\n")
+	}
+}
+
+func cmdUpgrade(args []string) {
+	fmt.Println("Checking for updates...")
+
+	latest, err := getLatestVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
 		os.Exit(1)
 	}
 
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	currentVersion := version
+	fmt.Printf("Current version: %s\n", version)
+	fmt.Printf("Latest version:  %s\n", latest)
 
-	fmt.Printf("Current version: %s\n", currentVersion)
-	fmt.Printf("Latest version:  %s\n", latestVersion)
-
-	if currentVersion == latestVersion {
+	if version == latest {
 		fmt.Println("You are running the latest version!")
 		return
 	}
 
 	fmt.Println("\nUpdate available!")
-	fmt.Printf("Download: %s\n", release.HTMLURL)
 	fmt.Println("\nTo upgrade, run:")
-	fmt.Println("  curl -fsSL https://pod.base.al/install.sh | bash")
+	fmt.Println("  curl -fsSL https://pod.base.al/cli | bash")
 }
 
 func cmdCompletion(args []string) {
