@@ -287,16 +287,26 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		})
 	}
 
-	// Convert volume strings to mount objects for bind mounts
+	// Convert volume strings to mount objects
+	// Named volumes use type "volume", bind mounts use type "bind"
 	mounts := make([]map[string]interface{}, 0)
 	for _, vol := range opts.Volumes {
 		parts := strings.Split(vol, ":")
 		if len(parts) >= 2 {
+			source := parts[0]
+			// Check if source looks like a path (starts with / or .)
+			// If so, use bind mount; otherwise use named volume
+			mountType := "volume"
+			options := []string{}
+			if strings.HasPrefix(source, "/") || strings.HasPrefix(source, ".") {
+				mountType = "bind"
+				options = []string{"rbind"}
+			}
 			mounts = append(mounts, map[string]interface{}{
 				"destination": parts[1],
-				"source":      parts[0],
-				"type":        "bind",
-				"options":     []string{"rbind"},
+				"source":      source,
+				"type":        mountType,
+				"options":     options,
 			})
 		}
 	}
