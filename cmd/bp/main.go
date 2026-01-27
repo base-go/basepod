@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.42"
+	version = "1.0.43"
 )
 
 // ServerConfig holds configuration for a single server
@@ -589,15 +589,17 @@ func cmdCreate(args []string) {
 
 // AppConfig represents the basepod.yaml configuration
 type AppConfig struct {
-	Name    string            `yaml:"name"`
-	Type    string            `yaml:"type,omitempty"`     // "static" or "container"
-	Server  string            `yaml:"server,omitempty"`   // Server context to deploy to
-	Domain  string            `yaml:"domain,omitempty"`
-	Port    int               `yaml:"port,omitempty"`
-	Public  string            `yaml:"public,omitempty"`   // Public directory for static sites
-	Build   BuildConfig       `yaml:"build,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty"`
-	Volumes []string          `yaml:"volumes,omitempty"`
+	Name      string                    `yaml:"name"`
+	Type      string                    `yaml:"type,omitempty"`      // "static", "container", or "multi"
+	Server    string                    `yaml:"server,omitempty"`    // Server context to deploy to
+	Domain    string                    `yaml:"domain,omitempty"`
+	Port      int                       `yaml:"port,omitempty"`
+	Public    string                    `yaml:"public,omitempty"`    // Public directory for static sites
+	Build     BuildConfig               `yaml:"build,omitempty"`
+	Env       map[string]string         `yaml:"env,omitempty"`
+	Volumes   []string                  `yaml:"volumes,omitempty"`
+	Processes []ProcessConfig           `yaml:"processes,omitempty"` // Multiple processes for multi-service apps
+	Services  map[string]*ServiceConfig `yaml:"services,omitempty"`  // Multiple services (docker-compose style)
 }
 
 // BuildConfig contains build configuration
@@ -605,6 +607,33 @@ type BuildConfig struct {
 	Dockerfile string `yaml:"dockerfile,omitempty"`
 	Context    string `yaml:"context,omitempty"`
 	Command    string `yaml:"command,omitempty"` // Local build command (e.g., "npm run build")
+}
+
+// ProcessConfig defines a process in a multi-service app
+type ProcessConfig struct {
+	Name    string `yaml:"name"`
+	Command string `yaml:"command"`
+	Workdir string `yaml:"workdir,omitempty"`
+}
+
+// ServiceConfig defines a service in a multi-service app
+type ServiceConfig struct {
+	Type       string            `yaml:"type,omitempty"`       // "static", "container", "go", "python"
+	Image      string            `yaml:"image,omitempty"`      // Docker image to use
+	Build      ServiceBuild      `yaml:"build,omitempty"`      // Build configuration
+	Port       int               `yaml:"port,omitempty"`       // Internal port
+	Public     string            `yaml:"public,omitempty"`     // Public directory for static
+	Command    string            `yaml:"command,omitempty"`    // Command to run
+	Env        map[string]string `yaml:"env,omitempty"`        // Environment variables
+	Volumes    []string          `yaml:"volumes,omitempty"`    // Volume mounts
+	DependsOn  []string          `yaml:"depends_on,omitempty"` // Service dependencies
+}
+
+// ServiceBuild defines build config for a service
+type ServiceBuild struct {
+	Context    string `yaml:"context,omitempty"`    // Build context path
+	Dockerfile string `yaml:"dockerfile,omitempty"` // Dockerfile path
+	Command    string `yaml:"command,omitempty"`    // Pre-build command
 }
 
 // loadAppConfig loads basepod.yaml from the specified directory
@@ -1059,7 +1088,13 @@ func cmdRun(args []string) {
 	exec.Command("podman", "rm", containerName).Run()
 
 	// Handle based on app type
-	if appCfg.Type == "static" && appCfg.Public != "" {
+	if len(appCfg.Services) > 0 {
+		// Multi-service app: run with podman pod
+		runServicesApp(dir, appCfg, port, detach)
+	} else if len(appCfg.Processes) > 0 {
+		// Multi-process app: run with supervisord
+		runMultiProcessApp(dir, appCfg, port, detach)
+	} else if appCfg.Type == "static" && appCfg.Public != "" {
 		// Static site: serve with Caddy
 		runStaticSite(dir, appCfg, port, detach)
 	} else if appCfg.Build.Dockerfile != "" {
@@ -1068,7 +1103,8 @@ func cmdRun(args []string) {
 	} else {
 		fmt.Fprintln(os.Stderr, "Error: Cannot determine how to run this app.")
 		fmt.Fprintln(os.Stderr, "Set 'type: static' with 'public: <dir>' for static sites,")
-		fmt.Fprintln(os.Stderr, "or set 'build.dockerfile: <path>' for container apps.")
+		fmt.Fprintln(os.Stderr, "set 'build.dockerfile: <path>' for container apps,")
+		fmt.Fprintln(os.Stderr, "or define 'processes' for multi-service apps.")
 		os.Exit(1)
 	}
 }
@@ -1253,6 +1289,409 @@ func runContainerApp(dir string, appCfg *AppConfig, port int, detach bool) {
 		cmd.Stdin = os.Stdin
 		if err := cmd.Run(); err != nil {
 			// Ignore interrupt errors
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+		}
+	}
+}
+
+// runServicesApp runs multiple services using podman pod
+func runServicesApp(dir string, appCfg *AppConfig, port int, detach bool) {
+	absDir, _ := filepath.Abs(dir)
+	podName := appCfg.Name + "-pod"
+
+	fmt.Printf("Running multi-service app: %s\n", appCfg.Name)
+	fmt.Printf("Services:\n")
+	for name, svc := range appCfg.Services {
+		fmt.Printf("  - %s (port %d)\n", name, svc.Port)
+	}
+
+	// Stop and remove existing pod
+	fmt.Printf("\nStopping existing pod (if any)...\n")
+	exec.Command("podman", "pod", "stop", podName).Run()
+	exec.Command("podman", "pod", "rm", podName).Run()
+
+	// Collect all ports to expose
+	portArgs := []string{}
+	portArgs = append(portArgs, "-p", fmt.Sprintf("%d:%d", port, port))
+
+	// Create the pod with all ports
+	fmt.Printf("Creating pod: %s\n", podName)
+	createPodArgs := []string{"pod", "create", "--name", podName}
+	createPodArgs = append(createPodArgs, portArgs...)
+
+	if err := exec.Command("podman", createPodArgs...).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create pod: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build and run each service
+	for name, svc := range appCfg.Services {
+		fmt.Printf("\n--- Service: %s ---\n", name)
+
+		var imageName string
+
+		if svc.Image != "" {
+			// Use existing image
+			imageName = svc.Image
+			fmt.Printf("Using image: %s\n", imageName)
+		} else {
+			// Build the service
+			imageName = fmt.Sprintf("%s-%s:local", appCfg.Name, name)
+
+			// Run pre-build command if specified
+			if svc.Build.Command != "" {
+				buildDir := absDir
+				if svc.Build.Context != "" {
+					buildDir = filepath.Join(absDir, svc.Build.Context)
+				}
+				fmt.Printf("Running build command: %s\n", svc.Build.Command)
+				if err := runBuildCommand(buildDir, svc.Build.Command); err != nil {
+					fmt.Fprintf(os.Stderr, "Build command failed for %s: %v\n", name, err)
+					os.Exit(1)
+				}
+			}
+
+			// Build container if Dockerfile or type specified
+			if svc.Type == "static" && svc.Public != "" {
+				// Build static site container
+				buildStaticServiceImage(absDir, name, svc, imageName)
+			} else if svc.Build.Dockerfile != "" || svc.Build.Context != "" {
+				// Build from Dockerfile
+				buildServiceImage(absDir, name, svc, imageName)
+			} else if svc.Type == "go" {
+				// Build Go service
+				buildGoServiceImage(absDir, name, svc, imageName)
+			} else if svc.Type == "python" {
+				// Build Python service
+				buildPythonServiceImage(absDir, name, svc, imageName)
+			} else {
+				fmt.Fprintf(os.Stderr, "Cannot determine how to build service '%s'\n", name)
+				os.Exit(1)
+			}
+		}
+
+		// Run the service in the pod
+		runArgs := []string{"run", "-d", "--pod", podName, "--name", fmt.Sprintf("%s-%s", appCfg.Name, name)}
+
+		// Add environment variables
+		for key, val := range svc.Env {
+			runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", key, val))
+		}
+
+		// Add volumes
+		for _, vol := range svc.Volumes {
+			runArgs = append(runArgs, "-v", vol)
+		}
+
+		runArgs = append(runArgs, imageName)
+
+		// Add command if specified
+		if svc.Command != "" {
+			runArgs = append(runArgs, "sh", "-c", svc.Command)
+		}
+
+		fmt.Printf("Starting %s...\n", name)
+		cmd := exec.Command("podman", runArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start service %s: %v\n", name, err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("\n✓ All services started!\n")
+	fmt.Printf("Pod: %s\n", podName)
+	fmt.Printf("URL: http://localhost:%d\n\n", port)
+	fmt.Printf("View logs: podman pod logs -f %s\n", podName)
+	fmt.Printf("Stop: podman pod stop %s\n", podName)
+
+	if !detach {
+		fmt.Println("\nPress Ctrl+C to stop...")
+		// Follow logs
+		cmd := exec.Command("podman", "pod", "logs", "-f", podName)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+	}
+}
+
+// buildStaticServiceImage builds a static site service image
+func buildStaticServiceImage(baseDir, name string, svc *ServiceConfig, imageName string) {
+	publicPath := filepath.Join(baseDir, svc.Public)
+
+	if _, err := os.Stat(publicPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Public directory '%s' not found for service '%s'\n", svc.Public, name)
+		os.Exit(1)
+	}
+
+	// Create Containerfile
+	port := svc.Port
+	if port == 0 {
+		port = 3000
+	}
+
+	containerfile := fmt.Sprintf(`FROM docker.io/caddy:2-alpine
+WORKDIR /srv
+COPY . .
+CMD ["caddy", "file-server", "--root", "/srv", "--listen", ":%d"]
+`, port)
+
+	containerfilePath := filepath.Join(publicPath, "Containerfile.tmp")
+	os.WriteFile(containerfilePath, []byte(containerfile), 0644)
+	defer os.Remove(containerfilePath)
+
+	fmt.Printf("Building static service: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", containerfilePath, publicPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build service %s: %v\n", name, err)
+		os.Exit(1)
+	}
+}
+
+// buildServiceImage builds a service from Dockerfile
+func buildServiceImage(baseDir, name string, svc *ServiceConfig, imageName string) {
+	context := svc.Build.Context
+	if context == "" {
+		context = "."
+	}
+	contextPath := filepath.Join(baseDir, context)
+
+	dockerfile := svc.Build.Dockerfile
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	dockerfilePath := filepath.Join(contextPath, dockerfile)
+
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		// Try Containerfile
+		containerfilePath := filepath.Join(contextPath, "Containerfile")
+		if _, err := os.Stat(containerfilePath); err == nil {
+			dockerfilePath = containerfilePath
+		} else {
+			fmt.Fprintf(os.Stderr, "Dockerfile not found for service '%s'\n", name)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("Building service: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", dockerfilePath, contextPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build service %s: %v\n", name, err)
+		os.Exit(1)
+	}
+}
+
+// buildGoServiceImage builds a Go service image
+func buildGoServiceImage(baseDir, name string, svc *ServiceConfig, imageName string) {
+	context := svc.Build.Context
+	if context == "" {
+		context = "."
+	}
+	contextPath := filepath.Join(baseDir, context)
+
+	port := svc.Port
+	if port == 0 {
+		port = 8080
+	}
+
+	// Generate Dockerfile for Go
+	dockerfile := fmt.Sprintf(`FROM golang:1.23-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /app/server .
+
+FROM alpine:latest
+WORKDIR /app
+COPY --from=builder /app/server .
+EXPOSE %d
+CMD ["./server"]
+`, port)
+
+	dockerfilePath := filepath.Join(contextPath, "Dockerfile.bp")
+	os.WriteFile(dockerfilePath, []byte(dockerfile), 0644)
+	defer os.Remove(dockerfilePath)
+
+	fmt.Printf("Building Go service: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", dockerfilePath, contextPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build service %s: %v\n", name, err)
+		os.Exit(1)
+	}
+}
+
+// buildPythonServiceImage builds a Python service image
+func buildPythonServiceImage(baseDir, name string, svc *ServiceConfig, imageName string) {
+	context := svc.Build.Context
+	if context == "" {
+		context = "."
+	}
+	contextPath := filepath.Join(baseDir, context)
+
+	port := svc.Port
+	if port == 0 {
+		port = 8000
+	}
+
+	// Generate Dockerfile for Python
+	dockerfile := fmt.Sprintf(`FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt* ./
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+COPY . .
+EXPOSE %d
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "%d"]
+`, port, port)
+
+	dockerfilePath := filepath.Join(contextPath, "Dockerfile.bp")
+	os.WriteFile(dockerfilePath, []byte(dockerfile), 0644)
+	defer os.Remove(dockerfilePath)
+
+	fmt.Printf("Building Python service: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", dockerfilePath, contextPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build service %s: %v\n", name, err)
+		os.Exit(1)
+	}
+}
+
+// runMultiProcessApp runs a multi-process app using supervisord
+func runMultiProcessApp(dir string, appCfg *AppConfig, port int, detach bool) {
+	absDir, _ := filepath.Abs(dir)
+
+	// Check if Dockerfile exists for multi-process
+	dockerfile := appCfg.Build.Dockerfile
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+
+	dockerfilePath := filepath.Join(absDir, dockerfile)
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		// Try Containerfile
+		containerfilePath := filepath.Join(absDir, "Containerfile")
+		if _, err := os.Stat(containerfilePath); err == nil {
+			dockerfilePath = containerfilePath
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: Dockerfile '%s' not found for multi-process app.\n", dockerfile)
+			fmt.Fprintln(os.Stderr, "Create a Dockerfile that includes all your services.")
+			os.Exit(1)
+		}
+	}
+
+	context := appCfg.Build.Context
+	if context == "" {
+		context = "."
+	}
+	contextPath := filepath.Join(absDir, context)
+
+	// Generate supervisord.conf
+	supervisordConf := "[supervisord]\nnodaemon=true\nuser=root\n\n"
+	for _, proc := range appCfg.Processes {
+		workdir := proc.Workdir
+		if workdir == "" {
+			workdir = "/app"
+		}
+		supervisordConf += fmt.Sprintf(`[program:%s]
+command=%s
+directory=%s
+autostart=true
+autorestart=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+
+`, proc.Name, proc.Command, workdir)
+	}
+
+	// Write supervisord.conf to build context
+	supervisordPath := filepath.Join(contextPath, "supervisord.conf")
+	if err := os.WriteFile(supervisordPath, []byte(supervisordConf), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write supervisord.conf: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(supervisordPath)
+
+	fmt.Printf("Running multi-process app: %s\n", appCfg.Name)
+	fmt.Printf("Processes:\n")
+	for _, proc := range appCfg.Processes {
+		fmt.Printf("  - %s: %s\n", proc.Name, proc.Command)
+	}
+
+	imageName := appCfg.Name + ":local"
+
+	// Build the image
+	fmt.Printf("\nBuilding container: %s\n", imageName)
+	buildCmd := exec.Command("podman", "build", "-t", imageName, "-f", dockerfilePath, contextPath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Build failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Build completed!")
+
+	// Build environment variables
+	envArgs := []string{}
+	for key, val := range appCfg.Env {
+		envArgs = append(envArgs, "-e", fmt.Sprintf("%s=%s", key, val))
+	}
+
+	// Build volume mounts
+	volumeArgs := []string{}
+	for _, vol := range appCfg.Volumes {
+		volumeArgs = append(volumeArgs, "-v", vol)
+	}
+
+	// Run container
+	runArgs := []string{"run"}
+	if detach {
+		runArgs = append(runArgs, "-d")
+	}
+	runArgs = append(runArgs, "--name", appCfg.Name)
+
+	// Expose main port (default 3000)
+	containerPort := appCfg.Port
+	if containerPort == 0 {
+		containerPort = 3000
+	}
+	runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d", port, containerPort))
+
+	runArgs = append(runArgs, envArgs...)
+	runArgs = append(runArgs, volumeArgs...)
+	runArgs = append(runArgs, imageName)
+
+	fmt.Printf("\nContainer: %s\n", appCfg.Name)
+	fmt.Printf("URL: http://localhost:%d\n\n", port)
+
+	if detach {
+		cmd := exec.Command("podman", runArgs...)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start container: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Container started in background.\n")
+		fmt.Printf("View logs: podman logs -f %s\n", appCfg.Name)
+		fmt.Printf("Stop: podman stop %s\n", appCfg.Name)
+	} else {
+		fmt.Println("Press Ctrl+C to stop...")
+		cmd := exec.Command("podman", runArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				os.Exit(exitErr.ExitCode())
 			}

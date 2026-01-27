@@ -1876,13 +1876,23 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		domain = ""
 	}
 
+	// Convert template volumes to app volumes
+	var volumes []app.VolumeMount
+	for _, v := range tmpl.Volumes {
+		volumes = append(volumes, app.VolumeMount{
+			Name:          v.Name,
+			ContainerPath: v.ContainerPath,
+		})
+	}
+
 	newApp := &app.App{
-		ID:     uuid.New().String(),
-		Name:   name,
-		Domain: domain,
-		Image:  image,
-		Status: app.StatusPending,
-		Env:    env,
+		ID:      uuid.New().String(),
+		Name:    name,
+		Domain:  domain,
+		Image:   image,
+		Status:  app.StatusPending,
+		Env:     env,
+		Volumes: volumes,
 		Ports: app.PortConfig{
 			ContainerPort:  tmpl.Port,
 			Protocol:       "http",
@@ -1931,6 +1941,14 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 		a.Ports.HostPort = assignHostPort(a.ID)
 	}
 
+	// Build volume mounts from app config
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		// Use named volume format: volumeName:containerPath
+		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
+	}
+
 	// Create container with port mapping and network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
 		Name:     "basepod-" + a.Name,
@@ -1938,6 +1956,7 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 		Env:      a.Env,
 		Command:  tmpl.Command,
 		Networks: []string{"basepod"},
+		Volumes:  volumeMounts,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
@@ -2102,12 +2121,25 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			port = 8080
 		}
 
+		// Parse volumes from string format "name:container_path" to VolumeMount
+		var volumes []app.VolumeMount
+		for _, vol := range deployConfig.Volumes {
+			parts := strings.SplitN(vol, ":", 2)
+			if len(parts) == 2 {
+				volumes = append(volumes, app.VolumeMount{
+					Name:          parts[0],
+					ContainerPath: parts[1],
+				})
+			}
+		}
+
 		a = &app.App{
-			ID:     uuid.New().String(),
-			Name:   deployConfig.Name,
-			Domain: domain,
-			Status: app.StatusPending,
-			Env:    deployConfig.Env,
+			ID:      uuid.New().String(),
+			Name:    deployConfig.Name,
+			Domain:  domain,
+			Status:  app.StatusPending,
+			Env:     deployConfig.Env,
+			Volumes: volumes,
 			Ports: app.PortConfig{
 				ContainerPort: port,
 				Protocol:      "http",
@@ -2145,6 +2177,20 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			for k, v := range deployConfig.Env {
 				a.Env[k] = v
 			}
+		}
+		// Update volumes if provided
+		if len(deployConfig.Volumes) > 0 {
+			var volumes []app.VolumeMount
+			for _, vol := range deployConfig.Volumes {
+				parts := strings.SplitN(vol, ":", 2)
+				if len(parts) == 2 {
+					volumes = append(volumes, app.VolumeMount{
+						Name:          parts[0],
+						ContainerPath: parts[1],
+					})
+				}
+			}
+			a.Volumes = volumes
 		}
 	}
 
@@ -2247,12 +2293,22 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 
 	writeLine(fmt.Sprintf("Creating container with port mapping %d -> %d...", a.Ports.ContainerPort, a.Ports.HostPort))
 
+	// Build volume mounts from app config
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		// Use named volume format: volumeName:containerPath
+		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
+		writeLine(fmt.Sprintf("Volume: %s -> %s", volumeName, v.ContainerPath))
+	}
+
 	// Create new container with network
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
 		Name:     containerName,
 		Image:    imageName,
 		Env:      a.Env,
 		Networks: []string{"basepod"},
+		Volumes:  volumeMounts,
 		Ports: map[string]string{
 			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
 		},
