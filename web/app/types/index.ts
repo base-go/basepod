@@ -5,7 +5,7 @@ export interface VolumeMount {
   read_only?: boolean
 }
 
-export type AppType = 'container' | 'mlx'
+export type AppType = 'container' | 'mlx' | 'static'
 
 export interface MLXConfig {
   model: string

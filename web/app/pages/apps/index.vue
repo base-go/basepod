@@ -146,6 +146,9 @@ const columns: TableColumn<App>[] = [
           <code v-if="row.original.image" class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
             {{ row.original.image }}
           </code>
+          <UBadge v-else-if="row.original.type === 'static'" color="info" variant="soft">
+            Static Site
+          </UBadge>
           <span v-else class="text-gray-400">Not deployed</span>
         </template>
 
@@ -183,32 +186,46 @@ const columns: TableColumn<App>[] = [
 
         <template #actions-cell="{ row }">
           <div class="flex items-center justify-end gap-2">
-            <!-- Show Deploy if no container, otherwise Start/Stop -->
-            <UButton
-              v-if="!row.original.container_id"
-              icon="i-heroicons-rocket-launch"
-              variant="ghost"
-              color="primary"
-              size="sm"
-              @click="deployApp(row.original)"
-            />
+            <!-- Static sites: just show link and delete -->
+            <template v-if="row.original.type === 'static'">
+              <UButton
+                v-if="row.original.domain"
+                icon="i-heroicons-arrow-top-right-on-square"
+                variant="ghost"
+                color="primary"
+                size="sm"
+                :to="`https://${row.original.domain}`"
+                target="_blank"
+              />
+            </template>
+            <!-- Container apps: Deploy if no container, otherwise Start/Stop -->
             <template v-else>
               <UButton
-                v-if="row.original.status !== 'running'"
-                icon="i-heroicons-play"
+                v-if="!row.original.container_id"
+                icon="i-heroicons-rocket-launch"
                 variant="ghost"
-                color="success"
+                color="primary"
                 size="sm"
-                @click="startApp(row.original)"
+                @click="deployApp(row.original)"
               />
-              <UButton
-                v-if="row.original.status === 'running'"
-                icon="i-heroicons-stop"
-                variant="ghost"
-                color="warning"
-                size="sm"
-                @click="stopApp(row.original)"
-              />
+              <template v-else>
+                <UButton
+                  v-if="row.original.status !== 'running'"
+                  icon="i-heroicons-play"
+                  variant="ghost"
+                  color="success"
+                  size="sm"
+                  @click="startApp(row.original)"
+                />
+                <UButton
+                  v-if="row.original.status === 'running'"
+                  icon="i-heroicons-stop"
+                  variant="ghost"
+                  color="warning"
+                  size="sm"
+                  @click="stopApp(row.original)"
+                />
+              </template>
             </template>
             <UButton
               icon="i-heroicons-trash"
