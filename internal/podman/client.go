@@ -294,20 +294,27 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		parts := strings.Split(vol, ":")
 		if len(parts) >= 2 {
 			source := parts[0]
+			destination := parts[1]
+
 			// Check if source looks like a path (starts with / or .)
 			// If so, use bind mount; otherwise use named volume
-			mountType := "volume"
-			options := []string{}
 			if strings.HasPrefix(source, "/") || strings.HasPrefix(source, ".") {
-				mountType = "bind"
-				options = []string{"rbind"}
+				// Bind mount - source is a host path
+				mounts = append(mounts, map[string]interface{}{
+					"destination": destination,
+					"source":      source,
+					"type":        "bind",
+					"options":     []string{"rbind"},
+				})
+			} else {
+				// Named volume - pre-create it first
+				_ = c.CreateVolume(ctx, source) // Ignore error if already exists
+				mounts = append(mounts, map[string]interface{}{
+					"destination": destination,
+					"source":      source,
+					"type":        "volume",
+				})
 			}
-			mounts = append(mounts, map[string]interface{}{
-				"destination": parts[1],
-				"source":      source,
-				"type":        mountType,
-				"options":     options,
-			})
 		}
 	}
 
