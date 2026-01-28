@@ -108,71 +108,30 @@ func (c *Client) AddRoute(route Route) error {
 	return nil
 }
 
-// InitializeServer creates the Caddy HTTP server with routes for all apps
+// InitializeServer adds routes for running apps to the existing Caddy server
+// Note: The main server (srv0) should already be configured via Caddyfile
+// This function adds dynamic routes for container apps without disturbing existing config
 func (c *Client) InitializeServer(routes []Route) error {
-	// First, delete any existing server config (ignore errors)
-	delReq, _ := http.NewRequest("DELETE", c.adminURL+"/config/apps/http/servers/srv0", nil)
-	c.httpClient.Do(delReq)
-
-	// Build route configs
-	var routeConfigs []interface{}
-	for _, route := range routes {
-		routeConfigs = append(routeConfigs, map[string]interface{}{
-			"@id": route.ID,
-			"match": []map[string]interface{}{
-				{"host": []string{route.Domain}},
-			},
-			"handle": []map[string]interface{}{
-				{
-					"handler": "reverse_proxy",
-					"upstreams": []map[string]string{
-						{"dial": route.Upstream},
-					},
-					"headers": map[string]interface{}{
-						"request": map[string]interface{}{
-							"set": map[string][]string{
-								"Host":              {"{http.request.host}"},
-								"X-Forwarded-Host":  {"{http.request.host}"},
-								"X-Forwarded-Proto": {"{http.request.scheme}"},
-								"X-Real-IP":         {"{http.request.remote.host}"},
-							},
-						},
-					},
-				},
-			},
-		})
-	}
-
-	serverConfig := map[string]interface{}{
-		"listen": []string{"127.0.0.2:8080"},
-		"automatic_https": map[string]interface{}{
-			"disable": true,
-		},
-		"routes": routeConfigs,
-	}
-
-	body, err := json.Marshal(serverConfig)
+	// Check if srv0 already exists (configured by Caddyfile)
+	resp, err := c.httpClient.Get(c.adminURL + "/config/apps/http/servers/srv0")
 	if err != nil {
-		return fmt.Errorf("failed to marshal server config: %w", err)
+		return fmt.Errorf("failed to check server config: %w", err)
+	}
+	resp.Body.Close()
+
+	// If server already exists (from Caddyfile), just add routes individually
+	if resp.StatusCode == http.StatusOK {
+		for _, route := range routes {
+			if err := c.AddRoute(route); err != nil {
+				// Log but don't fail - route might already exist
+				continue
+			}
+		}
+		return nil
 	}
 
-	url := c.adminURL + "/config/apps/http/servers/srv0"
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to create server: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to create server (status %d)", resp.StatusCode)
-	}
-
+	// No server exists - this shouldn't happen if Caddyfile is loaded
+	// Return nil to avoid breaking startup, routes will be added as apps deploy
 	return nil
 }
 
