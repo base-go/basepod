@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.48"
+	version = "1.0.49"
 )
 
 // ServerConfig holds configuration for a single server
@@ -1010,6 +1010,87 @@ func createTarball(dir string) (*bytes.Buffer, error) {
 	return &buf, nil
 }
 
+// createStaticTarball creates a tarball of only the static site public directory
+// It includes all files in the public directory but preserves the directory structure
+// so the server can find files at the expected path (e.g., build/jaspr/index.html)
+func createStaticTarball(publicDir, publicPath string) (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	// Files to ignore
+	ignorePatterns := []string{
+		".DS_Store",
+		"*.pyc",
+		"__pycache__",
+	}
+
+	err := filepath.Walk(publicDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Get relative path from publicDir
+		relPath, err := filepath.Rel(publicDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip root
+		if relPath == "." {
+			return nil
+		}
+
+		// Check ignore patterns
+		for _, pattern := range ignorePatterns {
+			if matched, _ := filepath.Match(pattern, info.Name()); matched {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+
+		// Create tar header with the public path prefix (e.g., build/jaspr/file.html)
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.Join(publicPath, relPath)
+
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		// Write file content
+		if !info.IsDir() {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			if _, err := io.Copy(tw, file); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gw.Close(); err != nil {
+		return nil, err
+	}
+
+	return &buf, nil
+}
+
 // cmdRun runs the app locally using Podman
 func cmdRun(args []string) {
 	var dir string
@@ -1822,10 +1903,22 @@ func deployLocalSource(dir string, force bool) {
 
 	fmt.Printf("Deploying %s to %s...\n", appCfg.Name, contextName)
 
-	// Create tarball of the directory
-	tarball, err := createTarball(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create tarball: %v\n", err)
+	// Create tarball - for static sites, only include the public directory
+	var tarball *bytes.Buffer
+	var tarErr error
+	if appCfg.Type == "static" && appCfg.Public != "" {
+		publicDir := filepath.Join(dir, appCfg.Public)
+		if _, err := os.Stat(publicDir); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Public directory not found: %s\n", appCfg.Public)
+			fmt.Fprintln(os.Stderr, "Make sure your build completed successfully")
+			os.Exit(1)
+		}
+		tarball, tarErr = createStaticTarball(publicDir, appCfg.Public)
+	} else {
+		tarball, tarErr = createTarball(dir)
+	}
+	if tarErr != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create tarball: %v\n", tarErr)
 		os.Exit(1)
 	}
 
