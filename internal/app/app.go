@@ -11,6 +11,7 @@ type AppType string
 const (
 	AppTypeContainer AppType = "container" // Default: runs in Podman container
 	AppTypeMLX       AppType = "mlx"       // MLX LLM: runs natively with Metal acceleration
+	AppTypeStatic    AppType = "static"    // Static site: served directly by Caddy
 )
 
 // App represents a deployed application

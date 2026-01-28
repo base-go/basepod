@@ -292,3 +292,90 @@ func (c *Client) GetRoutes() ([]Route, error) {
 
 	return routes, nil
 }
+
+// AddStaticRoute adds a static file serving route for a domain
+func (c *Client) AddStaticRoute(domain, rootDir string) error {
+	routeID := "static-" + domain
+
+	// Remove existing route with same ID first
+	c.RemoveRoute(routeID)
+
+	// Build static file server route with SPA support
+	routeConfig := map[string]interface{}{
+		"@id": routeID,
+		"match": []map[string]interface{}{
+			{"host": []string{domain}},
+		},
+		"terminal": true,
+		"handle": []map[string]interface{}{
+			{
+				"handler": "subroute",
+				"routes": []map[string]interface{}{
+					{
+						"handle": []map[string]interface{}{
+							{
+								"handler": "vars",
+								"root":    rootDir,
+							},
+						},
+					},
+					{
+						"match": []map[string]interface{}{
+							{
+								"file": map[string]interface{}{
+									"try_files": []string{"{http.request.uri.path}", "/index.html"},
+								},
+							},
+						},
+						"handle": []map[string]interface{}{
+							{
+								"handler": "rewrite",
+								"uri":     "{http.matchers.file.relative}",
+							},
+						},
+					},
+					{
+						"handle": []map[string]interface{}{
+							{
+								"handler": "encode",
+								"encodings": map[string]interface{}{
+									"gzip": map[string]interface{}{},
+								},
+								"prefer": []string{"gzip"},
+							},
+							{
+								"handler": "file_server",
+								"hide":    []string{"./Caddyfile"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(routeConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal route config: %w", err)
+	}
+
+	// Add to main server routes - prepend to take priority
+	url := c.adminURL + "/config/apps/http/servers/srv0/routes/0"
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to add static route: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to add static route (status %d)", resp.StatusCode)
+	}
+
+	return nil
+}

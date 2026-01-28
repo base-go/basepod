@@ -2040,8 +2040,10 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 // SourceDeployConfig represents the config sent by the CLI
 type SourceDeployConfig struct {
 	Name    string            `json:"name"`
+	Type    string            `json:"type,omitempty"`   // "static" or "container" (default)
 	Domain  string            `json:"domain,omitempty"`
 	Port    int               `json:"port,omitempty"`
+	Public  string            `json:"public,omitempty"` // Public directory for static sites
 	Build   BuildConfig       `json:"build,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 	Volumes []string          `json:"volumes,omitempty"`
@@ -2133,9 +2135,16 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Determine app type
+		appType := app.AppTypeContainer
+		if deployConfig.Type == "static" {
+			appType = app.AppTypeStatic
+		}
+
 		a = &app.App{
 			ID:      uuid.New().String(),
 			Name:    deployConfig.Name,
+			Type:    appType,
 			Domain:  domain,
 			Status:  app.StatusPending,
 			Env:     deployConfig.Env,
@@ -2232,6 +2241,63 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeLine("Source extracted")
+
+	// Handle static site deployment
+	if deployConfig.Type == "static" || a.Type == app.AppTypeStatic {
+		writeLine("Deploying static site...")
+
+		// Determine public directory
+		publicDir := deployConfig.Public
+		if publicDir == "" {
+			publicDir = "dist" // Default
+		}
+
+		publicPath := sourceDir + "/" + publicDir
+		if _, err := os.Stat(publicPath); os.IsNotExist(err) {
+			writeLine("ERROR: Public directory not found: " + publicDir)
+			writeLine("Make sure your build output is in the correct directory")
+			return
+		}
+
+		// Copy public directory to app data directory
+		appDataDir := fmt.Sprintf("%s/data/apps/%s", paths.Base, a.Name)
+		writeLine("Copying static files to: " + appDataDir)
+
+		// Remove old files
+		os.RemoveAll(appDataDir)
+		if err := os.MkdirAll(appDataDir, 0755); err != nil {
+			writeLine("ERROR: Failed to create app data directory: " + err.Error())
+			return
+		}
+
+		// Copy files using cp -r
+		copyCmd := fmt.Sprintf("cp -r %s/* %s/", publicPath, appDataDir)
+		if output, err := execCommand(ctx, "sh", "-c", copyCmd); err != nil {
+			writeLine("ERROR: Failed to copy static files: " + err.Error())
+			writeLine(output)
+			return
+		}
+
+		// Update app status and type
+		a.Type = app.AppTypeStatic
+		a.Status = app.StatusRunning
+		a.UpdatedAt = time.Now()
+
+		if err := s.storage.UpdateApp(a); err != nil {
+			writeLine("ERROR: Failed to update app: " + err.Error())
+			return
+		}
+
+		// Update Caddy configuration for static site
+		if err := s.caddy.AddStaticRoute(a.Domain, appDataDir); err != nil {
+			writeLine("WARNING: Failed to update Caddy: " + err.Error())
+			// Continue anyway, can manually configure
+		}
+
+		writeLine("Static site deployed successfully!")
+		writeLine(fmt.Sprintf("URL: https://%s", a.Domain))
+		return
+	}
 
 	// Determine Dockerfile path
 	dockerfile := "Dockerfile"
