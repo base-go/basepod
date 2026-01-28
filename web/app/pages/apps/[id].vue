@@ -329,18 +329,8 @@ async function deleteApp() {
         </UBadge>
 
         <div class="flex gap-2">
-          <!-- Show Deploy button if app has no container yet -->
-          <UButton
-            v-if="!app.container_id"
-            icon="i-heroicons-rocket-launch"
-            color="primary"
-            :to="`/apps/${app.id}/deploy`"
-          >
-            Deploy
-          </UButton>
-
-          <!-- Show Start/Stop/Restart buttons only if app has been deployed -->
-          <template v-else>
+          <!-- Show Start/Stop/Restart buttons if app has been deployed -->
+          <template v-if="app.container_id">
             <UButton
               v-if="app.status !== 'running'"
               icon="i-heroicons-play"
@@ -365,6 +355,10 @@ async function deleteApp() {
               Restart
             </UButton>
           </template>
+          <!-- Show deploy hint if app has not been deployed -->
+          <span v-else class="text-sm text-gray-500">
+            Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code>
+          </span>
         </div>
       </div>
     </div>
