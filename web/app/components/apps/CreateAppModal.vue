@@ -15,7 +15,8 @@ const toast = useToast()
 const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
 
 const form = ref({
-  name: ''
+  name: '',
+  persistentStorage: false
 })
 
 const isOpen = computed({
@@ -43,14 +44,24 @@ const domainPlaceholder = computed(() => {
 
 async function submit() {
   try {
+    const body: Record<string, unknown> = {
+      name: form.value.name
+    }
+
+    // Add persistent volume if enabled
+    if (form.value.persistentStorage) {
+      body.volumes = [{
+        name: 'data',
+        container_path: '/data'
+      }]
+    }
+
     await $api('/apps', {
       method: 'POST',
-      body: {
-        name: form.value.name
-      }
+      body
     })
     isOpen.value = false
-    form.value = { name: '' }
+    form.value = { name: '', persistentStorage: false }
     toast.add({ title: 'App created successfully', color: 'success' })
     emit('created')
   } catch (error) {
@@ -77,6 +88,21 @@ async function submit() {
           </div>
           <p class="text-xs text-gray-500 mt-1">Auto-assigned based on app name</p>
         </UFormField>
+
+        <div class="flex items-center justify-between py-2">
+          <div>
+            <p class="font-medium text-sm">Persistent Storage</p>
+            <p class="text-xs text-gray-500">Data persists across container restarts</p>
+          </div>
+          <USwitch v-model="form.persistentStorage" />
+        </div>
+
+        <div v-if="form.persistentStorage" class="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-md text-sm">
+          <p class="text-blue-700 dark:text-blue-300">
+            <UIcon name="i-heroicons-information-circle" class="w-4 h-4 inline mr-1" />
+            Volume <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">{{ form.name || 'app' }}-data</code> will be mounted at <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">/data</code>
+          </p>
+        </div>
       </div>
     </template>
 

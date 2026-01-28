@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.49"
+	version = "1.0.50"
 )
 
 // ServerConfig holds configuration for a single server
@@ -938,6 +938,8 @@ func createTarball(dir string) (*bytes.Buffer, error) {
 		".next",
 		".nuxt",
 		".output",
+		"sdk",
+		"bin",
 	}
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
