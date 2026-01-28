@@ -769,9 +769,43 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		a.Ports.ExposeExternal = *req.ExposeExternal
 	}
 
+	// Handle aliases update
+	aliasesChanged := false
+	oldAliases := a.Aliases
+	if req.Aliases != nil {
+		a.Aliases = *req.Aliases
+		aliasesChanged = true
+	}
+
 	if err := s.storage.UpdateApp(a); err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// Update Caddy routes for aliases if changed
+	if aliasesChanged && s.caddy != nil && a.Status == app.StatusRunning {
+		// Remove old alias routes
+		for _, alias := range oldAliases {
+			routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
+			s.caddy.RemoveRoute(routeID)
+		}
+		// Add new alias routes
+		for _, alias := range a.Aliases {
+			routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
+			// Get the upstream from the main app route
+			upstream := fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+			if a.Ports.HostPort == 0 {
+				upstream = fmt.Sprintf("localhost:%d", assignHostPort(a.ID))
+			}
+			route := caddy.Route{
+				ID:       routeID,
+				Domain:   alias,
+				Upstream: upstream,
+			}
+			if err := s.caddy.AddRoute(route); err != nil {
+				log.Printf("Warning: failed to add alias route for %s: %v", alias, err)
+			}
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, a)
@@ -815,7 +849,11 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	// Remove Caddy route
 	if s.caddy != nil {
-		_ = s.caddy.RemoveRoute("basepod-" + a.ID)
+		_ = s.caddy.RemoveRoute("basepod-" + a.Name)
+		// Remove alias routes
+		for _, alias := range a.Aliases {
+			_ = s.caddy.RemoveRoute(fmt.Sprintf("alias-%s-%s", a.ID[:8], alias))
+		}
 	}
 
 	if err := s.storage.DeleteApp(id); err != nil {
@@ -1149,6 +1187,19 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 		if err := s.caddy.AddRoute(route); err != nil {
 			// Log but don't fail deployment
 			fmt.Printf("Warning: Failed to configure Caddy route: %v\n", err)
+		}
+
+		// Add routes for domain aliases
+		for _, alias := range a.Aliases {
+			aliasRoute := caddy.Route{
+				ID:        fmt.Sprintf("alias-%s-%s", a.ID[:8], alias),
+				Domain:    alias,
+				Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
+				EnableSSL: a.SSL.Enabled,
+			}
+			if err := s.caddy.AddRoute(aliasRoute); err != nil {
+				fmt.Printf("Warning: Failed to configure alias route for %s: %v\n", alias, err)
+			}
 		}
 	}
 
@@ -2415,6 +2466,17 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
 			EnableSSL: a.SSL.Enabled,
 		})
+
+		// Add routes for domain aliases
+		for _, alias := range a.Aliases {
+			writeLine("Configuring alias: " + alias)
+			_ = s.caddy.AddRoute(caddy.Route{
+				ID:        fmt.Sprintf("alias-%s-%s", a.ID[:8], alias),
+				Domain:    alias,
+				Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
+				EnableSSL: a.SSL.Enabled,
+			})
+		}
 	}
 
 	writeLine("")

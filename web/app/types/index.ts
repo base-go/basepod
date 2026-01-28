@@ -20,6 +20,7 @@ export interface App {
   name: string
   type?: AppType
   domain?: string
+  aliases?: string[]
   status: 'running' | 'stopped' | 'pending' | 'building' | 'deploying' | 'failed' | 'error'
   image?: string
   container_id?: string

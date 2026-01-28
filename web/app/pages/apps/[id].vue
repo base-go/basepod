@@ -86,6 +86,12 @@ const settingsForm = ref({
   cpus: 0,
   exposeExternal: false
 })
+
+// Domain aliases management
+const aliases = ref<string[]>([])
+const newAlias = ref('')
+const savingAliases = ref(false)
+const aliasesInitialized = ref(false)
 const savingSettings = ref(false)
 
 // Environment variables management
@@ -203,8 +209,41 @@ watch(() => app.value, (appData) => {
       cpus: appData.resources?.cpus || 0,
       exposeExternal: appData.ports?.expose_external || false
     }
+    // Initialize aliases (only once)
+    if (!aliasesInitialized.value) {
+      aliases.value = appData.aliases || []
+      aliasesInitialized.value = true
+    }
   }
 }, { immediate: true })
+
+function addAlias() {
+  const alias = newAlias.value.trim().toLowerCase()
+  if (alias && !aliases.value.includes(alias)) {
+    aliases.value.push(alias)
+    newAlias.value = ''
+  }
+}
+
+function removeAlias(index: number) {
+  aliases.value.splice(index, 1)
+}
+
+async function saveAliases() {
+  savingAliases.value = true
+  try {
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: { aliases: aliases.value }
+    })
+    toast.add({ title: 'Domain aliases saved', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to save aliases', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingAliases.value = false
+  }
+}
 
 async function saveSettings() {
   savingSettings.value = true
@@ -266,11 +305,18 @@ async function deleteApp() {
         </div>
         <div>
           <h1 class="text-2xl font-bold">{{ app.name }}</h1>
-          <p v-if="app.domain && !app.ports?.expose_external" class="text-gray-500">
-            <a :href="`https://${app.domain}`" target="_blank" class="hover:text-primary-500">
+          <div v-if="app.domain && !app.ports?.expose_external" class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <a :href="`https://${app.domain}`" target="_blank" class="text-gray-500 hover:text-primary-500">
               {{ app.domain }}
             </a>
-          </p>
+            <template v-if="app.aliases && app.aliases.length > 0">
+              <span v-for="alias in app.aliases" :key="alias" class="text-gray-400 text-sm">
+                <a :href="`https://${alias}`" target="_blank" class="hover:text-primary-500">
+                  {{ alias }}
+                </a>
+              </span>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -548,9 +594,76 @@ async function deleteApp() {
             <UInput v-model="settingsForm.name" placeholder="my-app" />
           </UFormField>
 
-          <UFormField label="Domain" hint="Custom domain for your app">
+          <UFormField label="Domain" hint="Primary domain for your app">
             <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
           </UFormField>
+        </div>
+      </UCard>
+
+      <!-- Domain Aliases -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Domain Aliases</h3>
+            <UButton :loading="savingAliases" size="sm" @click="saveAliases">
+              Save Aliases
+            </UButton>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <p class="text-sm text-gray-500">
+            Add additional domains that should point to this app. Make sure DNS records are configured to point to your server.
+          </p>
+
+          <!-- Add new alias -->
+          <div class="flex gap-2">
+            <UInput
+              v-model="newAlias"
+              placeholder="example.com"
+              class="flex-1"
+              @keydown.enter="addAlias"
+            />
+            <UButton variant="outline" @click="addAlias">
+              <UIcon name="i-heroicons-plus" class="w-4 h-4 mr-1" />
+              Add
+            </UButton>
+          </div>
+
+          <!-- Aliases list -->
+          <div v-if="aliases.length === 0" class="text-center py-4 text-gray-500">
+            <UIcon name="i-heroicons-globe-alt" class="w-8 h-8 mx-auto mb-2 opacity-50" />
+            <p class="text-sm">No domain aliases configured</p>
+          </div>
+
+          <div v-else class="space-y-2">
+            <div
+              v-for="(alias, index) in aliases"
+              :key="alias"
+              class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg"
+            >
+              <div class="flex items-center gap-2">
+                <UIcon name="i-heroicons-globe-alt" class="w-4 h-4 text-gray-400" />
+                <span class="font-mono text-sm">{{ alias }}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <a
+                  :href="`https://${alias}`"
+                  target="_blank"
+                  class="text-gray-400 hover:text-primary-500"
+                >
+                  <UIcon name="i-heroicons-arrow-top-right-on-square" class="w-4 h-4" />
+                </a>
+                <UButton
+                  icon="i-heroicons-trash"
+                  color="error"
+                  variant="ghost"
+                  size="xs"
+                  @click="removeAlias(index)"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </UCard>
 

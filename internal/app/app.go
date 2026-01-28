@@ -20,6 +20,7 @@ type App struct {
 	Name        string            `json:"name"`
 	Type        AppType           `json:"type"`        // container or mlx
 	Domain      string            `json:"domain"`      // e.g., myapp.basepod.example.com
+	Aliases     []string          `json:"aliases"`     // Additional domains (e.g., ["duxt.dev", "blog.example.com"])
 	ContainerID string            `json:"container_id"`
 	Image       string            `json:"image"`
 	Status      AppStatus         `json:"status"`
@@ -125,6 +126,7 @@ type CreateAppRequest struct {
 type UpdateAppRequest struct {
 	Name           *string            `json:"name,omitempty"`
 	Domain         *string            `json:"domain,omitempty"`
+	Aliases        *[]string          `json:"aliases,omitempty"` // Additional domains
 	Image          *string            `json:"image,omitempty"`
 	Env            *map[string]string `json:"env,omitempty"`
 	Port           *int               `json:"port,omitempty"`
