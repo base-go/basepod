@@ -282,7 +282,7 @@ func (c *Client) AddStaticRoute(domain, rootDir string) error {
 						"match": []map[string]interface{}{
 							{
 								"file": map[string]interface{}{
-									"try_files": []string{"{http.request.uri.path}", "/index.html"},
+									"try_files": []string{"{http.request.uri.path}", "{http.request.uri.path}/index.html", "/index.html"},
 								},
 							},
 						},
