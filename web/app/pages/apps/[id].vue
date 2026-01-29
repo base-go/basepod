@@ -9,13 +9,24 @@ const { data: app, refresh } = await useApiFetch<App>(`/apps/${appId}`)
 
 const activeTab = ref('overview')
 
-const tabs = [
-  { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
-  { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
-  { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
-  { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
-  { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' }
-]
+// Tabs vary by app type - static sites don't have logs, volumes, or env
+const tabs = computed(() => {
+  const baseTabs = [
+    { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
+  ]
+
+  // Only show container-specific tabs for non-static apps
+  if (app.value?.type !== 'static') {
+    baseTabs.push(
+      { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
+      { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
+      { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
+    )
+  }
+
+  baseTabs.push({ label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' })
+  return baseTabs
+})
 
 const logs = ref('')
 const logsLoading = ref(false)
@@ -321,45 +332,54 @@ async function deleteApp() {
       </div>
 
       <div class="flex items-center gap-3">
-        <UBadge
-          :color="app.status === 'running' ? 'success' : app.status === 'stopped' ? 'warning' : 'neutral'"
-          size="lg"
-        >
-          {{ app.status }}
-        </UBadge>
+        <!-- Static sites show deployed/not deployed -->
+        <template v-if="app.type === 'static'">
+          <UBadge :color="app.status === 'running' ? 'success' : 'neutral'" size="lg">
+            {{ app.status === 'running' ? 'deployed' : 'not deployed' }}
+          </UBadge>
+        </template>
+        <!-- Container apps show running/stopped -->
+        <template v-else>
+          <UBadge
+            :color="app.status === 'running' ? 'success' : app.status === 'stopped' ? 'warning' : 'neutral'"
+            size="lg"
+          >
+            {{ app.status }}
+          </UBadge>
 
-        <div class="flex gap-2">
-          <!-- Show Start/Stop/Restart buttons if app has been deployed -->
-          <template v-if="app.container_id">
-            <UButton
-              v-if="app.status !== 'running'"
-              icon="i-heroicons-play"
-              color="success"
-              @click="startApp"
-            >
-              Start
-            </UButton>
-            <UButton
-              v-if="app.status === 'running'"
-              icon="i-heroicons-stop"
-              color="warning"
-              @click="stopApp"
-            >
-              Stop
-            </UButton>
-            <UButton
-              icon="i-heroicons-arrow-path"
-              variant="outline"
-              @click="restartApp"
-            >
-              Restart
-            </UButton>
-          </template>
-          <!-- Show deploy hint if app has not been deployed -->
-          <span v-else class="text-sm text-gray-500">
-            Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code>
-          </span>
-        </div>
+          <div class="flex gap-2">
+            <!-- Show Start/Stop/Restart buttons if app has been deployed -->
+            <template v-if="app.container_id">
+              <UButton
+                v-if="app.status !== 'running'"
+                icon="i-heroicons-play"
+                color="success"
+                @click="startApp"
+              >
+                Start
+              </UButton>
+              <UButton
+                v-if="app.status === 'running'"
+                icon="i-heroicons-stop"
+                color="warning"
+                @click="stopApp"
+              >
+                Stop
+              </UButton>
+              <UButton
+                icon="i-heroicons-arrow-path"
+                variant="outline"
+                @click="restartApp"
+              >
+                Restart
+              </UButton>
+            </template>
+            <!-- Show deploy hint if app has not been deployed -->
+            <span v-else class="text-sm text-gray-500">
+              Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code>
+            </span>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -379,25 +399,37 @@ async function deleteApp() {
             <dd class="font-mono text-sm">{{ app.id.slice(0, 8) }}...</dd>
           </div>
           <div class="flex justify-between">
-            <dt class="text-gray-500">Container ID</dt>
-            <dd class="font-mono text-sm">{{ app.container_id ? app.container_id.slice(0, 12) + '...' : '-' }}</dd>
+            <dt class="text-gray-500">Type</dt>
+            <dd class="font-mono text-sm">{{ app.type || 'container' }}</dd>
           </div>
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Image</dt>
-            <dd class="font-mono text-sm">{{ app.image || '-' }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Port</dt>
-            <dd>{{ app.ports?.container_port || 8080 }}</dd>
-          </div>
+          <!-- Container-specific details -->
+          <template v-if="app.type !== 'static'">
+            <div class="flex justify-between">
+              <dt class="text-gray-500">Container ID</dt>
+              <dd class="font-mono text-sm">{{ app.container_id ? app.container_id.slice(0, 12) + '...' : '-' }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-gray-500">Image</dt>
+              <dd class="font-mono text-sm">{{ app.image || '-' }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-gray-500">Port</dt>
+              <dd>{{ app.ports?.container_port || 8080 }}</dd>
+            </div>
+          </template>
           <div class="flex justify-between">
             <dt class="text-gray-500">Created</dt>
             <dd>{{ new Date(app.created_at).toLocaleString() }}</dd>
           </div>
+          <div v-if="app.updated_at" class="flex justify-between">
+            <dt class="text-gray-500">Last Deployed</dt>
+            <dd>{{ new Date(app.updated_at).toLocaleString() }}</dd>
+          </div>
         </dl>
       </UCard>
 
-      <UCard>
+      <!-- Connection Info - only for container apps -->
+      <UCard v-if="app.type !== 'static'">
         <template #header>
           <h3 class="font-semibold">Connection Info</h3>
         </template>
