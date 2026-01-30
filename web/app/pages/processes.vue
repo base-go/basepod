@@ -119,6 +119,28 @@ async function stopContainer(containerId: string, name: string) {
   }
 }
 
+// Import unmanaged container
+const importingContainer = ref<string | null>(null)
+
+async function importContainer(containerId: string, name: string) {
+  importingContainer.value = containerId
+  try {
+    const result = await $api<{ id: string; name: string }>(`/containers/${containerId}/import`, {
+      method: 'POST',
+      body: { name: name.replace(/^basepod-/, '').replace(/^\//, '') }
+    })
+    toast.add({ title: `Imported ${result.name}`, description: 'Container is now managed by basepod', color: 'success' })
+    refresh()
+    // Navigate to the new app
+    navigateTo(`/apps/${result.id}`)
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to import container', description: err.data?.error, color: 'error' })
+  } finally {
+    importingContainer.value = null
+  }
+}
+
 // Group processes by type
 const groupedProcesses = computed(() => {
   if (!data.value?.processes) return {}
@@ -336,6 +358,16 @@ const hasProcesses = computed(() => {
                 @click="stopContainer(proc.app_id, proc.name)"
               >
                 Stop
+              </UButton>
+              <UButton
+                v-if="!proc.app_id"
+                color="primary"
+                variant="soft"
+                size="xs"
+                :loading="importingContainer === proc.id"
+                @click="importContainer(proc.id, proc.name)"
+              >
+                Import
               </UButton>
             </div>
           </div>

@@ -149,6 +149,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
 	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
+	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
 
 	// Templates (auth required)
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
@@ -1775,6 +1776,170 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, containers)
+}
+
+// handleImportContainer imports an existing container into basepod
+func (s *Server) handleImportContainer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	containerID := r.PathValue("id")
+	if containerID == "" {
+		errorResponse(w, http.StatusBadRequest, "Container ID is required")
+		return
+	}
+
+	// Parse request body for domain
+	var req struct {
+		Name   string `json:"name"`
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Find the container from list (to handle short IDs)
+	containers, err := s.podman.ListContainers(ctx, true)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to list containers: "+err.Error())
+		return
+	}
+
+	var foundContainer *podman.Container
+	for i, c := range containers {
+		// Match by full ID, short ID, or name
+		if c.ID == containerID || strings.HasPrefix(c.ID, containerID) || (len(c.Names) > 0 && c.Names[0] == containerID) {
+			foundContainer = &containers[i]
+			break
+		}
+	}
+
+	if foundContainer == nil {
+		errorResponse(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	// Check if container is already managed by basepod
+	apps, _ := s.storage.ListApps()
+	for _, a := range apps {
+		if a.ContainerID == foundContainer.ID {
+			errorResponse(w, http.StatusConflict, "Container is already managed by basepod as app: "+a.Name)
+			return
+		}
+	}
+
+	// Inspect container for details
+	inspect, err := s.podman.InspectContainer(ctx, foundContainer.ID)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to inspect container: "+err.Error())
+		return
+	}
+
+	// Determine app name - use provided name, or container name without basepod- prefix
+	appName := req.Name
+	if appName == "" {
+		if len(foundContainer.Names) > 0 {
+			appName = foundContainer.Names[0]
+			// Remove common prefixes
+			appName = strings.TrimPrefix(appName, "/")
+			appName = strings.TrimPrefix(appName, "basepod-")
+		} else {
+			appName = containerID[:12]
+		}
+	}
+
+	// Check if app name already exists
+	existing, _ := s.storage.GetAppByName(appName)
+	if existing != nil {
+		errorResponse(w, http.StatusConflict, "App with this name already exists")
+		return
+	}
+
+	// Determine domain
+	domain := req.Domain
+	if domain == "" {
+		domain = s.config.GetAppDomain(appName)
+	}
+
+	// Get container port and host port from port mappings
+	var containerPort, hostPort int
+	if len(foundContainer.Ports) > 0 {
+		containerPort = foundContainer.Ports[0].ContainerPort
+		hostPort = foundContainer.Ports[0].HostPort
+	}
+	if containerPort == 0 {
+		containerPort = 8080 // default
+	}
+
+	// Parse environment from inspect
+	env := make(map[string]string)
+	for _, e := range inspect.Config.Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			// Skip common system env vars
+			if parts[0] == "PATH" || parts[0] == "HOME" || strings.HasPrefix(parts[0], "HOSTNAME") {
+				continue
+			}
+			env[parts[0]] = parts[1]
+		}
+	}
+
+	// Determine status from container state
+	status := app.StatusStopped
+	if inspect.State.Running {
+		status = app.StatusRunning
+	}
+
+	// Create the app
+	newApp := &app.App{
+		ID:          uuid.New().String(),
+		Name:        appName,
+		Type:        app.AppTypeContainer,
+		Domain:      domain,
+		ContainerID: foundContainer.ID,
+		Image:       foundContainer.Image,
+		Status:      status,
+		Env:         env,
+		Ports: app.PortConfig{
+			ContainerPort: containerPort,
+			HostPort:      hostPort,
+			Protocol:      "http",
+		},
+		Resources: app.ResourceConfig{
+			Replicas: 1,
+		},
+		SSL: app.SSLConfig{
+			Enabled:   true,
+			AutoRenew: true,
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	// Assign host port if not set
+	if newApp.Ports.HostPort == 0 {
+		newApp.Ports.HostPort = assignHostPort(newApp.ID)
+	}
+
+	// Save to database
+	if err := s.storage.CreateApp(newApp); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create app: "+err.Error())
+		return
+	}
+
+	// Add Caddy route
+	if s.caddy != nil && newApp.Status == app.StatusRunning {
+		internalHost := fmt.Sprintf("localhost:%d", newApp.Ports.HostPort)
+		if err := s.caddy.AddRoute(caddy.Route{
+			ID:        "basepod-" + newApp.ID,
+			Domain:    domain,
+			Upstream:  internalHost,
+			EnableSSL: newApp.SSL.Enabled,
+		}); err != nil {
+			log.Printf("Warning: Failed to add Caddy route for %s: %v", domain, err)
+		}
+	}
+
+	jsonResponse(w, http.StatusCreated, newApp)
 }
 
 // deployPlaceholder deploys a placeholder nginx container for a new app
