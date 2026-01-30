@@ -9,17 +9,17 @@ const { data: app, refresh } = await useApiFetch<App>(`/apps/${appId}`)
 
 const activeTab = ref('overview')
 
-// Tabs vary by app type - static sites don't have logs, volumes, or env
+// Tabs vary by app type - static sites don't have volumes or env
 const tabs = computed(() => {
   const baseTabs = [
     { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
     { label: 'Deployments', value: 'deployments', icon: 'i-heroicons-rocket-launch' },
+    { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
   ]
 
   // Only show container-specific tabs for non-static apps
   if (app.value?.type !== 'static') {
     baseTabs.push(
-      { label: 'Logs', value: 'logs', icon: 'i-heroicons-document-text' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
     )
@@ -544,18 +544,42 @@ async function deleteApp() {
     <UCard v-if="activeTab === 'logs'">
       <template #header>
         <div class="flex items-center justify-between">
-          <h3 class="font-semibold">Container Logs</h3>
-          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="logsLoading" @click="fetchLogs">
+          <h3 class="font-semibold">{{ app.type === 'static' ? 'Access Logs' : 'Container Logs' }}</h3>
+          <UButton v-if="app.type !== 'static'" variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="logsLoading" @click="fetchLogs">
             Refresh
           </UButton>
         </div>
       </template>
 
-      <div v-if="!app.container_id" class="text-center py-8 text-gray-500">
-        <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
-        <p>App has not been deployed yet</p>
+      <!-- Static site logs info -->
+      <div v-if="app.type === 'static'" class="space-y-4">
+        <p class="text-gray-600 dark:text-gray-400">
+          Static sites are served directly by Caddy. Access logs can be viewed via the Caddy admin API or log files.
+        </p>
+        <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+          <p class="text-sm font-medium mb-2">Check Caddy access logs:</p>
+          <code class="block text-sm bg-gray-900 text-gray-100 p-3 rounded font-mono overflow-x-auto">
+            curl -s localhost:2019/config/logging
+          </code>
+        </div>
+        <div class="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+          <div class="flex items-start gap-2">
+            <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+            <div class="text-sm text-blue-700 dark:text-blue-300">
+              <strong>Tip:</strong> Enable Caddy access logging by adding a <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">log</code> directive to your Caddyfile for detailed request logs.
+            </div>
+          </div>
+        </div>
       </div>
-      <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
+
+      <!-- Container logs -->
+      <template v-else>
+        <div v-if="!app.container_id" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>App has not been deployed yet</p>
+        </div>
+        <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
+      </template>
     </UCard>
 
     <!-- Volumes Tab -->
