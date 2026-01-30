@@ -15,6 +15,15 @@ export interface MLXConfig {
   pid?: number
 }
 
+export interface DeploymentRecord {
+  id: string
+  commit_hash?: string
+  commit_msg?: string
+  branch?: string
+  status: string
+  deployed_at: string
+}
+
 export interface App {
   id: string
   name: string
@@ -38,6 +47,7 @@ export interface App {
   }
   env?: Record<string, string>
   volumes?: VolumeMount[]
+  deployments?: DeploymentRecord[]
   mlx?: MLXConfig
   internal_host?: string
   external_host?: string

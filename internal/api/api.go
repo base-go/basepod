@@ -2090,14 +2090,17 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 
 // SourceDeployConfig represents the config sent by the CLI
 type SourceDeployConfig struct {
-	Name    string            `json:"name"`
-	Type    string            `json:"type,omitempty"`   // "static" or "container" (default)
-	Domain  string            `json:"domain,omitempty"`
-	Port    int               `json:"port,omitempty"`
-	Public  string            `json:"public,omitempty"` // Public directory for static sites
-	Build   BuildConfig       `json:"build,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Volumes []string          `json:"volumes,omitempty"`
+	Name       string            `json:"name"`
+	Type       string            `json:"type,omitempty"`   // "static" or "container" (default)
+	Domain     string            `json:"domain,omitempty"`
+	Port       int               `json:"port,omitempty"`
+	Public     string            `json:"public,omitempty"` // Public directory for static sites
+	Build      BuildConfig       `json:"build,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Volumes    []string          `json:"volumes,omitempty"`
+	GitCommit  string            `json:"git_commit,omitempty"`
+	GitMessage string            `json:"git_message,omitempty"`
+	GitBranch  string            `json:"git_branch,omitempty"`
 }
 
 // BuildConfig contains build configuration
@@ -2334,6 +2337,21 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		a.Status = app.StatusRunning
 		a.UpdatedAt = time.Now()
 
+		// Add deployment record
+		deployRecord := app.DeploymentRecord{
+			ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+			CommitHash: deployConfig.GitCommit,
+			CommitMsg:  deployConfig.GitMessage,
+			Branch:     deployConfig.GitBranch,
+			Status:     "success",
+			DeployedAt: time.Now(),
+		}
+		a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
+		// Keep only last 10 deployments
+		if len(a.Deployments) > 10 {
+			a.Deployments = a.Deployments[:10]
+		}
+
 		if err := s.storage.UpdateApp(a); err != nil {
 			writeLine("ERROR: Failed to update app: " + err.Error())
 			return
@@ -2455,6 +2473,22 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	a.Image = imageName
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
+
+	// Add deployment record
+	deployRecord := app.DeploymentRecord{
+		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		CommitHash: deployConfig.GitCommit,
+		CommitMsg:  deployConfig.GitMessage,
+		Branch:     deployConfig.GitBranch,
+		Status:     "success",
+		DeployedAt: time.Now(),
+	}
+	a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
+	// Keep only last 10 deployments
+	if len(a.Deployments) > 10 {
+		a.Deployments = a.Deployments[:10]
+	}
+
 	s.storage.UpdateApp(a)
 
 	// Configure Caddy if domain is set

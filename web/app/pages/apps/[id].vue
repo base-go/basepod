@@ -13,6 +13,7 @@ const activeTab = ref('overview')
 const tabs = computed(() => {
   const baseTabs = [
     { label: 'Overview', value: 'overview', icon: 'i-heroicons-information-circle' },
+    { label: 'Deployments', value: 'deployments', icon: 'i-heroicons-rocket-launch' },
   ]
 
   // Only show container-specific tabs for non-static apps
@@ -496,6 +497,48 @@ async function deleteApp() {
         </dl>
       </UCard>
     </div>
+
+    <!-- Deployments Tab -->
+    <UCard v-if="activeTab === 'deployments'">
+      <template #header>
+        <h3 class="font-semibold">Deployment History</h3>
+      </template>
+
+      <div v-if="!app.deployments || app.deployments.length === 0" class="text-center py-8 text-gray-500">
+        <UIcon name="i-heroicons-rocket-launch" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>No deployments yet</p>
+        <p class="text-sm mt-1">Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code></p>
+      </div>
+
+      <div v-else class="space-y-3">
+        <div
+          v-for="(deployment, index) in app.deployments"
+          :key="deployment.id"
+          class="p-4 rounded-lg border"
+          :class="index === 0 ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700'"
+        >
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <UBadge v-if="index === 0" color="success" size="xs">Current</UBadge>
+              <span v-if="deployment.commit_hash" class="font-mono text-sm font-medium">
+                {{ deployment.commit_hash }}
+              </span>
+              <span v-else class="text-gray-500 text-sm">No commit info</span>
+            </div>
+            <span class="text-sm text-gray-500">
+              {{ new Date(deployment.deployed_at).toLocaleString() }}
+            </span>
+          </div>
+          <div v-if="deployment.commit_msg" class="text-sm text-gray-600 dark:text-gray-400 truncate">
+            {{ deployment.commit_msg }}
+          </div>
+          <div v-if="deployment.branch" class="text-xs text-gray-500 mt-1">
+            <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
+            {{ deployment.branch }}
+          </div>
+        </div>
+      </div>
+    </UCard>
 
     <!-- Logs Tab -->
     <UCard v-if="activeTab === 'logs'">

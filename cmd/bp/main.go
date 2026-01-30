@@ -600,6 +600,10 @@ type AppConfig struct {
 	Volumes   []string                  `yaml:"volumes,omitempty"`
 	Processes []ProcessConfig           `yaml:"processes,omitempty"` // Multiple processes for multi-service apps
 	Services  map[string]*ServiceConfig `yaml:"services,omitempty"`  // Multiple services (docker-compose style)
+	// Git info (populated at deploy time, not in yaml)
+	GitCommit  string `yaml:"-" json:"git_commit,omitempty"`
+	GitMessage string `yaml:"-" json:"git_message,omitempty"`
+	GitBranch  string `yaml:"-" json:"git_branch,omitempty"`
 }
 
 // BuildConfig contains build configuration
@@ -1903,7 +1907,13 @@ func deployLocalSource(dir string, force bool) {
 		contextName = name
 	}
 
-	fmt.Printf("Deploying %s to %s...\n", appCfg.Name, contextName)
+	// Get git info for deployment tracking
+	appCfg.GitCommit, appCfg.GitMessage, appCfg.GitBranch = getGitInfo(dir)
+	if appCfg.GitCommit != "" {
+		fmt.Printf("Deploying %s@%s to %s...\n", appCfg.Name, appCfg.GitCommit, contextName)
+	} else {
+		fmt.Printf("Deploying %s to %s...\n", appCfg.Name, contextName)
+	}
 
 	// Create tarball - for static sites, only include the public directory
 	var tarball *bytes.Buffer
@@ -2036,6 +2046,33 @@ func hasUncommittedChanges(dir string) bool {
 		return false
 	}
 	return len(strings.TrimSpace(string(output))) > 0
+}
+
+// getGitInfo retrieves git commit hash, message, and branch from a directory
+func getGitInfo(dir string) (commit, message, branch string) {
+	// Get short commit hash
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		commit = strings.TrimSpace(string(out))
+	}
+
+	// Get commit message (first line)
+	cmd = exec.Command("git", "-C", dir, "log", "-1", "--pretty=%s")
+	if out, err := cmd.Output(); err == nil {
+		message = strings.TrimSpace(string(out))
+		// Truncate to 100 chars
+		if len(message) > 100 {
+			message = message[:97] + "..."
+		}
+	}
+
+	// Get current branch
+	cmd = exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+
+	return
 }
 
 // runBuildCommand executes a local build command in the specified directory

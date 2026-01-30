@@ -16,23 +16,34 @@ const (
 
 // App represents a deployed application
 type App struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Type        AppType           `json:"type"`        // container or mlx
-	Domain      string            `json:"domain"`      // e.g., myapp.basepod.example.com
-	Aliases     []string          `json:"aliases"`     // Additional domains (e.g., ["duxt.dev", "blog.example.com"])
-	ContainerID string            `json:"container_id"`
-	Image       string            `json:"image"`
-	Status      AppStatus         `json:"status"`
-	Env         map[string]string `json:"env"`
-	Ports       PortConfig        `json:"ports"`
-	Volumes     []VolumeMount     `json:"volumes"`
-	Resources   ResourceConfig    `json:"resources"`
-	Deployment  DeploymentConfig  `json:"deployment"`
-	SSL         SSLConfig         `json:"ssl"`
-	MLX         *MLXConfig        `json:"mlx,omitempty"` // MLX LLM configuration
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Type        AppType            `json:"type"`        // container or mlx
+	Domain      string             `json:"domain"`      // e.g., myapp.basepod.example.com
+	Aliases     []string           `json:"aliases"`     // Additional domains (e.g., ["duxt.dev", "blog.example.com"])
+	ContainerID string             `json:"container_id"`
+	Image       string             `json:"image"`
+	Status      AppStatus          `json:"status"`
+	Env         map[string]string  `json:"env"`
+	Ports       PortConfig         `json:"ports"`
+	Volumes     []VolumeMount      `json:"volumes"`
+	Resources   ResourceConfig     `json:"resources"`
+	Deployment  DeploymentConfig   `json:"deployment"`
+	Deployments []DeploymentRecord `json:"deployments,omitempty"` // Deployment history
+	SSL         SSLConfig          `json:"ssl"`
+	MLX         *MLXConfig         `json:"mlx,omitempty"` // MLX LLM configuration
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+// DeploymentRecord represents a single deployment
+type DeploymentRecord struct {
+	ID         string    `json:"id"`
+	CommitHash string    `json:"commit_hash,omitempty"` // Git commit hash (short)
+	CommitMsg  string    `json:"commit_msg,omitempty"`  // Git commit message (first line)
+	Branch     string    `json:"branch,omitempty"`      // Git branch
+	Status     string    `json:"status"`                // success, failed, building
+	DeployedAt time.Time `json:"deployed_at"`
 }
 
 // MLXConfig holds MLX LLM configuration

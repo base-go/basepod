@@ -120,6 +120,8 @@ func (s *Storage) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_model ON chat_messages(model_id)`,
 		// Add aliases column for domain aliases
 		`ALTER TABLE apps ADD COLUMN aliases TEXT`,
+		// Add deployments column for deployment history
+		`ALTER TABLE apps ADD COLUMN deployments TEXT`,
 		// FLUX generations table
 		`CREATE TABLE IF NOT EXISTS flux_generations (
 			id TEXT PRIMARY KEY,
@@ -192,6 +194,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 	volumesJSON, _ := json.Marshal(a.Volumes)
 	resourcesJSON, _ := json.Marshal(a.Resources)
 	deploymentJSON, _ := json.Marshal(a.Deployment)
+	deploymentsJSON, _ := json.Marshal(a.Deployments)
 	sslJSON, _ := json.Marshal(a.SSL)
 	mlxJSON, _ := json.Marshal(a.MLX)
 	aliasesJSON, _ := json.Marshal(a.Aliases)
@@ -209,11 +212,11 @@ func (s *Storage) CreateApp(a *app.App) error {
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.ID, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
-		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
+		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
 		appType, string(mlxJSON),
 		a.CreatedAt, a.UpdatedAt)
 
@@ -227,7 +230,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 // GetApp retrieves an app by ID
 func (s *Storage) GetApp(id string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE id = ?
 	`, id)
 
@@ -237,7 +240,7 @@ func (s *Storage) GetApp(id string) (*app.App, error) {
 // GetAppByName retrieves an app by name
 func (s *Storage) GetAppByName(name string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE name = ?
 	`, name)
 
@@ -247,7 +250,7 @@ func (s *Storage) GetAppByName(name string) (*app.App, error) {
 // GetAppByDomain retrieves an app by domain
 func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
 		FROM apps WHERE domain = ?
 	`, domain)
 
@@ -258,11 +261,11 @@ func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	var a app.App
 	var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-	var domain, aliasesJSON, containerID, image, appType, mlxJSON sql.NullString
+	var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON sql.NullString
 
 	err := row.Scan(
 		&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
-		&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &sslJSON,
+		&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
 		&appType, &mlxJSON,
 		&a.CreatedAt, &a.UpdatedAt,
 	)
@@ -293,6 +296,9 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	if aliasesJSON.Valid && aliasesJSON.String != "" {
 		json.Unmarshal([]byte(aliasesJSON.String), &a.Aliases)
 	}
+	if deploymentsJSON.Valid && deploymentsJSON.String != "" {
+		json.Unmarshal([]byte(deploymentsJSON.String), &a.Deployments)
+	}
 
 	return &a, nil
 }
@@ -300,7 +306,7 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 // ListApps retrieves all apps
 func (s *Storage) ListApps() ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
 		FROM apps ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -312,11 +318,11 @@ func (s *Storage) ListApps() ([]app.App, error) {
 	for rows.Next() {
 		var a app.App
 		var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-		var domain, aliasesJSON, containerID, image, appType, mlxJSON sql.NullString
+		var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON sql.NullString
 
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
-			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &sslJSON,
+			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
 			&appType, &mlxJSON,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
@@ -344,6 +350,9 @@ func (s *Storage) ListApps() ([]app.App, error) {
 		if aliasesJSON.Valid && aliasesJSON.String != "" {
 			json.Unmarshal([]byte(aliasesJSON.String), &a.Aliases)
 		}
+		if deploymentsJSON.Valid && deploymentsJSON.String != "" {
+			json.Unmarshal([]byte(deploymentsJSON.String), &a.Deployments)
+		}
 
 		apps = append(apps, a)
 	}
@@ -360,6 +369,7 @@ func (s *Storage) UpdateApp(a *app.App) error {
 	volumesJSON, _ := json.Marshal(a.Volumes)
 	resourcesJSON, _ := json.Marshal(a.Resources)
 	deploymentJSON, _ := json.Marshal(a.Deployment)
+	deploymentsJSON, _ := json.Marshal(a.Deployments)
 	sslJSON, _ := json.Marshal(a.SSL)
 	mlxJSON, _ := json.Marshal(a.MLX)
 	aliasesJSON, _ := json.Marshal(a.Aliases)
@@ -379,13 +389,13 @@ func (s *Storage) UpdateApp(a *app.App) error {
 	_, err := s.db.Exec(`
 		UPDATE apps SET
 			name = ?, domain = ?, aliases = ?, container_id = ?, image = ?, status = ?,
-			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, ssl = ?,
+			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, deployments = ?, ssl = ?,
 			type = ?, mlx = ?,
 			updated_at = ?
 		WHERE id = ?
 	`, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
-		string(resourcesJSON), string(deploymentJSON), string(sslJSON),
+		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
 		appType, string(mlxJSON),
 		a.UpdatedAt, a.ID)
 
