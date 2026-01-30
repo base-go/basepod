@@ -322,6 +322,19 @@ const creatingBackup = ref(false)
 const restoringBackup = ref<string | null>(null)
 const backupError = ref('')
 
+// Backup progress tracking
+const backupProgress = ref({
+  step: 0,
+  message: '',
+  steps: [
+    { icon: 'i-heroicons-circle-stack', label: 'Backing up database...' },
+    { icon: 'i-heroicons-cog-6-tooth', label: 'Backing up configuration...' },
+    { icon: 'i-heroicons-globe-alt', label: 'Backing up static sites...' },
+    { icon: 'i-heroicons-archive-box', label: 'Exporting container volumes...' },
+    { icon: 'i-heroicons-archive-box-arrow-down', label: 'Compressing backup...' }
+  ]
+})
+
 // Backup options
 const backupOptions = ref({
   includeVolumes: true,
@@ -349,9 +362,33 @@ const loadBackups = async () => {
   }
 }
 
+// Progress simulation for backup
+let progressInterval: ReturnType<typeof setInterval> | null = null
+
+const startProgressSimulation = () => {
+  backupProgress.value.step = 0
+  backupProgress.value.message = backupProgress.value.steps[0].label
+
+  progressInterval = setInterval(() => {
+    if (backupProgress.value.step < backupProgress.value.steps.length - 1) {
+      backupProgress.value.step++
+      backupProgress.value.message = backupProgress.value.steps[backupProgress.value.step].label
+    }
+  }, 2000) // Move to next step every 2 seconds
+}
+
+const stopProgressSimulation = () => {
+  if (progressInterval) {
+    clearInterval(progressInterval)
+    progressInterval = null
+  }
+}
+
 const createBackup = async () => {
   creatingBackup.value = true
   backupError.value = ''
+  startProgressSimulation()
+
   try {
     const result = await $api<BackupItem>('/backups', {
       method: 'POST',
@@ -360,13 +397,17 @@ const createBackup = async () => {
         include_builds: backupOptions.value.includeBuilds
       }
     })
+    stopProgressSimulation()
+    backupProgress.value.message = 'Backup complete!'
+
     toast.add({
-      title: 'Backup created',
+      title: 'Backup created successfully',
       description: `${result.size_human} - ID: ${result.id}`,
       color: 'success'
     })
     await loadBackups()
   } catch (e: unknown) {
+    stopProgressSimulation()
     const err = e as { data?: { error?: string } }
     backupError.value = err.data?.error || 'Failed to create backup'
     toast.add({ title: 'Backup failed', description: backupError.value, color: 'error' })
@@ -578,25 +619,83 @@ const formatDate = (dateStr: string) => {
             </template>
 
             <div class="space-y-4">
-              <p class="text-sm text-gray-500">
-                Create a backup of your database, configuration, static sites, and container volumes.
-              </p>
+              <!-- Progress indicator when backup is running -->
+              <div v-if="creatingBackup" class="space-y-4">
+                <div class="flex items-center gap-3 p-4 bg-primary-50 dark:bg-primary-950 rounded-lg">
+                  <div class="relative">
+                    <UIcon
+                      :name="backupProgress.steps[backupProgress.step]?.icon || 'i-heroicons-arrow-path'"
+                      class="text-2xl text-primary-500 animate-pulse"
+                    />
+                  </div>
+                  <div class="flex-1">
+                    <p class="font-medium text-primary-700 dark:text-primary-300">
+                      {{ backupProgress.message }}
+                    </p>
+                    <p class="text-sm text-primary-600 dark:text-primary-400">
+                      Step {{ backupProgress.step + 1 }} of {{ backupProgress.steps.length }}
+                    </p>
+                  </div>
+                </div>
 
-              <div class="flex flex-col gap-2">
-                <UCheckbox v-model="backupOptions.includeVolumes" label="Include container volumes" />
-                <UCheckbox v-model="backupOptions.includeBuilds" label="Include build sources (Dockerfiles)" />
+                <!-- Progress steps -->
+                <div class="flex items-center justify-between px-2">
+                  <div
+                    v-for="(step, index) in backupProgress.steps"
+                    :key="index"
+                    class="flex flex-col items-center gap-1"
+                  >
+                    <div
+                      class="w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300"
+                      :class="index <= backupProgress.step
+                        ? 'bg-primary-500 text-white'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-400'"
+                    >
+                      <UIcon
+                        v-if="index < backupProgress.step"
+                        name="i-heroicons-check"
+                        class="text-sm"
+                      />
+                      <UIcon
+                        v-else-if="index === backupProgress.step"
+                        name="i-heroicons-arrow-path"
+                        class="text-sm animate-spin"
+                      />
+                      <span v-else class="text-xs">{{ index + 1 }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                  <div
+                    class="bg-primary-500 h-2 rounded-full transition-all duration-500"
+                    :style="{ width: `${((backupProgress.step + 1) / backupProgress.steps.length) * 100}%` }"
+                  />
+                </div>
               </div>
 
-              <UButton
-                color="primary"
-                :loading="creatingBackup"
-                @click="createBackup"
-              >
-                <template #leading>
-                  <UIcon name="i-heroicons-cloud-arrow-up" />
-                </template>
-                Create Backup
-              </UButton>
+              <!-- Normal state (not backing up) -->
+              <template v-else>
+                <p class="text-sm text-gray-500">
+                  Create a backup of your database, configuration, static sites, and container volumes.
+                </p>
+
+                <div class="flex flex-col gap-2">
+                  <UCheckbox v-model="backupOptions.includeVolumes" label="Include container volumes" />
+                  <UCheckbox v-model="backupOptions.includeBuilds" label="Include build sources (Dockerfiles)" />
+                </div>
+
+                <UButton
+                  color="primary"
+                  @click="createBackup"
+                >
+                  <template #leading>
+                    <UIcon name="i-heroicons-cloud-arrow-up" />
+                  </template>
+                  Create Backup
+                </UButton>
+              </template>
             </div>
           </UCard>
 
