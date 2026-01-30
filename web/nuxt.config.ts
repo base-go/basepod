@@ -3,6 +3,11 @@ export default defineNuxtConfig({
   compatibilityDate: '2024-11-01',
   devtools: { enabled: true },
 
+  // Auto-reload when chunk loading fails (e.g., after server update)
+  experimental: {
+    emitRouteChunkError: 'automatic'
+  },
+
   modules: [
     '@nuxt/ui',
     '@nuxt/eslint'
