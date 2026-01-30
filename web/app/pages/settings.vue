@@ -8,6 +8,30 @@ interface VersionInfo {
   updateAvailable: boolean
 }
 
+interface BackupItem {
+  id: string
+  created_at: string
+  size: number
+  size_human: string
+  path: string
+  contents: {
+    database: boolean
+    config: boolean
+    static_sites: string[]
+    volumes: string[]
+  }
+}
+
+interface RestoreResult {
+  success: boolean
+  database: boolean
+  config_files: string[]
+  static_sites: string[]
+  volumes: string[]
+  warnings: string[]
+  message: string
+}
+
 definePageMeta({
   title: 'Settings'
 })
@@ -15,6 +39,14 @@ definePageMeta({
 const toast = useToast()
 const { data: health, refresh: refreshHealth } = await useApiFetch<HealthResponse>('/health')
 const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
+
+// Tabs
+const tabs = [
+  { label: 'General', slot: 'general', icon: 'i-heroicons-cog-6-tooth' },
+  { label: 'Security', slot: 'security', icon: 'i-heroicons-shield-check' },
+  { label: 'Backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up' },
+  { label: 'System', slot: 'system', icon: 'i-heroicons-server' }
+]
 
 // Version info
 const version = ref<VersionInfo | null>(null)
@@ -37,19 +69,16 @@ const checkVersion = async () => {
 }
 
 const waitForServer = async (maxAttempts = 30, delayMs = 1000): Promise<boolean> => {
-  // First, wait for server to go down (max 5 seconds)
   updateMessage.value = 'Waiting for server to restart...'
   for (let i = 0; i < 5; i++) {
     await new Promise(resolve => setTimeout(resolve, 1000))
     try {
       await fetch('/api/health', { method: 'GET' })
-      // Server still up, keep waiting
     } catch {
       break
     }
   }
 
-  // Now wait for server to come back up
   updateMessage.value = 'Server restarting...'
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(resolve => setTimeout(resolve, delayMs))
@@ -59,7 +88,7 @@ const waitForServer = async (maxAttempts = 30, delayMs = 1000): Promise<boolean>
         return true
       }
     } catch {
-      // Server not ready yet, keep trying
+      // Server not ready yet
     }
     updateMessage.value = 'Waiting for server...'
   }
@@ -76,7 +105,6 @@ const performUpdate = async () => {
     })
     updateMessage.value = result.message || 'Update initiated...'
 
-    // Always wait for server to come back after update
     const serverReady = await waitForServer()
     if (serverReady) {
       updateMessage.value = 'Update successful! Refreshing...'
@@ -88,12 +116,10 @@ const performUpdate = async () => {
     }
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
-    // Connection error during restart is expected - server went down
     if (err.data?.error && !err.data.error.includes('fetch')) {
       updateError.value = err.data.error
       updating.value = false
     } else {
-      // Assume restart in progress, wait for server
       updateMessage.value = 'Update in progress...'
       const serverReady = await waitForServer()
       if (serverReady) {
@@ -119,9 +145,10 @@ const settings = ref({
 // Check version on load
 onMounted(() => {
   checkVersion()
+  loadBackups()
 })
 
-// Watch for configData changes (handles SSR hydration)
+// Watch for configData changes
 watch(configData, (newConfig) => {
   if (newConfig?.domain) {
     settings.value.domain = newConfig.domain.root || ''
@@ -197,7 +224,6 @@ const restartService = async (service: string) => {
   try {
     await $api(`/system/restart/${service}`, { method: 'POST' })
     toast.add({ title: `${service} restarted`, color: 'success' })
-    // If restarting deployer, wait and refresh
     if (service === 'basepod') {
       toast.add({ title: 'Waiting for server...', color: 'info' })
       const ready = await waitForServer()
@@ -205,7 +231,6 @@ const restartService = async (service: string) => {
         window.location.reload()
       }
     } else {
-      // Refresh health status
       await refreshHealth()
     }
   } catch (e: unknown) {
@@ -216,6 +241,7 @@ const restartService = async (service: string) => {
   }
 }
 
+// Password change
 const passwordForm = ref({
   currentPassword: '',
   newPassword: '',
@@ -250,6 +276,7 @@ const changePassword = async () => {
     })
     passwordSuccess.value = true
     passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
+    toast.add({ title: 'Password changed successfully', color: 'success' })
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     passwordError.value = err.data?.error || 'Failed to change password'
@@ -276,6 +303,7 @@ const pruneResources = async () => {
       method: 'POST'
     })
     pruneResult.value = result.output || 'Prune completed successfully'
+    toast.add({ title: 'Resources cleaned up', color: 'success' })
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     pruneError.value = err.data?.error || 'Prune failed'
@@ -283,312 +311,571 @@ const pruneResources = async () => {
     pruning.value = false
   }
 }
+
+// ============================================================================
+// Backup functionality
+// ============================================================================
+
+const backups = ref<BackupItem[]>([])
+const loadingBackups = ref(false)
+const creatingBackup = ref(false)
+const restoringBackup = ref<string | null>(null)
+const backupError = ref('')
+
+// Backup options
+const backupOptions = ref({
+  includeVolumes: true,
+  includeBuilds: false
+})
+
+// Restore options
+const restoreOptions = ref({
+  restoreDatabase: true,
+  restoreConfig: true,
+  restoreApps: true,
+  restoreVolumes: true
+})
+
+const loadBackups = async () => {
+  loadingBackups.value = true
+  backupError.value = ''
+  try {
+    backups.value = await $api<BackupItem[]>('/backups')
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    backupError.value = err.data?.error || 'Failed to load backups'
+  } finally {
+    loadingBackups.value = false
+  }
+}
+
+const createBackup = async () => {
+  creatingBackup.value = true
+  backupError.value = ''
+  try {
+    const result = await $api<BackupItem>('/backups', {
+      method: 'POST',
+      body: {
+        include_volumes: backupOptions.value.includeVolumes,
+        include_builds: backupOptions.value.includeBuilds
+      }
+    })
+    toast.add({
+      title: 'Backup created',
+      description: `${result.size_human} - ID: ${result.id}`,
+      color: 'success'
+    })
+    await loadBackups()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    backupError.value = err.data?.error || 'Failed to create backup'
+    toast.add({ title: 'Backup failed', description: backupError.value, color: 'error' })
+  } finally {
+    creatingBackup.value = false
+  }
+}
+
+const restoreBackup = async (backup: BackupItem) => {
+  if (!confirm(`Restore from backup ${backup.id}?\n\nThis will overwrite current data. Existing files will be backed up with .bak extension.`)) {
+    return
+  }
+
+  restoringBackup.value = backup.id
+  backupError.value = ''
+  try {
+    const result = await $api<RestoreResult>(`/backups/${backup.id}/restore`, {
+      method: 'POST',
+      body: {
+        restore_database: restoreOptions.value.restoreDatabase,
+        restore_config: restoreOptions.value.restoreConfig,
+        restore_apps: restoreOptions.value.restoreApps,
+        restore_volumes: restoreOptions.value.restoreVolumes
+      }
+    })
+
+    let description = 'Restored: '
+    const items = []
+    if (result.database) items.push('database')
+    if (result.config_files?.length) items.push(`${result.config_files.length} config files`)
+    if (result.static_sites?.length) items.push(`${result.static_sites.length} sites`)
+    if (result.volumes?.length) items.push(`${result.volumes.length} volumes`)
+    description += items.join(', ')
+
+    toast.add({
+      title: 'Restore completed',
+      description,
+      color: 'success'
+    })
+
+    if (result.warnings?.length) {
+      toast.add({
+        title: 'Restore warnings',
+        description: result.warnings.join(', '),
+        color: 'warning'
+      })
+    }
+
+    // Suggest restart
+    toast.add({
+      title: 'Restart recommended',
+      description: 'Please restart basepod for all changes to take effect.',
+      color: 'info'
+    })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    backupError.value = err.data?.error || 'Failed to restore backup'
+    toast.add({ title: 'Restore failed', description: backupError.value, color: 'error' })
+  } finally {
+    restoringBackup.value = null
+  }
+}
+
+const deleteBackup = async (backup: BackupItem) => {
+  if (!confirm(`Delete backup ${backup.id}?`)) {
+    return
+  }
+
+  try {
+    await $api(`/backups/${backup.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Backup deleted', color: 'success' })
+    await loadBackups()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Delete failed', description: err.data?.error, color: 'error' })
+  }
+}
+
+const downloadBackup = (backup: BackupItem) => {
+  window.open(`/api/backups/${backup.id}/download`, '_blank')
+}
+
+const formatDate = (dateStr: string) => {
+  return new Date(dateStr).toLocaleString()
+}
 </script>
 
 <template>
   <div>
-    <div class="max-w-3xl space-y-6">
-      <!-- System Update -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">System Update</h3>
-            <UBadge v-if="version?.updateAvailable" color="warning">Update Available</UBadge>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <div class="flex items-center justify-between py-2">
-            <div>
-              <p class="font-medium">Current Version</p>
-              <p class="text-2xl font-mono">v{{ version?.current || '...' }}</p>
-            </div>
-            <div class="text-right">
-              <p class="text-sm text-gray-500">Latest Version</p>
-              <p class="text-xl font-mono">v{{ version?.latest || '...' }}</p>
-            </div>
-          </div>
-
-          <UAlert
-            v-if="version?.updateAvailable"
-            color="info"
-            variant="soft"
-            title="A new version is available"
-            description="Click 'Update Now' to download and install the latest version."
-          />
-
-          <UAlert
-            v-if="updateMessage"
-            color="success"
-            variant="soft"
-            :title="updateMessage"
-          />
-
-          <UAlert
-            v-if="updateError"
-            color="error"
-            variant="soft"
-            :title="updateError"
-          />
-
-          <div class="flex gap-2">
-            <UButton
-              variant="soft"
-              :loading="checkingVersion"
-              @click="checkVersion"
-            >
-              Check for Updates
-            </UButton>
-            <UButton
-              v-if="version?.updateAvailable"
-              color="primary"
-              :loading="updating"
-              @click="performUpdate"
-            >
-              Update Now
-            </UButton>
-          </div>
-        </div>
-      </UCard>
-
-      <!-- Domain Settings -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">Domain Settings</h3>
-        </template>
-
-        <form class="space-y-4" @submit.prevent="saveDomainSettings">
-          <UFormField label="Root Domain" help="The base domain for your apps (e.g., example.com)">
-            <UInput v-model="settings.domain" placeholder="example.com" />
-          </UFormField>
-
-          <UFormField>
-            <UCheckbox v-model="settings.enableWildcard" label="Enable wildcard subdomains" />
-          </UFormField>
-
-          <UAlert
-            v-if="domainError"
-            color="error"
-            variant="soft"
-            :title="domainError"
-          />
-
-          <UAlert
-            v-if="domainSuccess"
-            color="success"
-            variant="soft"
-            title="Domain settings saved successfully"
-          />
-
-          <UButton type="submit" :loading="savingDomain">
-            Save Domain Settings
-          </UButton>
-        </form>
-      </UCard>
-
-      <!-- AI Settings -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">AI Settings</h3>
-        </template>
-
-        <form class="space-y-4" @submit.prevent="saveAISettings">
-          <UFormField label="HuggingFace Token" help="Required for downloading gated FLUX models. Get your token from huggingface.co/settings/tokens">
-            <UInput
-              v-model="settings.hfToken"
-              type="password"
-              placeholder="hf_xxxxxxxxxxxx"
-            />
-          </UFormField>
-
-          <UAlert
-            color="info"
-            variant="soft"
-            title="Some FLUX models require license acceptance"
-            description="Visit the model page on HuggingFace and accept the license before downloading."
-          />
-
-          <UAlert
-            v-if="aiError"
-            color="error"
-            variant="soft"
-            :title="aiError"
-          />
-
-          <UAlert
-            v-if="aiSuccess"
-            color="success"
-            variant="soft"
-            title="AI settings saved successfully"
-          />
-
-          <UButton type="submit" :loading="savingAI">
-            Save AI Settings
-          </UButton>
-        </form>
-      </UCard>
-
-      <!-- Change Password -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">Change Password</h3>
-        </template>
-
-        <form class="space-y-4" @submit.prevent="changePassword">
-          <UFormField label="Current Password">
-            <UInput
-              v-model="passwordForm.currentPassword"
-              type="password"
-              placeholder="Enter current password"
-            />
-          </UFormField>
-
-          <UFormField label="New Password">
-            <UInput
-              v-model="passwordForm.newPassword"
-              type="password"
-              placeholder="Enter new password"
-            />
-          </UFormField>
-
-          <UFormField label="Confirm New Password">
-            <UInput
-              v-model="passwordForm.confirmPassword"
-              type="password"
-              placeholder="Confirm new password"
-            />
-          </UFormField>
-
-          <UAlert
-            v-if="passwordError"
-            color="error"
-            variant="soft"
-            :title="passwordError"
-          />
-
-          <UAlert
-            v-if="passwordSuccess"
-            color="success"
-            variant="soft"
-            title="Password changed successfully"
-          />
-
-          <UButton type="submit" :loading="changingPassword">
-            Change Password
-          </UButton>
-        </form>
-      </UCard>
-
-      <!-- System Status -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">System Status</h3>
-        </template>
-
-        <div class="space-y-4">
-          <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
-            <div>
-              <p class="font-medium">Podman</p>
-              <p class="text-sm text-gray-500">Container runtime</p>
-            </div>
-            <div class="flex items-center gap-2">
-              <UBadge :color="health?.podman === 'connected' ? 'success' : 'error'">
-                {{ health?.podman === 'connected' ? 'Connected' : 'Disconnected' }}
-              </UBadge>
-              <UButton
-                size="xs"
-                variant="soft"
-                :loading="restartingService === 'podman'"
-                @click="restartService('podman')"
-              >
-                Restart
-              </UButton>
-            </div>
-          </div>
-          <p v-if="health?.podman !== 'connected'" class="text-xs text-red-500 -mt-2">
-            {{ health?.podman_error }}
-          </p>
-
-          <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
-            <div>
-              <p class="font-medium">Caddy</p>
-              <p class="text-sm text-gray-500">Reverse proxy</p>
-            </div>
-            <div class="flex items-center gap-2">
-              <UBadge color="success">Running</UBadge>
-              <UButton
-                size="xs"
-                variant="soft"
-                :loading="restartingService === 'caddy'"
-                @click="restartService('caddy')"
-              >
-                Restart
-              </UButton>
-            </div>
-          </div>
-
-          <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
-            <div>
-              <p class="font-medium">Basepod</p>
-              <p class="text-sm text-gray-500">API Server</p>
-            </div>
-            <div class="flex items-center gap-2">
-              <UBadge color="success">Running</UBadge>
-              <UButton
-                size="xs"
-                variant="soft"
-                :loading="restartingService === 'basepod'"
-                @click="restartService('basepod')"
-              >
-                Restart
-              </UButton>
-            </div>
-          </div>
-
-          <div class="flex items-center justify-between py-2">
-            <div>
-              <p class="font-medium">Database</p>
-              <p class="text-sm text-gray-500">SQLite</p>
-            </div>
-            <UBadge color="success">Connected</UBadge>
-          </div>
-        </div>
-      </UCard>
-
-      <!-- Danger Zone -->
-      <UCard class="border-red-200 dark:border-red-900">
-        <template #header>
-          <h3 class="font-semibold text-red-600">Danger Zone</h3>
-        </template>
-
-        <div class="space-y-4">
-          <UAlert
-            v-if="pruneResult"
-            color="success"
-            variant="soft"
-            title="Prune completed"
-          >
-            <pre class="text-xs mt-2 whitespace-pre-wrap">{{ pruneResult }}</pre>
-          </UAlert>
-
-          <UAlert
-            v-if="pruneError"
-            color="error"
-            variant="soft"
-            :title="pruneError"
-          />
-
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="font-medium">Prune Unused Resources</p>
-              <p class="text-sm text-gray-500">Remove unused containers, images, and volumes</p>
-            </div>
-            <UButton color="error" variant="soft" :loading="pruning" @click="pruneResources">
-              Prune
-            </UButton>
-          </div>
-        </div>
-      </UCard>
+    <div class="mb-6">
+      <h1 class="text-2xl font-bold">Settings</h1>
+      <p class="text-gray-500">Manage your Basepod configuration</p>
     </div>
+
+    <UTabs :items="tabs" class="w-full">
+      <!-- General Tab -->
+      <template #general>
+        <div class="space-y-6 py-4">
+          <!-- Domain Settings -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">Domain Settings</h3>
+            </template>
+
+            <form class="space-y-4" @submit.prevent="saveDomainSettings">
+              <UFormField label="Root Domain" help="The base domain for your apps (e.g., example.com)">
+                <UInput v-model="settings.domain" placeholder="example.com" />
+              </UFormField>
+
+              <UFormField>
+                <UCheckbox v-model="settings.enableWildcard" label="Enable wildcard subdomains" />
+              </UFormField>
+
+              <UAlert v-if="domainError" color="error" variant="soft" :title="domainError" />
+              <UAlert v-if="domainSuccess" color="success" variant="soft" title="Domain settings saved successfully" />
+
+              <UButton type="submit" :loading="savingDomain">
+                Save Domain Settings
+              </UButton>
+            </form>
+          </UCard>
+
+          <!-- AI Settings -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">AI Settings</h3>
+            </template>
+
+            <form class="space-y-4" @submit.prevent="saveAISettings">
+              <UFormField label="HuggingFace Token" help="Required for downloading gated FLUX models">
+                <UInput
+                  v-model="settings.hfToken"
+                  type="password"
+                  placeholder="hf_xxxxxxxxxxxx"
+                />
+              </UFormField>
+
+              <UAlert
+                color="info"
+                variant="soft"
+                title="Some FLUX models require license acceptance"
+                description="Visit the model page on HuggingFace and accept the license before downloading."
+              />
+
+              <UAlert v-if="aiError" color="error" variant="soft" :title="aiError" />
+              <UAlert v-if="aiSuccess" color="success" variant="soft" title="AI settings saved successfully" />
+
+              <UButton type="submit" :loading="savingAI">
+                Save AI Settings
+              </UButton>
+            </form>
+          </UCard>
+        </div>
+      </template>
+
+      <!-- Security Tab -->
+      <template #security>
+        <div class="space-y-6 py-4">
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">Change Password</h3>
+            </template>
+
+            <form class="space-y-4" @submit.prevent="changePassword">
+              <UFormField label="Current Password">
+                <UInput
+                  v-model="passwordForm.currentPassword"
+                  type="password"
+                  placeholder="Enter current password"
+                />
+              </UFormField>
+
+              <UFormField label="New Password">
+                <UInput
+                  v-model="passwordForm.newPassword"
+                  type="password"
+                  placeholder="Enter new password (min 8 characters)"
+                />
+              </UFormField>
+
+              <UFormField label="Confirm New Password">
+                <UInput
+                  v-model="passwordForm.confirmPassword"
+                  type="password"
+                  placeholder="Confirm new password"
+                />
+              </UFormField>
+
+              <UAlert v-if="passwordError" color="error" variant="soft" :title="passwordError" />
+              <UAlert v-if="passwordSuccess" color="success" variant="soft" title="Password changed successfully" />
+
+              <UButton type="submit" :loading="changingPassword">
+                Change Password
+              </UButton>
+            </form>
+          </UCard>
+        </div>
+      </template>
+
+      <!-- Backup Tab -->
+      <template #backup>
+        <div class="space-y-6 py-4">
+          <!-- Create Backup -->
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">Create Backup</h3>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <p class="text-sm text-gray-500">
+                Create a backup of your database, configuration, static sites, and container volumes.
+              </p>
+
+              <div class="flex flex-col gap-2">
+                <UCheckbox v-model="backupOptions.includeVolumes" label="Include container volumes" />
+                <UCheckbox v-model="backupOptions.includeBuilds" label="Include build sources (Dockerfiles)" />
+              </div>
+
+              <UButton
+                color="primary"
+                :loading="creatingBackup"
+                @click="createBackup"
+              >
+                <template #leading>
+                  <UIcon name="i-heroicons-cloud-arrow-up" />
+                </template>
+                Create Backup
+              </UButton>
+            </div>
+          </UCard>
+
+          <!-- Backup List -->
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">Available Backups</h3>
+                <UButton
+                  variant="ghost"
+                  size="sm"
+                  :loading="loadingBackups"
+                  @click="loadBackups"
+                >
+                  <UIcon name="i-heroicons-arrow-path" />
+                </UButton>
+              </div>
+            </template>
+
+            <UAlert v-if="backupError" color="error" variant="soft" :title="backupError" class="mb-4" />
+
+            <div v-if="loadingBackups" class="flex justify-center py-8">
+              <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl" />
+            </div>
+
+            <div v-else-if="backups.length === 0" class="text-center py-8 text-gray-500">
+              <UIcon name="i-heroicons-archive-box" class="text-4xl mb-2" />
+              <p>No backups found</p>
+              <p class="text-sm">Create your first backup above</p>
+            </div>
+
+            <div v-else class="divide-y divide-gray-200 dark:divide-gray-800">
+              <div
+                v-for="backup in backups"
+                :key="backup.id"
+                class="py-4 first:pt-0 last:pb-0"
+              >
+                <div class="flex items-start justify-between">
+                  <div class="flex-1">
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono font-medium">{{ backup.id }}</span>
+                      <UBadge color="neutral" variant="soft" size="xs">
+                        {{ backup.size_human }}
+                      </UBadge>
+                    </div>
+                    <p class="text-sm text-gray-500 mt-1">
+                      {{ formatDate(backup.created_at) }}
+                    </p>
+                    <div class="flex flex-wrap gap-1 mt-2">
+                      <UBadge v-if="backup.contents.database" color="primary" variant="soft" size="xs">
+                        Database
+                      </UBadge>
+                      <UBadge v-if="backup.contents.config" color="info" variant="soft" size="xs">
+                        Config
+                      </UBadge>
+                      <UBadge
+                        v-if="backup.contents.static_sites?.length"
+                        color="success"
+                        variant="soft"
+                        size="xs"
+                      >
+                        {{ backup.contents.static_sites.length }} Sites
+                      </UBadge>
+                      <UBadge
+                        v-if="backup.contents.volumes?.length"
+                        color="warning"
+                        variant="soft"
+                        size="xs"
+                      >
+                        {{ backup.contents.volumes.length }} Volumes
+                      </UBadge>
+                    </div>
+                  </div>
+
+                  <div class="flex gap-1">
+                    <UButton
+                      variant="ghost"
+                      size="sm"
+                      color="primary"
+                      :loading="restoringBackup === backup.id"
+                      @click="restoreBackup(backup)"
+                    >
+                      <UIcon name="i-heroicons-arrow-path" />
+                      Restore
+                    </UButton>
+                    <UButton
+                      variant="ghost"
+                      size="sm"
+                      @click="downloadBackup(backup)"
+                    >
+                      <UIcon name="i-heroicons-arrow-down-tray" />
+                    </UButton>
+                    <UButton
+                      variant="ghost"
+                      size="sm"
+                      color="error"
+                      @click="deleteBackup(backup)"
+                    >
+                      <UIcon name="i-heroicons-trash" />
+                    </UButton>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </UCard>
+
+          <!-- Restore Options -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">Restore Options</h3>
+            </template>
+
+            <p class="text-sm text-gray-500 mb-4">
+              Configure what to restore when using the Restore button above.
+            </p>
+
+            <div class="flex flex-col gap-2">
+              <UCheckbox v-model="restoreOptions.restoreDatabase" label="Restore database" />
+              <UCheckbox v-model="restoreOptions.restoreConfig" label="Restore configuration files" />
+              <UCheckbox v-model="restoreOptions.restoreApps" label="Restore static sites" />
+              <UCheckbox v-model="restoreOptions.restoreVolumes" label="Restore container volumes" />
+            </div>
+          </UCard>
+        </div>
+      </template>
+
+      <!-- System Tab -->
+      <template #system>
+        <div class="space-y-6 py-4">
+          <!-- System Update -->
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">System Update</h3>
+                <UBadge v-if="version?.updateAvailable" color="warning">Update Available</UBadge>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <div class="flex items-center justify-between py-2">
+                <div>
+                  <p class="font-medium">Current Version</p>
+                  <p class="text-2xl font-mono">v{{ version?.current || '...' }}</p>
+                </div>
+                <div class="text-right">
+                  <p class="text-sm text-gray-500">Latest Version</p>
+                  <p class="text-xl font-mono">v{{ version?.latest || '...' }}</p>
+                </div>
+              </div>
+
+              <UAlert
+                v-if="version?.updateAvailable"
+                color="info"
+                variant="soft"
+                title="A new version is available"
+                description="Click 'Update Now' to download and install the latest version."
+              />
+
+              <UAlert v-if="updateMessage" color="success" variant="soft" :title="updateMessage" />
+              <UAlert v-if="updateError" color="error" variant="soft" :title="updateError" />
+
+              <div class="flex gap-2">
+                <UButton variant="soft" :loading="checkingVersion" @click="checkVersion">
+                  Check for Updates
+                </UButton>
+                <UButton
+                  v-if="version?.updateAvailable"
+                  color="primary"
+                  :loading="updating"
+                  @click="performUpdate"
+                >
+                  Update Now
+                </UButton>
+              </div>
+            </div>
+          </UCard>
+
+          <!-- System Status -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">System Status</h3>
+            </template>
+
+            <div class="space-y-4">
+              <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
+                <div>
+                  <p class="font-medium">Podman</p>
+                  <p class="text-sm text-gray-500">Container runtime</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <UBadge :color="health?.podman === 'connected' ? 'success' : 'error'">
+                    {{ health?.podman === 'connected' ? 'Connected' : 'Disconnected' }}
+                  </UBadge>
+                  <UButton
+                    size="xs"
+                    variant="soft"
+                    :loading="restartingService === 'podman'"
+                    @click="restartService('podman')"
+                  >
+                    Restart
+                  </UButton>
+                </div>
+              </div>
+              <p v-if="health?.podman !== 'connected'" class="text-xs text-red-500 -mt-2">
+                {{ health?.podman_error }}
+              </p>
+
+              <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
+                <div>
+                  <p class="font-medium">Caddy</p>
+                  <p class="text-sm text-gray-500">Reverse proxy</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <UBadge color="success">Running</UBadge>
+                  <UButton
+                    size="xs"
+                    variant="soft"
+                    :loading="restartingService === 'caddy'"
+                    @click="restartService('caddy')"
+                  >
+                    Restart
+                  </UButton>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-800">
+                <div>
+                  <p class="font-medium">Basepod</p>
+                  <p class="text-sm text-gray-500">API Server</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <UBadge color="success">Running</UBadge>
+                  <UButton
+                    size="xs"
+                    variant="soft"
+                    :loading="restartingService === 'basepod'"
+                    @click="restartService('basepod')"
+                  >
+                    Restart
+                  </UButton>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between py-2">
+                <div>
+                  <p class="font-medium">Database</p>
+                  <p class="text-sm text-gray-500">SQLite</p>
+                </div>
+                <UBadge color="success">Connected</UBadge>
+              </div>
+            </div>
+          </UCard>
+
+          <!-- Danger Zone -->
+          <UCard class="border-red-200 dark:border-red-900">
+            <template #header>
+              <h3 class="font-semibold text-red-600">Danger Zone</h3>
+            </template>
+
+            <div class="space-y-4">
+              <UAlert v-if="pruneResult" color="success" variant="soft" title="Prune completed">
+                <pre class="text-xs mt-2 whitespace-pre-wrap">{{ pruneResult }}</pre>
+              </UAlert>
+
+              <UAlert v-if="pruneError" color="error" variant="soft" :title="pruneError" />
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-medium">Prune Unused Resources</p>
+                  <p class="text-sm text-gray-500">Remove unused containers, images, and volumes</p>
+                </div>
+                <UButton color="error" variant="soft" :loading="pruning" @click="pruneResources">
+                  Prune
+                </UButton>
+              </div>
+            </div>
+          </UCard>
+        </div>
+      </template>
+    </UTabs>
   </div>
 </template>

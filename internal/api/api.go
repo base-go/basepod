@@ -20,6 +20,7 @@ import (
 
 	"github.com/base-go/basepod/internal/app"
 	"github.com/base-go/basepod/internal/auth"
+	"github.com/base-go/basepod/internal/backup"
 	"github.com/base-go/basepod/internal/caddy"
 	"github.com/base-go/basepod/internal/config"
 	"github.com/base-go/basepod/internal/flux"
@@ -46,6 +47,7 @@ type Server struct {
 	caddy        *caddy.Client
 	config       *config.Config
 	auth         *auth.Manager
+	backup       *backup.Service
 	router       *http.ServeMux
 	staticFS     http.Handler
 	staticDir    string // Path to static files on disk (preferred over embedded)
@@ -64,12 +66,16 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 		cfg = config.DefaultConfig()
 	}
 
+	// Get paths for backup service
+	paths, _ := config.GetPaths()
+
 	s := &Server{
 		storage: store,
 		podman:  pm,
 		caddy:   caddyClient,
 		config:  cfg,
 		auth:    auth.NewManager(cfg.Auth.PasswordHash),
+		backup:  backup.NewService(paths, pm),
 		router:  http.NewServeMux(),
 		version: version,
 	}
@@ -198,6 +204,14 @@ func (s *Server) setupRoutes() {
 
 	// Source deploy endpoint (auth required)
 	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
+
+	// Backup endpoints (auth required)
+	s.router.HandleFunc("GET /api/backups", s.requireAuth(s.handleListBackups))
+	s.router.HandleFunc("POST /api/backups", s.requireAuth(s.handleCreateBackup))
+	s.router.HandleFunc("GET /api/backups/{id}", s.requireAuth(s.handleGetBackup))
+	s.router.HandleFunc("GET /api/backups/{id}/download", s.requireAuth(s.handleDownloadBackup))
+	s.router.HandleFunc("POST /api/backups/{id}/restore", s.requireAuth(s.handleRestoreBackup))
+	s.router.HandleFunc("DELETE /api/backups/{id}", s.requireAuth(s.handleDeleteBackup))
 }
 
 // requireAuth wraps a handler with authentication check
@@ -3615,4 +3629,203 @@ func (s *Server) handleFluxStorageFiles(w http.ResponseWriter, r *http.Request) 
 	svc := flux.GetService(s.storage.DB())
 	files := svc.GetStorageFiles(storageType)
 	jsonResponse(w, http.StatusOK, files)
+}
+
+// ============================================================================
+// Backup Handlers
+// ============================================================================
+
+// handleListBackups returns all available backups
+func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
+	backups, err := s.backup.List()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Format response with human-readable sizes
+	type backupResponse struct {
+		ID        string          `json:"id"`
+		CreatedAt time.Time       `json:"created_at"`
+		Size      int64           `json:"size"`
+		SizeHuman string          `json:"size_human"`
+		Path      string          `json:"path"`
+		Contents  backup.Contents `json:"contents"`
+	}
+
+	var response []backupResponse
+	for _, b := range backups {
+		response = append(response, backupResponse{
+			ID:        b.ID,
+			CreatedAt: b.CreatedAt,
+			Size:      b.Size,
+			SizeHuman: backup.FormatSize(b.Size),
+			Path:      b.Path,
+			Contents:  b.Contents,
+		})
+	}
+
+	jsonResponse(w, http.StatusOK, response)
+}
+
+// handleCreateBackup creates a new backup
+func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse options from request body (optional)
+	var req struct {
+		IncludeVolumes bool   `json:"include_volumes"`
+		IncludeBuilds  bool   `json:"include_builds"`
+		OutputDir      string `json:"output_dir"`
+	}
+	// Set defaults
+	req.IncludeVolumes = true
+	req.IncludeBuilds = false
+
+	// Try to decode body, ignore if empty
+	json.NewDecoder(r.Body).Decode(&req)
+
+	opts := backup.Options{
+		IncludeVolumes: req.IncludeVolumes,
+		IncludeBuilds:  req.IncludeBuilds,
+		OutputDir:      req.OutputDir,
+	}
+
+	// Create backup
+	b, err := s.backup.Create(ctx, opts)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create backup: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"id":         b.ID,
+		"created_at": b.CreatedAt,
+		"size":       b.Size,
+		"size_human": backup.FormatSize(b.Size),
+		"path":       b.Path,
+		"contents":   b.Contents,
+	})
+}
+
+// handleGetBackup returns details of a specific backup
+func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errorResponse(w, http.StatusBadRequest, "backup ID required")
+		return
+	}
+
+	b, err := s.backup.Get(id)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"id":         b.ID,
+		"created_at": b.CreatedAt,
+		"size":       b.Size,
+		"size_human": backup.FormatSize(b.Size),
+		"path":       b.Path,
+		"contents":   b.Contents,
+	})
+}
+
+// handleDownloadBackup streams the backup file to the client
+func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errorResponse(w, http.StatusBadRequest, "backup ID required")
+		return
+	}
+
+	b, err := s.backup.Get(id)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Open backup file
+	file, err := os.Open(b.Path)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to open backup file")
+		return
+	}
+	defer file.Close()
+
+	// Set headers for file download
+	filename := filepath.Base(b.Path)
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", b.Size))
+
+	// Stream file to response
+	io.Copy(w, file)
+}
+
+// handleDeleteBackup deletes a backup
+func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errorResponse(w, http.StatusBadRequest, "backup ID required")
+		return
+	}
+
+	if err := s.backup.Delete(id); err != nil {
+		errorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// handleRestoreBackup restores from a backup
+func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	if id == "" {
+		errorResponse(w, http.StatusBadRequest, "backup ID required")
+		return
+	}
+
+	// Parse options from request body (optional)
+	var req struct {
+		RestoreDatabase bool `json:"restore_database"`
+		RestoreConfig   bool `json:"restore_config"`
+		RestoreApps     bool `json:"restore_apps"`
+		RestoreVolumes  bool `json:"restore_volumes"`
+	}
+	// Set defaults - restore everything
+	req.RestoreDatabase = true
+	req.RestoreConfig = true
+	req.RestoreApps = true
+	req.RestoreVolumes = true
+
+	// Try to decode body, ignore if empty
+	json.NewDecoder(r.Body).Decode(&req)
+
+	opts := backup.RestoreOptions{
+		RestoreDatabase: req.RestoreDatabase,
+		RestoreConfig:   req.RestoreConfig,
+		RestoreApps:     req.RestoreApps,
+		RestoreVolumes:  req.RestoreVolumes,
+	}
+
+	// Perform restore
+	result, err := s.backup.Restore(ctx, id, opts)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Restore failed: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":      true,
+		"database":     result.Database,
+		"config_files": result.ConfigFiles,
+		"static_sites": result.StaticSites,
+		"volumes":      result.Volumes,
+		"warnings":     result.Warnings,
+		"message":      "Restore completed. Please restart basepod for changes to take effect.",
+	})
 }

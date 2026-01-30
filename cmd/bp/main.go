@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.60"
+	version = "1.0.62"
 )
 
 // ServerConfig holds configuration for a single server
@@ -114,6 +114,8 @@ func main() {
 		cmdPrune(args)
 	case "upgrade":
 		cmdUpgrade(args)
+	case "backup":
+		cmdBackup(args)
 	case "completion":
 		cmdCompletion(args)
 	default:
@@ -166,6 +168,11 @@ System Commands:
   status                  Show detailed status
   prune                   Clean unused resources
   upgrade                 Update Basepod
+  backup                  Create or list backups
+  backup list             List all backups
+  backup create           Create a new backup
+  backup download <id>    Download a backup
+  backup delete <id>      Delete a backup
   completion <shell>      Generate shell completion (bash, zsh, fish)
 
 Options:
@@ -2951,6 +2958,376 @@ func cmdPrune(args []string) {
 	if result.SpaceReclaimed != "" {
 		fmt.Printf("Space reclaimed: %s\n", result.SpaceReclaimed)
 	}
+}
+
+// cmdBackup handles backup commands
+func cmdBackup(args []string) {
+	if len(args) == 0 {
+		// Default: list backups
+		listBackups()
+		return
+	}
+
+	subcmd := args[0]
+	subargs := args[1:]
+
+	switch subcmd {
+	case "list", "ls":
+		listBackups()
+	case "create", "new":
+		createBackup(subargs)
+	case "download", "get":
+		if len(subargs) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: bp backup download <backup-id>")
+			os.Exit(1)
+		}
+		downloadBackup(subargs[0])
+	case "delete", "rm":
+		if len(subargs) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: bp backup delete <backup-id>")
+			os.Exit(1)
+		}
+		deleteBackup(subargs[0])
+	case "restore":
+		if len(subargs) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: bp backup restore <backup-id>")
+			os.Exit(1)
+		}
+		restoreBackup(subargs[0], subargs[1:])
+	case "help", "-h", "--help":
+		printBackupHelp()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown backup command: %s\n", subcmd)
+		printBackupHelp()
+		os.Exit(1)
+	}
+}
+
+func printBackupHelp() {
+	fmt.Println(`Backup Commands:
+  bp backup                   List all backups
+  bp backup list              List all backups
+  bp backup create            Create a new backup
+  bp backup restore <id>      Restore from a backup
+  bp backup download <id>     Download a backup file
+  bp backup delete <id>       Delete a backup
+
+Create Options:
+  --volumes      Include container volumes (default: true)
+  --no-volumes   Exclude container volumes
+  --builds       Include build sources
+
+Restore Options:
+  --no-database  Don't restore database
+  --no-config    Don't restore config files
+  --no-apps      Don't restore static sites
+  --no-volumes   Don't restore container volumes
+
+Examples:
+  bp backup create                    # Full backup
+  bp backup create --no-volumes       # Backup without volumes
+  bp backup restore 20260130-151200   # Full restore
+  bp backup restore 20260130-151200 --no-config  # Restore without config`)
+}
+
+func listBackups() {
+	resp, err := apiRequest("GET", "/api/backups", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	var backups []struct {
+		ID        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		Size      int64     `json:"size"`
+		SizeHuman string    `json:"size_human"`
+		Contents  struct {
+			Database    bool     `json:"database"`
+			Config      bool     `json:"config"`
+			StaticSites []string `json:"static_sites"`
+			Volumes     []string `json:"volumes"`
+		} `json:"contents"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&backups); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(backups) == 0 {
+		fmt.Println("No backups found.")
+		fmt.Println("\nCreate a backup with: bp backup create")
+		return
+	}
+
+	fmt.Printf("%-20s %-20s %-10s %s\n", "ID", "CREATED", "SIZE", "CONTENTS")
+	fmt.Println(strings.Repeat("-", 70))
+
+	for _, b := range backups {
+		contents := []string{}
+		if b.Contents.Database {
+			contents = append(contents, "db")
+		}
+		if b.Contents.Config {
+			contents = append(contents, "config")
+		}
+		if len(b.Contents.StaticSites) > 0 {
+			contents = append(contents, fmt.Sprintf("%d sites", len(b.Contents.StaticSites)))
+		}
+		if len(b.Contents.Volumes) > 0 {
+			contents = append(contents, fmt.Sprintf("%d volumes", len(b.Contents.Volumes)))
+		}
+
+		fmt.Printf("%-20s %-20s %-10s %s\n",
+			b.ID,
+			b.CreatedAt.Format("2006-01-02 15:04:05"),
+			b.SizeHuman,
+			strings.Join(contents, ", "),
+		)
+	}
+}
+
+func createBackup(args []string) {
+	includeVolumes := true
+	includeBuilds := false
+
+	for _, arg := range args {
+		switch arg {
+		case "--volumes":
+			includeVolumes = true
+		case "--no-volumes":
+			includeVolumes = false
+		case "--builds":
+			includeBuilds = true
+		}
+	}
+
+	fmt.Println("Creating backup...")
+
+	req := map[string]bool{
+		"include_volumes": includeVolumes,
+		"include_builds":  includeBuilds,
+	}
+
+	resp, err := apiRequest("POST", "/api/backups", req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	var result struct {
+		ID        string `json:"id"`
+		SizeHuman string `json:"size_human"`
+		Path      string `json:"path"`
+		Contents  struct {
+			Database    bool     `json:"database"`
+			Config      bool     `json:"config"`
+			StaticSites []string `json:"static_sites"`
+			Volumes     []string `json:"volumes"`
+		} `json:"contents"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Backup created successfully!")
+	fmt.Printf("  ID:       %s\n", result.ID)
+	fmt.Printf("  Size:     %s\n", result.SizeHuman)
+	fmt.Printf("  Path:     %s\n", result.Path)
+	fmt.Println("  Contents:")
+	if result.Contents.Database {
+		fmt.Println("    - Database")
+	}
+	if result.Contents.Config {
+		fmt.Println("    - Configuration")
+	}
+	if len(result.Contents.StaticSites) > 0 {
+		fmt.Printf("    - Static sites: %s\n", strings.Join(result.Contents.StaticSites, ", "))
+	}
+	if len(result.Contents.Volumes) > 0 {
+		fmt.Printf("    - Volumes: %s\n", strings.Join(result.Contents.Volumes, ", "))
+	}
+}
+
+func downloadBackup(id string) {
+	// First get backup info to get filename
+	resp, err := apiRequest("GET", "/api/backups/"+id, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+	resp.Body.Close()
+
+	// Download the backup
+	filename := fmt.Sprintf("basepod-backup-%s.tar.gz", id)
+	fmt.Printf("Downloading backup to %s...\n", filename)
+
+	resp, err = apiRequest("GET", "/api/backups/"+id+"/download", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	// Create local file
+	file, err := os.Create(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating file: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	// Copy response to file
+	written, err := io.Copy(file, resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Downloaded %s (%d bytes)\n", filename, written)
+}
+
+func deleteBackup(id string) {
+	fmt.Printf("Deleting backup %s...\n", id)
+
+	resp, err := apiRequest("DELETE", "/api/backups/"+id, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	fmt.Println("Backup deleted.")
+}
+
+func restoreBackup(id string, args []string) {
+	// Parse options
+	restoreDatabase := true
+	restoreConfig := true
+	restoreApps := true
+	restoreVolumes := true
+
+	for _, arg := range args {
+		switch arg {
+		case "--no-database":
+			restoreDatabase = false
+		case "--no-config":
+			restoreConfig = false
+		case "--no-apps":
+			restoreApps = false
+		case "--no-volumes":
+			restoreVolumes = false
+		}
+	}
+
+	// Confirm restore
+	fmt.Printf("Restoring from backup %s...\n", id)
+	fmt.Println("This will overwrite existing data. Current files will be backed up with .bak extension.")
+	fmt.Print("Continue? [y/N]: ")
+
+	var confirm string
+	fmt.Scanln(&confirm)
+	if confirm != "y" && confirm != "Y" && confirm != "yes" {
+		fmt.Println("Restore cancelled.")
+		return
+	}
+
+	fmt.Println("\nRestoring...")
+
+	req := map[string]bool{
+		"restore_database": restoreDatabase,
+		"restore_config":   restoreConfig,
+		"restore_apps":     restoreApps,
+		"restore_volumes":  restoreVolumes,
+	}
+
+	resp, err := apiRequest("POST", "/api/backups/"+id+"/restore", req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	var result struct {
+		Success     bool     `json:"success"`
+		Database    bool     `json:"database"`
+		ConfigFiles []string `json:"config_files"`
+		StaticSites []string `json:"static_sites"`
+		Volumes     []string `json:"volumes"`
+		Warnings    []string `json:"warnings"`
+		Message     string   `json:"message"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\nRestore completed!")
+	fmt.Println("Restored:")
+	if result.Database {
+		fmt.Println("  - Database")
+	}
+	if len(result.ConfigFiles) > 0 {
+		fmt.Printf("  - Config files: %s\n", strings.Join(result.ConfigFiles, ", "))
+	}
+	if len(result.StaticSites) > 0 {
+		fmt.Printf("  - Static sites: %s\n", strings.Join(result.StaticSites, ", "))
+	}
+	if len(result.Volumes) > 0 {
+		fmt.Printf("  - Volumes: %s\n", strings.Join(result.Volumes, ", "))
+	}
+
+	if len(result.Warnings) > 0 {
+		fmt.Println("\nWarnings:")
+		for _, w := range result.Warnings {
+			fmt.Printf("  - %s\n", w)
+		}
+	}
+
+	fmt.Println("\n" + result.Message)
 }
 
 // getLatestVersion fetches the latest version from GitHub
