@@ -36,7 +36,9 @@ function handleCancel() {
 
 <template>
   <UModal v-model:open="open" :title="props.title" :description="props.description">
-    <slot />
+    <template #body>
+      <slot />
+    </template>
 
     <template #footer>
       <UButton
