@@ -1663,25 +1663,9 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		"message": "Update complete. Restarting service...",
 	})
 
-	// Restart properly via service manager
+	// Restart by exiting - launchd/systemd KeepAlive will restart with new binary
 	go func() {
-		time.Sleep(1 * time.Second) // Give time for response to be sent
-
-		if runtime.GOOS == "darwin" {
-			// macOS: try system daemon first (server install), then user daemon
-			if err := exec.Command("launchctl", "kickstart", "-k", "system/com.basepod").Run(); err != nil {
-				// Fallback to user daemon
-				exec.Command("launchctl", "kickstart", "-k", "gui/"+fmt.Sprint(os.Getuid())+"/com.basepod").Run()
-			}
-		} else {
-			// Linux: try system service first, then user service
-			if err := exec.Command("systemctl", "restart", "basepod").Run(); err != nil {
-				exec.Command("systemctl", "--user", "restart", "basepod").Run()
-			}
-		}
-
-		// Fallback: exit and let service manager restart us
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond) // Give time for response to be sent
 		os.Exit(0)
 	}()
 }
