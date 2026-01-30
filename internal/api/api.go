@@ -3653,15 +3653,23 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		Contents  backup.Contents `json:"contents"`
 	}
 
-	var response []backupResponse
+	response := make([]backupResponse, 0, len(backups))
 	for _, b := range backups {
+		// Ensure arrays are never null
+		contents := b.Contents
+		if contents.StaticSites == nil {
+			contents.StaticSites = []string{}
+		}
+		if contents.Volumes == nil {
+			contents.Volumes = []string{}
+		}
 		response = append(response, backupResponse{
 			ID:        b.ID,
 			CreatedAt: b.CreatedAt,
 			Size:      b.Size,
 			SizeHuman: backup.FormatSize(b.Size),
 			Path:      b.Path,
-			Contents:  b.Contents,
+			Contents:  contents,
 		})
 	}
 
@@ -3698,13 +3706,22 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure arrays are never null
+	contents := b.Contents
+	if contents.StaticSites == nil {
+		contents.StaticSites = []string{}
+	}
+	if contents.Volumes == nil {
+		contents.Volumes = []string{}
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"id":         b.ID,
 		"created_at": b.CreatedAt,
 		"size":       b.Size,
 		"size_human": backup.FormatSize(b.Size),
 		"path":       b.Path,
-		"contents":   b.Contents,
+		"contents":   contents,
 	})
 }
 
@@ -3722,13 +3739,22 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure arrays are never null
+	contents := b.Contents
+	if contents.StaticSites == nil {
+		contents.StaticSites = []string{}
+	}
+	if contents.Volumes == nil {
+		contents.Volumes = []string{}
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"id":         b.ID,
 		"created_at": b.CreatedAt,
 		"size":       b.Size,
 		"size_human": backup.FormatSize(b.Size),
 		"path":       b.Path,
-		"contents":   b.Contents,
+		"contents":   contents,
 	})
 }
 
@@ -3819,13 +3845,31 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure arrays are never null
+	configFiles := result.ConfigFiles
+	if configFiles == nil {
+		configFiles = []string{}
+	}
+	staticSites := result.StaticSites
+	if staticSites == nil {
+		staticSites = []string{}
+	}
+	volumes := result.Volumes
+	if volumes == nil {
+		volumes = []string{}
+	}
+	warnings := result.Warnings
+	if warnings == nil {
+		warnings = []string{}
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success":      true,
 		"database":     result.Database,
-		"config_files": result.ConfigFiles,
-		"static_sites": result.StaticSites,
-		"volumes":      result.Volumes,
-		"warnings":     result.Warnings,
+		"config_files": configFiles,
+		"static_sites": staticSites,
+		"volumes":      volumes,
+		"warnings":     warnings,
 		"message":      "Restore completed. Please restart basepod for changes to take effect.",
 	})
 }

@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.62"
+	version = "1.0.63"
 )
 
 // ServerConfig holds configuration for a single server
