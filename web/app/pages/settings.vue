@@ -349,6 +349,15 @@ const restoreOptions = ref({
   restoreVolumes: true
 })
 
+// Delete confirmation modal
+const deleteModalOpen = ref(false)
+const backupToDelete = ref<BackupItem | null>(null)
+const deletingBackup = ref(false)
+
+// Restore confirmation modal
+const restoreModalOpen = ref(false)
+const backupToRestore = ref<BackupItem | null>(null)
+
 const loadBackups = async () => {
   loadingBackups.value = true
   backupError.value = ''
@@ -416,15 +425,20 @@ const createBackup = async () => {
   }
 }
 
-const restoreBackup = async (backup: BackupItem) => {
-  if (!confirm(`Restore from backup ${backup.id}?\n\nThis will overwrite current data. Existing files will be backed up with .bak extension.`)) {
-    return
-  }
+const openRestoreModal = (backup: BackupItem) => {
+  backupToRestore.value = backup
+  restoreModalOpen.value = true
+}
 
-  restoringBackup.value = backup.id
+const confirmRestoreBackup = async () => {
+  if (!backupToRestore.value) return
+
+  restoringBackup.value = backupToRestore.value.id
+  restoreModalOpen.value = false
   backupError.value = ''
+
   try {
-    const result = await $api<RestoreResult>(`/backups/${backup.id}/restore`, {
+    const result = await $api<RestoreResult>(`/backups/${backupToRestore.value.id}/restore`, {
       method: 'POST',
       body: {
         restore_database: restoreOptions.value.restoreDatabase,
@@ -468,21 +482,30 @@ const restoreBackup = async (backup: BackupItem) => {
     toast.add({ title: 'Restore failed', description: backupError.value, color: 'error' })
   } finally {
     restoringBackup.value = null
+    backupToRestore.value = null
   }
 }
 
-const deleteBackup = async (backup: BackupItem) => {
-  if (!confirm(`Delete backup ${backup.id}?`)) {
-    return
-  }
+const openDeleteModal = (backup: BackupItem) => {
+  backupToDelete.value = backup
+  deleteModalOpen.value = true
+}
 
+const confirmDeleteBackup = async () => {
+  if (!backupToDelete.value) return
+
+  deletingBackup.value = true
   try {
-    await $api(`/backups/${backup.id}`, { method: 'DELETE' })
+    await $api(`/backups/${backupToDelete.value.id}`, { method: 'DELETE' })
     toast.add({ title: 'Backup deleted', color: 'success' })
+    deleteModalOpen.value = false
+    backupToDelete.value = null
     await loadBackups()
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     toast.add({ title: 'Delete failed', description: err.data?.error, color: 'error' })
+  } finally {
+    deletingBackup.value = false
   }
 }
 
@@ -776,7 +799,7 @@ const formatDate = (dateStr: string) => {
                       size="sm"
                       color="primary"
                       :loading="restoringBackup === backup.id"
-                      @click="restoreBackup(backup)"
+                      @click="openRestoreModal(backup)"
                     >
                       <UIcon name="i-heroicons-arrow-path" />
                       Restore
@@ -792,7 +815,7 @@ const formatDate = (dateStr: string) => {
                       variant="ghost"
                       size="sm"
                       color="error"
-                      @click="deleteBackup(backup)"
+                      @click="openDeleteModal(backup)"
                     >
                       <UIcon name="i-heroicons-trash" />
                     </UButton>
@@ -976,5 +999,57 @@ const formatDate = (dateStr: string) => {
         </div>
       </template>
     </UTabs>
+
+    <!-- Delete Backup Confirmation Modal -->
+    <ModalsConfirmModal
+      v-model:open="deleteModalOpen"
+      title="Delete Backup"
+      :description="`Are you sure you want to delete backup '${backupToDelete?.id}'? This action cannot be undone.`"
+      confirm-label="Delete"
+      confirm-color="error"
+      :loading="deletingBackup"
+      @confirm="confirmDeleteBackup"
+      @cancel="deleteModalOpen = false"
+    />
+
+    <!-- Restore Backup Confirmation Modal -->
+    <ModalsConfirmModal
+      v-model:open="restoreModalOpen"
+      title="Restore Backup"
+      confirm-label="Restore"
+      confirm-color="warning"
+      :loading="restoringBackup === backupToRestore?.id"
+      @confirm="confirmRestoreBackup"
+      @cancel="restoreModalOpen = false"
+    >
+      <div class="space-y-3">
+        <p class="text-gray-600 dark:text-gray-300">
+          You are about to restore backup <strong class="font-mono">{{ backupToRestore?.id }}</strong>.
+        </p>
+
+        <UAlert color="warning" variant="soft" title="This will overwrite existing data">
+          <template #description>
+            <ul class="list-disc list-inside mt-2 space-y-1 text-sm">
+              <li v-if="restoreOptions.restoreDatabase">
+                <strong>Database:</strong> All app metadata and settings will be replaced
+              </li>
+              <li v-if="restoreOptions.restoreConfig">
+                <strong>Configuration:</strong> basepod.yaml and system config will be overwritten
+              </li>
+              <li v-if="restoreOptions.restoreApps && backupToRestore?.contents.static_sites?.length">
+                <strong>Static Sites:</strong> {{ backupToRestore?.contents.static_sites?.length }} site(s) will be restored
+              </li>
+              <li v-if="restoreOptions.restoreVolumes && backupToRestore?.contents.volumes?.length">
+                <strong>Volumes:</strong> {{ backupToRestore?.contents.volumes?.length }} container volume(s) will be replaced
+              </li>
+            </ul>
+          </template>
+        </UAlert>
+
+        <p class="text-sm text-gray-500">
+          A server restart is recommended after restore for all changes to take effect.
+        </p>
+      </div>
+    </ModalsConfirmModal>
   </div>
 </template>
