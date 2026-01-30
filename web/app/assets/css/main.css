@@ -1,2 +1,17 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+
+/* Custom brand colors - basepod green */
+@theme {
+  --color-green-50: oklch(0.97 0.03 145);
+  --color-green-100: oklch(0.94 0.06 145);
+  --color-green-200: oklch(0.88 0.12 145);
+  --color-green-300: oklch(0.80 0.18 145);
+  --color-green-400: oklch(0.72 0.20 145);
+  --color-green-500: oklch(0.64 0.20 145); /* #27C840 equivalent */
+  --color-green-600: oklch(0.56 0.18 145);
+  --color-green-700: oklch(0.48 0.15 145);
+  --color-green-800: oklch(0.40 0.12 145);
+  --color-green-900: oklch(0.32 0.09 145);
+  --color-green-950: oklch(0.24 0.06 145);
+}

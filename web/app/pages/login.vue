@@ -30,11 +30,11 @@ const login = async () => {
 
 <template>
   <div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-    <div class="w-full max-w-sm">
-      <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
-        <div class="text-center mb-8">
-          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Basepod</h1>
-          <p class="text-gray-500 dark:text-gray-400 mt-2">Enter your password to continue</p>
+    <div class="w-full max-w-md px-4">
+      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-10">
+        <div class="text-center mb-10">
+          <BasepodLogo status="ok" class="mx-auto mb-4" />
+          <p class="text-gray-500 dark:text-gray-400">Enter your password to continue</p>
         </div>
 
         <form class="space-y-6" @submit.prevent="login">
@@ -43,9 +43,11 @@ const login = async () => {
               v-model="password"
               type="password"
               placeholder="Enter password"
-              size="lg"
+              size="xl"
               autofocus
               :disabled="loading"
+              class="w-full"
+              :ui="{ base: 'w-full' }"
             />
           </UFormField>
 
@@ -59,7 +61,7 @@ const login = async () => {
           <UButton
             type="submit"
             block
-            size="lg"
+            size="xl"
             :loading="loading"
           >
             Login

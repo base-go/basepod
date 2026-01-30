@@ -1,8 +1,30 @@
 <script setup lang="ts">
-import type { SystemInfoResponse } from '~/types'
+import type { SystemInfoResponse, HealthResponse } from '~/types'
+
+interface VersionInfo {
+  current: string
+  latest: string
+  updateAvailable: boolean
+}
 
 const colorMode = useColorMode()
 const { data: systemInfo } = await useApiFetch<SystemInfoResponse>('/system/info')
+const { data: health } = await useApiFetch<HealthResponse>('/health')
+const { data: version } = await useApiFetch<VersionInfo>('/system/version')
+
+// Compute logo status based on system state
+const logoStatus = computed<'ok' | 'update' | 'error'>(() => {
+  // Check for errors first (highest priority)
+  if (health.value?.podman !== 'connected') {
+    return 'error'
+  }
+  // Check for updates
+  if (version.value?.updateAvailable) {
+    return 'update'
+  }
+  // All good
+  return 'ok'
+})
 
 const navigation = [
   {
@@ -75,8 +97,7 @@ const logout = async () => {
     <UDashboardSidebar collapsible resizable>
       <template #header="{ collapsed = false }">
         <div class="flex items-center" :class="collapsed ? 'justify-center' : ''">
-          <span v-if="collapsed" class="text-lg font-bold text-primary-500" style="font-family: 'JetBrains Mono', monospace">[b]</span>
-          <span v-else class="text-xl font-bold text-primary-500" style="font-family: 'JetBrains Mono', monospace">[basepod]</span>
+          <BasepodLogo :status="logoStatus" :collapsed="collapsed" />
         </div>
       </template>
 
