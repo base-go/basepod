@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "1.0.70"
+	version = "1.0.71"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -376,10 +376,29 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 		return fmt.Errorf("failed to list apps: %w", err)
 	}
 
+	paths, _ := config.GetPaths()
+
 	// Collect routes for running apps with domains
 	var routes []caddy.Route
+	var staticCount int
 	for _, a := range apps {
-		if a.Status == "running" && a.Domain != "" && a.Ports.HostPort > 0 {
+		if a.Status != "running" || a.Domain == "" {
+			continue
+		}
+
+		// Handle static sites
+		if a.Type == "static" {
+			staticDir := fmt.Sprintf("%s/data/apps/%s", paths.Base, a.Name)
+			if err := caddyClient.AddStaticRoute(a.Domain, staticDir); err != nil {
+				log.Printf("Warning: Failed to add static route for %s: %v", a.Name, err)
+			} else {
+				staticCount++
+			}
+			continue
+		}
+
+		// Handle container apps
+		if a.Ports.HostPort > 0 {
 			routes = append(routes, caddy.Route{
 				ID:        "basepod-" + a.Name,
 				Domain:    a.Domain,
@@ -389,17 +408,14 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 		}
 	}
 
-	if len(routes) == 0 {
-		log.Printf("No running apps with domains to configure")
-		return nil
+	// Initialize container routes
+	if len(routes) > 0 {
+		if err := caddyClient.InitializeServer(routes); err != nil {
+			return fmt.Errorf("failed to initialize Caddy server: %w", err)
+		}
 	}
 
-	// Initialize the Caddy server with all routes
-	if err := caddyClient.InitializeServer(routes); err != nil {
-		return fmt.Errorf("failed to initialize Caddy server: %w", err)
-	}
-
-	log.Printf("Configured Caddy with %d app routes", len(routes))
+	log.Printf("Configured Caddy with %d app routes and %d static sites", len(routes), staticCount)
 	return nil
 }
 
