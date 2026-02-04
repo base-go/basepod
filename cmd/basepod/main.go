@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "1.0.71"
+	version = "1.0.72"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -380,7 +380,7 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 
 	// Collect routes for running apps with domains
 	var routes []caddy.Route
-	var staticCount int
+	var staticCount, aliasCount int
 	for _, a := range apps {
 		if a.Status != "running" || a.Domain == "" {
 			continue
@@ -394,6 +394,14 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 			} else {
 				staticCount++
 			}
+			// Add static routes for aliases
+			for _, alias := range a.Aliases {
+				if err := caddyClient.AddStaticRoute(alias, staticDir); err != nil {
+					log.Printf("Warning: Failed to add static alias route for %s: %v", alias, err)
+				} else {
+					aliasCount++
+				}
+			}
 			continue
 		}
 
@@ -405,6 +413,16 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 				Upstream:  fmt.Sprintf("127.0.0.1:%d", a.Ports.HostPort),
 				EnableSSL: a.SSL.Enabled,
 			})
+			// Add routes for aliases
+			for _, alias := range a.Aliases {
+				routes = append(routes, caddy.Route{
+					ID:        fmt.Sprintf("alias-%s-%s", a.ID[:8], alias),
+					Domain:    alias,
+					Upstream:  fmt.Sprintf("127.0.0.1:%d", a.Ports.HostPort),
+					EnableSSL: a.SSL.Enabled,
+				})
+				aliasCount++
+			}
 		}
 	}
 
@@ -415,7 +433,7 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 		}
 	}
 
-	log.Printf("Configured Caddy with %d app routes and %d static sites", len(routes), staticCount)
+	log.Printf("Configured Caddy with %d app routes, %d static sites, and %d aliases", len(routes), staticCount, aliasCount)
 	return nil
 }
 
