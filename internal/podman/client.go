@@ -288,8 +288,9 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 	}
 
 	// Convert volume strings to mount objects
-	// Named volumes use type "volume", bind mounts use type "bind"
+	// Named volumes use "volumes" field, bind mounts use "mounts" field
 	mounts := make([]map[string]interface{}, 0)
+	volumes := make([]map[string]interface{}, 0)
 	for _, vol := range opts.Volumes {
 		parts := strings.Split(vol, ":")
 		if len(parts) >= 2 {
@@ -307,12 +308,11 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 					"options":     []string{"rbind"},
 				})
 			} else {
-				// Named volume - pre-create it first
+				// Named volume - use "volumes" field with dest/name format
 				_ = c.CreateVolume(ctx, source) // Ignore error if already exists
-				mounts = append(mounts, map[string]interface{}{
-					"destination": destination,
-					"source":      source,
-					"type":        "volume",
+				volumes = append(volumes, map[string]interface{}{
+					"dest": destination,
+					"name": source,
 				})
 			}
 		}
@@ -323,11 +323,20 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		"image":        opts.Image,
 		"env":          opts.Env,
 		"portmappings": portMappings,
-		"mounts":       mounts,
 		"netns":        map[string]interface{}{"nsmode": "bridge"},
 		"command":      opts.Command,
 		"working_dir":  opts.WorkingDir,
 		"labels":       opts.Labels,
+	}
+
+	// Only add mounts if there are any
+	if len(mounts) > 0 {
+		spec["mounts"] = mounts
+	}
+
+	// Only add volumes if there are any
+	if len(volumes) > 0 {
+		spec["volumes"] = volumes
 	}
 
 	if len(opts.Networks) > 0 {

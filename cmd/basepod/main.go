@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "1.0.69"
+	version = "1.0.70"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -213,9 +213,9 @@ func main() {
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      apiServer,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 
 	// Start server in goroutine

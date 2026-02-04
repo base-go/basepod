@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "1.0.69"
+	version = "1.0.70"
 )
 
 // ServerConfig holds configuration for a single server
@@ -1916,10 +1916,23 @@ func deployLocalSource(dir string, force bool) {
 
 	// Get git info for deployment tracking
 	appCfg.GitCommit, appCfg.GitMessage, appCfg.GitBranch = getGitInfo(dir)
-	if appCfg.GitCommit != "" {
+
+	// Handle different git scenarios
+	if appCfg.GitCommit == "" {
+		// No git repo - use placeholder
+		appCfg.GitCommit = "no-git"
+		appCfg.GitMessage = "No git repository"
+		appCfg.GitBranch = ""
+	} else if force && hasUncommittedChanges(dir) {
+		// Force deploying with uncommitted changes
+		appCfg.GitCommit = appCfg.GitCommit + "*"
+		appCfg.GitMessage = appCfg.GitMessage + " + local changes"
+	}
+
+	if appCfg.GitCommit != "no-git" {
 		fmt.Printf("Deploying %s@%s to %s...\n", appCfg.Name, appCfg.GitCommit, contextName)
 	} else {
-		fmt.Printf("Deploying %s to %s...\n", appCfg.Name, contextName)
+		fmt.Printf("Deploying %s (no git) to %s...\n", appCfg.Name, contextName)
 	}
 
 	// Create tarball - for static sites, only include the public directory

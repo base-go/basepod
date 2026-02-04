@@ -2300,6 +2300,14 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log received git info for debugging
+	if deployConfig.GitCommit != "" {
+		log.Printf("Deploy %s: git commit=%s branch=%s msg=%s",
+			deployConfig.Name, deployConfig.GitCommit, deployConfig.GitBranch, deployConfig.GitMessage)
+	} else {
+		log.Printf("Deploy %s: no git info received", deployConfig.Name)
+	}
+
 	// Get source tarball
 	file, _, err := r.FormFile("source")
 	if err != nil {
@@ -2515,6 +2523,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			a.Deployments = a.Deployments[:10]
 		}
 
+		if deployRecord.CommitHash != "" {
+			writeLine(fmt.Sprintf("Recording deployment: %s@%s (%s)", a.Name, deployRecord.CommitHash, deployRecord.CommitMsg))
+		}
+
 		if err := s.storage.UpdateApp(a); err != nil {
 			writeLine("ERROR: Failed to update app: " + err.Error())
 			return
@@ -2650,6 +2662,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	// Keep only last 10 deployments
 	if len(a.Deployments) > 10 {
 		a.Deployments = a.Deployments[:10]
+	}
+
+	if deployRecord.CommitHash != "" {
+		writeLine(fmt.Sprintf("Recording deployment: %s@%s (%s)", a.Name, deployRecord.CommitHash, deployRecord.CommitMsg))
 	}
 
 	s.storage.UpdateApp(a)
