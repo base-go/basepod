@@ -30,18 +30,37 @@ const tabs = computed(() => {
 })
 
 const logs = ref('')
+const accessLogs = ref<any[]>([])
 const logsLoading = ref(false)
 
 async function fetchLogs() {
-  if (!app.value?.container_id) return
   logsLoading.value = true
   try {
-    logs.value = await $api<string>(`/apps/${appId}/logs?tail=100`)
+    if (app.value?.type === 'static') {
+      const data = await $api<{ logs: any[], total: number }>(`/apps/${appId}/access-logs?limit=100`)
+      accessLogs.value = data.logs || []
+    } else {
+      if (!app.value?.container_id) return
+      logs.value = await $api<string>(`/apps/${appId}/logs?tail=100`)
+    }
   } catch {
     logs.value = ''
+    accessLogs.value = []
   } finally {
     logsLoading.value = false
   }
+}
+
+function formatLogTime(ts: number): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  return d.toLocaleString()
+}
+
+function getStatusColor(status: number): string {
+  if (status < 300) return 'success'
+  if (status < 400) return 'warning'
+  return 'error'
 }
 
 watch(activeTab, (tab) => {
@@ -545,30 +564,54 @@ async function deleteApp() {
       <template #header>
         <div class="flex items-center justify-between">
           <h3 class="font-semibold">{{ app.type === 'static' ? 'Access Logs' : 'Container Logs' }}</h3>
-          <UButton v-if="app.type !== 'static'" variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="logsLoading" @click="fetchLogs">
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="logsLoading" @click="fetchLogs">
             Refresh
           </UButton>
         </div>
       </template>
 
-      <!-- Static site logs info -->
-      <div v-if="app.type === 'static'" class="space-y-4">
-        <p class="text-gray-600 dark:text-gray-400">
-          Static sites are served directly by Caddy. Access logs can be viewed via the Caddy admin API or log files.
-        </p>
-        <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-          <p class="text-sm font-medium mb-2">Check Caddy access logs:</p>
-          <code class="block text-sm bg-gray-900 text-gray-100 p-3 rounded font-mono overflow-x-auto">
-            curl -s localhost:2019/config/logging
-          </code>
+      <!-- Static site access logs -->
+      <div v-if="app.type === 'static'">
+        <div v-if="logsLoading" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-arrow-path" class="w-8 h-8 mx-auto mb-2 animate-spin opacity-50" />
+          <p>Loading access logs...</p>
         </div>
-        <div class="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-          <div class="flex items-start gap-2">
-            <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-            <div class="text-sm text-blue-700 dark:text-blue-300">
-              <strong>Tip:</strong> Enable Caddy access logging by adding a <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">log</code> directive to your Caddyfile for detailed request logs.
-            </div>
-          </div>
+        <div v-else-if="accessLogs.length" class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-200 dark:border-gray-700">
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Time</th>
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Method</th>
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Path</th>
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Status</th>
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Size</th>
+                <th class="text-left py-2 px-3 font-medium text-gray-500">Client</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(entry, i) in accessLogs.slice().reverse()"
+                :key="i"
+                class="border-b border-gray-100 dark:border-gray-800"
+              >
+                <td class="py-2 px-3 text-gray-500 whitespace-nowrap text-xs">{{ formatLogTime(entry.ts) }}</td>
+                <td class="py-2 px-3">
+                  <UBadge variant="subtle" color="neutral" size="xs">{{ entry.request?.method }}</UBadge>
+                </td>
+                <td class="py-2 px-3 font-mono text-xs max-w-[300px] truncate">{{ entry.request?.uri }}</td>
+                <td class="py-2 px-3">
+                  <UBadge :color="getStatusColor(entry.status)" size="xs">{{ entry.status }}</UBadge>
+                </td>
+                <td class="py-2 px-3 text-gray-500 text-xs">{{ entry.size || '-' }}</td>
+                <td class="py-2 px-3 text-gray-500 text-xs truncate max-w-[150px]">{{ entry.request?.client_ip || entry.request?.remote_ip || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>No access logs yet</p>
+          <p class="text-sm mt-1">Logs will appear after the first request</p>
         </div>
       </div>
 

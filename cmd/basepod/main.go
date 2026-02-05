@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "1.0.72"
+	version = "1.0.74"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -165,6 +165,16 @@ func main() {
 	if caddyClient != nil {
 		if err := initializeCaddyRoutes(caddyClient, store); err != nil {
 			log.Printf("Warning: Failed to initialize Caddy routes: %v", err)
+		}
+		// Enable access logging
+		accessLogFile := fmt.Sprintf("%s/logs/access.log", paths.Base)
+		if err := os.MkdirAll(fmt.Sprintf("%s/logs", paths.Base), 0755); err != nil {
+			log.Printf("Warning: Failed to create logs directory: %v", err)
+		}
+		if err := caddyClient.EnableAccessLog(accessLogFile); err != nil {
+			log.Printf("Warning: Failed to enable Caddy access logging: %v", err)
+		} else {
+			log.Printf("Caddy access logging enabled: %s", accessLogFile)
 		}
 	}
 

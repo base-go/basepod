@@ -25,10 +25,11 @@ const displayedApps = computed(() => props.apps.slice(0, props.limit))
     </template>
 
     <div v-if="displayedApps.length" class="space-y-3">
-      <div
+      <NuxtLink
         v-for="app in displayedApps"
         :key="app.id"
-        class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800"
+        :to="`/apps/${app.id}`"
+        class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
       >
         <div class="flex items-center gap-3">
           <UIcon name="i-heroicons-cube" class="w-5 h-5 text-gray-400" />
@@ -42,7 +43,7 @@ const displayedApps = computed(() => props.apps.slice(0, props.limit))
         >
           {{ app.status }}
         </UBadge>
-      </div>
+      </NuxtLink>
     </div>
 
     <div v-else class="text-center py-8 text-gray-500">

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,6 +200,13 @@ func (s *Server) setupRoutes() {
 
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
+
+	// Container images management (auth required)
+	s.router.HandleFunc("GET /api/container-images", s.requireAuth(s.handleListContainerImages))
+	s.router.HandleFunc("DELETE /api/container-images/{id}", s.requireAuth(s.handleDeleteContainerImage))
+
+	// Access logs (auth required)
+	s.router.HandleFunc("GET /api/apps/{id}/access-logs", s.requireAuth(s.handleAppAccessLogs))
 
 	// Caddy on-demand TLS check (no auth - called by Caddy)
 	s.router.HandleFunc("GET /api/caddy/check", s.handleCaddyCheck)
@@ -2773,6 +2782,133 @@ func (s *Server) handleImageTags(w http.ResponseWriter, r *http.Request) {
 		"image": image,
 		"tags":  []string{},
 	})
+}
+
+// handleAppAccessLogs returns Caddy access logs filtered by app domain
+func (s *Server) handleAppAccessLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.storage.GetApp(id)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	paths, _ := config.GetPaths()
+	logFile := fmt.Sprintf("%s/logs/access.log", paths.Base)
+
+	// Read log file
+	file, err := os.Open(logFile)
+	if err != nil {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"logs":    []interface{}{},
+			"message": "No access logs yet",
+		})
+		return
+	}
+	defer file.Close()
+
+	// Get file size and seek to last 1MB if large
+	stat, _ := file.Stat()
+	if stat.Size() > 1024*1024 {
+		file.Seek(-1024*1024, 2) // Last 1MB
+	}
+
+	// Collect domains to filter by (primary + aliases)
+	domains := map[string]bool{a.Domain: true}
+	for _, alias := range a.Aliases {
+		domains[alias] = true
+	}
+
+	// Parse and filter log lines
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+
+	var logs []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		// Filter by domain - check request.host
+		reqMap, ok := entry["request"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		host, _ := reqMap["host"].(string)
+		if !domains[host] {
+			continue
+		}
+
+		logs = append(logs, entry)
+	}
+
+	// Return last N entries
+	if len(logs) > limit {
+		logs = logs[len(logs)-limit:]
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"logs":  logs,
+		"total": len(logs),
+	})
+}
+
+// handleListContainerImages returns all container images
+func (s *Server) handleListContainerImages(w http.ResponseWriter, r *http.Request) {
+	if s.podman == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "Podman not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	images, err := s.podman.ListImages(ctx)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to list images: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, images)
+}
+
+// handleDeleteContainerImage deletes a container image
+func (s *Server) handleDeleteContainerImage(w http.ResponseWriter, r *http.Request) {
+	if s.podman == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "Podman not available")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		errorResponse(w, http.StatusBadRequest, "Image ID required")
+		return
+	}
+
+	force := r.URL.Query().Get("force") == "true"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	if err := s.podman.RemoveImage(ctx, id, force); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to remove image: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // proxyToApp proxies the request to the app's container

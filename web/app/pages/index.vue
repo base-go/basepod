@@ -15,28 +15,32 @@ const stats = computed(() => [
     value: apps.value?.total || 0,
     description: 'Apps managed by Basepod',
     icon: 'i-heroicons-cube',
-    color: 'primary' as const
+    color: 'primary' as const,
+    to: '/apps'
   },
   {
     label: 'Running',
     value: apps.value?.apps?.filter(a => a.status === 'running').length || 0,
     description: 'Currently active apps',
     icon: 'i-heroicons-play-circle',
-    color: 'success' as const
+    color: 'success' as const,
+    to: '/apps'
   },
   {
     label: 'Stopped',
     value: apps.value?.apps?.filter(a => a.status !== 'running').length || 0,
     description: 'Inactive apps',
     icon: 'i-heroicons-stop-circle',
-    color: 'neutral' as const
+    color: 'neutral' as const,
+    to: '/apps'
   },
   {
     label: 'Images',
     value: systemInfo.value?.images || 0,
-    description: 'Docker images on system',
+    description: 'Container images on system',
     icon: 'i-heroicons-archive-box-arrow-down',
-    color: 'warning' as const
+    color: 'warning' as const,
+    to: '/container-images'
   }
 ])
 </script>
@@ -67,6 +71,7 @@ const stats = computed(() => [
         :value="stat.value"
         :icon="stat.icon"
         :color="stat.color"
+        :to="stat.to"
       />
     </div>
 

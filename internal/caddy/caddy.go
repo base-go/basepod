@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -334,6 +335,67 @@ func (c *Client) AddStaticRoute(domain, rootDir string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to add static route (status %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// EnableAccessLog configures Caddy to write access logs to a JSON file
+func (c *Client) EnableAccessLog(logFile string) error {
+	// Configure logging output
+	loggingConfig := map[string]interface{}{
+		"logs": map[string]interface{}{
+			"access": map[string]interface{}{
+				"writer": map[string]interface{}{
+					"output":   "file",
+					"filename": logFile,
+				},
+				"encoder": map[string]interface{}{
+					"format": "json",
+				},
+			},
+		},
+	}
+
+	data, _ := json.Marshal(loggingConfig)
+	req, err := http.NewRequest("PATCH", c.adminURL+"/config/logging", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to configure logging: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to configure logging (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Enable access logging on the HTTP server
+	serverLogs := map[string]interface{}{
+		"default_logger_name": "access",
+	}
+
+	data, _ = json.Marshal(serverLogs)
+	req, err = http.NewRequest("PATCH", c.adminURL+"/config/apps/http/servers/srv0/logs", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to enable server logging: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to enable server logging (status %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	return nil
