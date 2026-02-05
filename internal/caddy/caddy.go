@@ -358,7 +358,8 @@ func (c *Client) EnableAccessLog(logFile string) error {
 	}
 
 	data, _ := json.Marshal(loggingConfig)
-	req, err := http.NewRequest("PATCH", c.adminURL+"/config/logging", bytes.NewReader(data))
+	// Use POST to create if it doesn't exist, fall back to PATCH if it does
+	req, err := http.NewRequest("POST", c.adminURL+"/config/logging", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -381,7 +382,7 @@ func (c *Client) EnableAccessLog(logFile string) error {
 	}
 
 	data, _ = json.Marshal(serverLogs)
-	req, err = http.NewRequest("PATCH", c.adminURL+"/config/apps/http/servers/srv0/logs", bytes.NewReader(data))
+	req, err = http.NewRequest("POST", c.adminURL+"/config/apps/http/servers/srv0/logs", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

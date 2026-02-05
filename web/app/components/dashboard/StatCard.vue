@@ -16,8 +16,8 @@ withDefaults(defineProps<Props>(), {
 </script>
 
 <template>
-  <component :is="to ? resolveComponent('NuxtLink') : 'div'" :to="to">
-    <UCard :class="to ? 'hover:ring-primary-500 transition-all cursor-pointer' : ''">
+  <NuxtLink v-if="to" :to="to" class="block">
+    <UCard class="hover:ring-1 hover:ring-primary-500 transition-all cursor-pointer">
       <div class="flex items-center gap-4">
         <div
           class="flex items-center justify-center w-12 h-12 rounded-lg"
@@ -36,5 +36,24 @@ withDefaults(defineProps<Props>(), {
         </div>
       </div>
     </UCard>
-  </component>
+  </NuxtLink>
+  <UCard v-else>
+    <div class="flex items-center gap-4">
+      <div
+        class="flex items-center justify-center w-12 h-12 rounded-lg"
+        :class="`bg-${color}-100 dark:bg-${color}-900/20`"
+      >
+        <UIcon
+          :name="icon"
+          class="w-6 h-6"
+          :class="`text-${color}-500`"
+        />
+      </div>
+      <div>
+        <p class="text-sm text-gray-500 dark:text-gray-400">{{ label }}</p>
+        <p class="text-2xl font-bold">{{ value }}</p>
+        <p v-if="description" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{{ description }}</p>
+      </div>
+    </div>
+  </UCard>
 </template>
