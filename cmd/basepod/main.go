@@ -166,25 +166,11 @@ func main() {
 		if err := initializeCaddyRoutes(caddyClient, store); err != nil {
 			log.Printf("Warning: Failed to initialize Caddy routes: %v", err)
 		}
-		// Enable access logging
-		accessLogFile := fmt.Sprintf("%s/logs/access.log", paths.Base)
-		if err := os.MkdirAll(fmt.Sprintf("%s/logs", paths.Base), 0755); err != nil {
-			log.Printf("Warning: Failed to create logs directory: %v", err)
-		}
-		// Ensure log file is readable by basepod (Caddy runs as root, basepod reads as user)
-		// If file exists but isn't readable, remove and recreate with correct permissions
-		if f, err := os.Open(accessLogFile); err != nil && os.IsPermission(err) {
-			os.Remove(accessLogFile)
-		} else if err == nil {
-			f.Close()
-		}
-		if f, err := os.OpenFile(accessLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err == nil {
-			f.Close()
-		}
-		if err := caddyClient.EnableAccessLog(accessLogFile); err != nil {
+		// Enable Caddy access logging (logs go to stderr which launchd captures to caddy.err)
+		if err := caddyClient.EnableAccessLog(); err != nil {
 			log.Printf("Warning: Failed to enable Caddy access logging: %v", err)
 		} else {
-			log.Printf("Caddy access logging enabled: %s", accessLogFile)
+			log.Printf("Caddy access logging enabled (via stderr)")
 		}
 	}
 

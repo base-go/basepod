@@ -2794,7 +2794,8 @@ func (s *Server) handleAppAccessLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	paths, _ := config.GetPaths()
-	logFile := fmt.Sprintf("%s/logs/access.log", paths.Base)
+	// Read from caddy.err which contains access logs (Caddy writes all logs to stderr)
+	logFile := fmt.Sprintf("%s/logs/caddy.err", paths.Base)
 
 	// Read log file
 	file, err := os.Open(logFile)
@@ -2807,10 +2808,10 @@ func (s *Server) handleAppAccessLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Get file size and seek to last 1MB if large
+	// Get file size and seek to last 5MB if large (caddy.err has all logs, need more to find access entries)
 	stat, _ := file.Stat()
-	if stat.Size() > 1024*1024 {
-		file.Seek(-1024*1024, 2) // Last 1MB
+	if stat.Size() > 5*1024*1024 {
+		file.Seek(-5*1024*1024, 2) // Last 5MB
 	}
 
 	// Collect domains to filter by (primary + aliases)
@@ -2839,6 +2840,12 @@ func (s *Server) handleAppAccessLogs(w http.ResponseWriter, r *http.Request) {
 
 		var entry map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		// Only process access log entries (skip Caddy operational logs)
+		logger, _ := entry["logger"].(string)
+		if !strings.Contains(logger, "http.log.access") {
 			continue
 		}
 

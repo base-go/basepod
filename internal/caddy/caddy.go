@@ -340,55 +340,22 @@ func (c *Client) AddStaticRoute(domain, rootDir string) error {
 	return nil
 }
 
-// EnableAccessLog configures Caddy to write access logs to a JSON file
-func (c *Client) EnableAccessLog(logFile string) error {
-	// Configure logging output
-	loggingConfig := map[string]interface{}{
-		"logs": map[string]interface{}{
-			"access": map[string]interface{}{
-				"writer": map[string]interface{}{
-					"output":   "file",
-					"filename": logFile,
-				},
-				"encoder": map[string]interface{}{
-					"format": "json",
-				},
-			},
-		},
+// EnableAccessLog enables Caddy access logging on the HTTP server.
+// Logs go to Caddy's stderr (captured by launchd to caddy.err).
+func (c *Client) EnableAccessLog() error {
+	// Enable access logging on the HTTP server (uses default logger which goes to stderr)
+	serverLogs := map[string]interface{}{
+		"default_logger_name": "default",
 	}
 
-	data, _ := json.Marshal(loggingConfig)
-	// Use POST to create if it doesn't exist, fall back to PATCH if it does
-	req, err := http.NewRequest("POST", c.adminURL+"/config/logging", bytes.NewReader(data))
+	data, _ := json.Marshal(serverLogs)
+	req, err := http.NewRequest("POST", c.adminURL+"/config/apps/http/servers/srv0/logs", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to configure logging: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to configure logging (status %d): %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	// Enable access logging on the HTTP server
-	serverLogs := map[string]interface{}{
-		"default_logger_name": "access",
-	}
-
-	data, _ = json.Marshal(serverLogs)
-	req, err = http.NewRequest("POST", c.adminURL+"/config/apps/http/servers/srv0/logs", bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err = c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to enable server logging: %w", err)
 	}
