@@ -66,6 +66,39 @@ const toast = useToast()
 // --- Fetch system storage overview ---
 const { data: systemStorage, refresh: refreshSystemStorage } = await useApiFetch<SystemStorageResponse>('/system/storage')
 
+// --- Volumes drill-down state ---
+interface VolumeInfo {
+  name: string
+  driver: string
+  mountpoint: string
+  size: number
+  formatted: string
+  created_at: string
+}
+
+const volumesExpanded = ref(false)
+const volumesList = ref<VolumeInfo[]>([])
+const volumesLoading = ref(false)
+
+async function toggleVolumes() {
+  volumesExpanded.value = !volumesExpanded.value
+  if (volumesExpanded.value && volumesList.value.length === 0) {
+    volumesLoading.value = true
+    try {
+      volumesList.value = await $api<VolumeInfo[]>('/system/volumes')
+    } catch {
+      volumesList.value = []
+    } finally {
+      volumesLoading.value = false
+    }
+  }
+}
+
+function truncatePath(path: string, max = 50): string {
+  if (path.length <= max) return path
+  return '...' + path.slice(path.length - max + 3)
+}
+
 // --- FLUX drill-down state ---
 const fluxExpanded = ref(false)
 const fluxStorage = ref<FluxStorageInfo | null>(null)
@@ -83,6 +116,8 @@ const bgColorMap: Record<string, string> = {
   orange: 'bg-orange-500',
   purple: 'bg-purple-500',
   pink: 'bg-pink-500',
+  yellow: 'bg-yellow-500',
+  indigo: 'bg-indigo-500',
   gray: 'bg-gray-400 dark:bg-gray-500'
 }
 
@@ -94,6 +129,8 @@ const dotColorMap: Record<string, string> = {
   orange: 'bg-orange-500',
   purple: 'bg-purple-500',
   pink: 'bg-pink-500',
+  yellow: 'bg-yellow-500',
+  indigo: 'bg-indigo-500',
   gray: 'bg-gray-400'
 }
 
@@ -105,6 +142,8 @@ const borderColorMap: Record<string, string> = {
   orange: 'border-l-orange-500',
   purple: 'border-l-purple-500',
   pink: 'border-l-pink-500',
+  yellow: 'border-l-yellow-500',
+  indigo: 'border-l-indigo-500',
   gray: 'border-l-gray-400'
 }
 
@@ -116,6 +155,8 @@ const iconBgMap: Record<string, string> = {
   orange: 'bg-orange-100 dark:bg-orange-900/50 text-orange-500',
   purple: 'bg-purple-100 dark:bg-purple-900/50 text-purple-500',
   pink: 'bg-pink-100 dark:bg-pink-900/50 text-pink-500',
+  yellow: 'bg-yellow-100 dark:bg-yellow-900/50 text-yellow-500',
+  indigo: 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-500',
   gray: 'bg-gray-100 dark:bg-gray-700 text-gray-500'
 }
 
@@ -222,6 +263,28 @@ async function deleteFile(file: StorageFile) {
     toast.add({ title: 'Failed to delete', description: err.data?.error, color: 'error' })
   }
 }
+
+// Clearable categories
+const clearableCategories = ['huggingface', 'logs']
+const clearingCategory = ref<string | null>(null)
+
+async function clearCategory(catId: string) {
+  const cat = systemStorage.value?.categories.find(c => c.id === catId)
+  if (!cat) return
+  if (!confirm(`Clear all ${cat.name}? This will free ${cat.formatted}. This cannot be undone.`)) return
+
+  clearingCategory.value = catId
+  try {
+    const result = await $api<{ message: string; cleared_formatted: string }>(`/system/storage/${catId}`, { method: 'DELETE' })
+    toast.add({ title: result.message, description: `Freed ${result.cleared_formatted}`, color: 'success' })
+    await refreshSystemStorage()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to clear', description: err.data?.error, color: 'error' })
+  } finally {
+    clearingCategory.value = null
+  }
+}
 </script>
 
 <template>
@@ -283,15 +346,17 @@ async function deleteFile(file: StorageFile) {
     <div class="mb-6">
       <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Basepod Storage</h3>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <button
+        <div
           v-for="cat in systemStorage?.categories || []"
           :key="cat.id"
-          class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3 border-l-4 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3 border-l-4 transition-colors"
           :class="[
             borderColorMap[cat.color] || 'border-l-gray-400',
-            cat.id === 'flux' && fluxExpanded ? 'ring-2 ring-purple-500/30' : ''
+            cat.id === 'flux' && fluxExpanded ? 'ring-2 ring-purple-500/30' : '',
+            cat.id === 'volumes' && volumesExpanded ? 'ring-2 ring-cyan-500/30' : '',
+            (cat.id === 'flux' || cat.id === 'volumes') ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50' : ''
           ]"
-          @click="cat.id === 'flux' ? toggleFlux() : undefined"
+          @click="cat.id === 'flux' ? toggleFlux() : cat.id === 'volumes' ? toggleVolumes() : undefined"
         >
           <div
             class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
@@ -305,19 +370,80 @@ async function deleteFile(file: StorageFile) {
               {{ cat.count }} {{ cat.count === 1 ? 'item' : 'items' }}
             </div>
           </div>
-          <div class="text-right shrink-0">
-            <div class="font-semibold">{{ cat.formatted }}</div>
-            <UIcon
-              v-if="cat.id === 'flux'"
-              :name="fluxExpanded ? 'i-heroicons-chevron-up' : 'i-heroicons-chevron-down'"
-              class="w-4 h-4 text-gray-400 mt-1"
+          <div class="flex items-center gap-2 shrink-0">
+            <div class="text-right">
+              <div class="font-semibold">{{ cat.formatted }}</div>
+              <UIcon
+                v-if="cat.id === 'flux'"
+                :name="fluxExpanded ? 'i-heroicons-chevron-up' : 'i-heroicons-chevron-down'"
+                class="w-4 h-4 text-gray-400 mt-1"
+              />
+              <UIcon
+                v-if="cat.id === 'volumes'"
+                :name="volumesExpanded ? 'i-heroicons-chevron-up' : 'i-heroicons-chevron-down'"
+                class="w-4 h-4 text-gray-400 mt-1"
+              />
+            </div>
+            <UButton
+              v-if="clearableCategories.includes(cat.id) && cat.size > 0"
+              variant="ghost"
+              color="error"
+              size="xs"
+              icon="i-heroicons-trash"
+              :loading="clearingCategory === cat.id"
+              @click.stop="clearCategory(cat.id)"
             />
           </div>
-        </button>
+        </div>
       </div>
     </div>
 
-    <!-- Section 3: FLUX Drill-down -->
+    <!-- Section 3: Volumes Drill-down -->
+    <div v-if="volumesExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
+        <h3 class="font-semibold flex items-center gap-2">
+          <UIcon name="i-heroicons-circle-stack" class="w-5 h-5 text-cyan-500" />
+          Container Volumes Detail
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          {{ volumesList.length }} {{ volumesList.length === 1 ? 'volume' : 'volumes' }}
+        </p>
+      </div>
+
+      <div v-if="volumesLoading" class="p-8 text-center">
+        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+      </div>
+
+      <div v-else-if="volumesList.length === 0" class="p-8 text-center text-sm text-gray-500">
+        No volumes found
+      </div>
+
+      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+        <div
+          v-for="vol in volumesList"
+          :key="vol.name"
+          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        >
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            <UIcon name="i-heroicons-circle-stack" class="w-4 h-4 text-cyan-500 shrink-0" />
+            <div class="min-w-0">
+              <div class="font-medium text-sm truncate">{{ vol.name }}</div>
+              <div class="text-xs text-gray-500 font-mono truncate" :title="vol.mountpoint">
+                {{ truncatePath(vol.mountpoint) }}
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-4 shrink-0">
+            <span v-if="vol.created_at" class="text-xs text-gray-500 hidden sm:inline">
+              {{ vol.created_at }}
+            </span>
+            <span class="text-sm font-semibold min-w-[70px] text-right">{{ vol.formatted }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: FLUX Drill-down -->
     <div v-if="fluxExpanded" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
       <div class="p-4 border-b border-gray-200 dark:border-gray-700">
         <h3 class="font-semibold flex items-center gap-2">

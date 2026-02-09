@@ -323,8 +323,20 @@ func ensurePodmanRunning() error {
 			if err := startCmd.Run(); err != nil {
 				return fmt.Errorf("failed to start Podman machine: %w", err)
 			}
-			// Wait for machine to be ready
-			time.Sleep(5 * time.Second)
+		}
+
+		// Wait for the API socket to appear (gvproxy can be slow)
+		socketPath := config.GetPodmanSocket()
+		if socketPath != "" {
+			log.Printf("Waiting for Podman API socket: %s", socketPath)
+			for i := 0; i < 30; i++ {
+				if _, err := os.Stat(socketPath); err == nil {
+					log.Printf("Podman API socket ready")
+					return nil
+				}
+				time.Sleep(1 * time.Second)
+			}
+			log.Printf("Warning: Podman API socket not found after 30s, continuing anyway")
 		}
 		return nil
 	}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,11 +22,11 @@ import (
 	"time"
 
 	"github.com/base-go/basepod/internal/app"
-	"github.com/base-go/basepod/internal/diskutil"
 	"github.com/base-go/basepod/internal/auth"
 	"github.com/base-go/basepod/internal/backup"
 	"github.com/base-go/basepod/internal/caddy"
 	"github.com/base-go/basepod/internal/config"
+	"github.com/base-go/basepod/internal/diskutil"
 	"github.com/base-go/basepod/internal/flux"
 	"github.com/base-go/basepod/internal/mlx"
 	"github.com/base-go/basepod/internal/podman"
@@ -33,6 +34,7 @@ import (
 	"github.com/base-go/basepod/internal/templates"
 	"github.com/base-go/basepod/internal/web"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 // assignHostPort generates a unique host port based on app ID
@@ -147,6 +149,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/apps/{id}/restart", s.requireAuth(s.handleRestartApp))
 	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.requireAuth(s.handleDeployApp))
 	s.router.HandleFunc("GET /api/apps/{id}/logs", s.requireAuth(s.handleGetAppLogs))
+	s.router.HandleFunc("GET /api/apps/{id}/terminal", s.requireAuth(s.handleTerminal))
 
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
@@ -157,6 +160,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/system/update", s.requireAuth(s.handleSystemUpdate))
 	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
 	s.router.HandleFunc("GET /api/system/storage", s.requireAuth(s.handleSystemStorage))
+	s.router.HandleFunc("GET /api/system/volumes", s.requireAuth(s.handleListVolumes))
+	s.router.HandleFunc("DELETE /api/system/storage/{id}", s.requireAuth(s.handleDeleteStorageCategory))
 	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
@@ -876,12 +881,37 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Remove Caddy route
+	// Remove Caddy routes
 	if s.caddy != nil {
+		// Container app route
 		_ = s.caddy.RemoveRoute("basepod-" + a.Name)
-		// Remove alias routes
+		// Static site routes
+		if a.Domain != "" {
+			_ = s.caddy.RemoveRoute("static-" + a.Domain)
+			_ = s.caddy.RemoveRoute("static-" + a.Name + "." + s.config.Domain.Root)
+		}
+		// Alias routes (both container and static patterns)
 		for _, alias := range a.Aliases {
 			_ = s.caddy.RemoveRoute(fmt.Sprintf("alias-%s-%s", a.ID[:8], alias))
+			_ = s.caddy.RemoveRoute("static-" + alias)
+		}
+	}
+
+	// Remove static site files from disk
+	if a.Type == app.AppTypeStatic {
+		paths, err := config.GetPaths()
+		if err == nil {
+			staticDir := filepath.Join(paths.Apps, a.Name)
+			if _, statErr := os.Stat(staticDir); statErr == nil {
+				os.RemoveAll(staticDir)
+			}
+			// Also try domain-named directory
+			if a.Domain != "" && a.Domain != a.Name {
+				domainDir := filepath.Join(paths.Apps, a.Domain)
+				if _, statErr := os.Stat(domainDir); statErr == nil {
+					os.RemoveAll(domainDir)
+				}
+			}
 		}
 	}
 
@@ -1475,6 +1505,34 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	})
 	basepodTotal += logsSize
 
+	// HuggingFace Cache
+	hfDir := filepath.Join(home, ".cache", "huggingface")
+	hfSize := diskutil.DirSize(hfDir)
+	var hfCount int
+	if entries, err := os.ReadDir(filepath.Join(hfDir, "hub")); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "models--") {
+				hfCount++
+			}
+		}
+	}
+	categories = append(categories, StorageCategory{
+		ID: "huggingface", Name: "HuggingFace Cache",
+		Size: hfSize, Formatted: diskutil.FormatBytes(hfSize),
+		Count: hfCount, Icon: "i-heroicons-cloud-arrow-down", Color: "yellow",
+	})
+	basepodTotal += hfSize
+
+	// Podman Storage
+	podmanDir := filepath.Join(home, ".local", "share", "containers")
+	podmanStorageSize := diskutil.DirSize(podmanDir)
+	categories = append(categories, StorageCategory{
+		ID: "podman", Name: "Podman Storage",
+		Size: podmanStorageSize, Formatted: diskutil.FormatBytes(podmanStorageSize),
+		Count: 0, Icon: "i-heroicons-cube", Color: "indigo",
+	})
+	basepodTotal += podmanStorageSize
+
 	// Other/System usage = disk used - basepod total
 	otherSize := int64(du.Used) - basepodTotal
 	if otherSize < 0 {
@@ -1488,6 +1546,59 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 		"basepod_formatted": diskutil.FormatBytes(basepodTotal),
 		"other_size":     otherSize,
 		"other_formatted": diskutil.FormatBytes(otherSize),
+	})
+}
+
+// handleDeleteStorageCategory deletes a clearable storage category
+func (s *Server) handleDeleteStorageCategory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	home, _ := os.UserHomeDir()
+
+	var targetDir string
+	var label string
+
+	switch id {
+	case "huggingface":
+		targetDir = filepath.Join(home, ".cache", "huggingface")
+		label = "HuggingFace Cache"
+	case "logs":
+		paths, err := config.GetPaths()
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, "failed to get paths")
+			return
+		}
+		targetDir = paths.Logs
+		label = "Logs"
+	default:
+		errorResponse(w, http.StatusBadRequest, "category not clearable: "+id)
+		return
+	}
+
+	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"message": label + " already empty",
+			"cleared": int64(0),
+		})
+		return
+	}
+
+	// Calculate size before clearing
+	size := diskutil.DirSize(targetDir)
+
+	// Remove contents but keep the directory
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to read directory: "+err.Error())
+		return
+	}
+	for _, entry := range entries {
+		os.RemoveAll(filepath.Join(targetDir, entry.Name()))
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"message": label + " cleared",
+		"cleared": size,
+		"cleared_formatted": diskutil.FormatBytes(size),
 	})
 }
 
@@ -4181,4 +4292,186 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		"warnings":     warnings,
 		"message":      "Restore completed. Please restart basepod for changes to take effect.",
 	})
+}
+
+// handleListVolumes returns detailed volume information
+func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	volumes, err := s.podman.ListVolumes(ctx)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to list volumes: "+err.Error())
+		return
+	}
+
+	type VolumeInfo struct {
+		Name       string `json:"name"`
+		Driver     string `json:"driver"`
+		Mountpoint string `json:"mountpoint"`
+		Size       int64  `json:"size"`
+		Formatted  string `json:"formatted"`
+		CreatedAt  string `json:"created_at"`
+	}
+
+	var result []VolumeInfo
+	for _, vol := range volumes {
+		var size int64
+		if vol.Mountpoint != "" {
+			size = diskutil.DirSize(vol.Mountpoint)
+		}
+		result = append(result, VolumeInfo{
+			Name:       vol.Name,
+			Driver:     vol.Driver,
+			Mountpoint: vol.Mountpoint,
+			Size:       size,
+			Formatted:  diskutil.FormatBytes(size),
+			CreatedAt:  vol.CreatedAt,
+		})
+	}
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// WebSocket upgrader for terminal connections
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// handleTerminal provides WebSocket-based terminal access to a container
+func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+	if a.ContainerID == "" {
+		errorResponse(w, http.StatusBadRequest, "App has no container")
+		return
+	}
+	if a.Status != "running" {
+		errorResponse(w, http.StatusBadRequest, "App is not running")
+		return
+	}
+
+	// Create exec session - try bash, fall back to sh
+	execID, err := s.podman.ExecCreate(ctx, a.ContainerID, []string{
+		"/bin/sh", "-c", "command -v bash >/dev/null && exec bash || exec sh",
+	})
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to create exec session: "+err.Error())
+		return
+	}
+
+	// Upgrade to WebSocket
+	wsConn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer wsConn.Close()
+
+	// Start exec session via raw HTTP hijack to get bidirectional stream
+	socketPath := s.podman.GetSocketPath()
+	baseURL := s.podman.GetBaseURL()
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("Error: failed to connect to Podman: "+err.Error()))
+		return
+	}
+	defer conn.Close()
+
+	// Send HTTP request to start exec
+	startBody := `{"Detach":false,"Tty":true}`
+	reqStr := fmt.Sprintf("POST %s/exec/%s/start HTTP/1.1\r\nHost: d\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n%s",
+		baseURL, execID, len(startBody), startBody)
+
+	_, err = conn.Write([]byte(reqStr))
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("Error: failed to start exec: "+err.Error()))
+		return
+	}
+
+	// Read the HTTP response header
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("Error: failed to read exec response: "+err.Error()))
+		return
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		wsConn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: exec start failed (status %d): %s", resp.StatusCode, string(body))))
+		return
+	}
+
+	// At this point, conn is the raw bidirectional stream to the exec session.
+	// Any buffered data from br needs to be handled too.
+	done := make(chan struct{})
+
+	// Goroutine: exec stdout → WebSocket
+	go func() {
+		defer func() { close(done) }()
+		buf := make([]byte, 4096)
+		for {
+			n, err := br.Read(buf)
+			if n > 0 {
+				if werr := wsConn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Goroutine: WebSocket → exec stdin
+	go func() {
+		for {
+			msgType, msg, err := wsConn.ReadMessage()
+			if err != nil {
+				conn.Close()
+				return
+			}
+			if msgType == websocket.TextMessage {
+				text := string(msg)
+				if strings.HasPrefix(text, "resize:") {
+					// Parse resize:cols,rows
+					parts := strings.Split(strings.TrimPrefix(text, "resize:"), ",")
+					if len(parts) == 2 {
+						cols, _ := strconv.Atoi(parts[0])
+						rows, _ := strconv.Atoi(parts[1])
+						if cols > 0 && rows > 0 {
+							_ = s.podman.ExecResize(ctx, execID, rows, cols)
+						}
+					}
+					continue
+				}
+			}
+			// Write terminal input data
+			if _, err := conn.Write(msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	<-done
 }

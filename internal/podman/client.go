@@ -44,6 +44,15 @@ type Client interface {
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string, force bool) error
 	ListVolumes(ctx context.Context) ([]Volume, error)
+
+	// Exec operations
+	ExecCreate(ctx context.Context, containerID string, cmd []string) (string, error)
+	ExecResize(ctx context.Context, execID string, height, width int) error
+
+	// Access underlying HTTP client (for raw hijack)
+	GetHTTPClient() *http.Client
+	GetBaseURL() string
+	GetSocketPath() string
 }
 
 // CreateContainerOpts holds options for creating a container
@@ -688,4 +697,72 @@ func (c *client) ListVolumes(ctx context.Context) ([]Volume, error) {
 	}
 
 	return volumes, nil
+}
+
+// ExecCreate creates an exec session in a container
+func (c *client) ExecCreate(ctx context.Context, containerID string, cmd []string) (string, error) {
+	spec := map[string]interface{}{
+		"Cmd":          cmd,
+		"AttachStdin":  true,
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          true,
+	}
+
+	body, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal exec spec: %w", err)
+	}
+
+	resp, err := c.request(ctx, "POST", fmt.Sprintf("/containers/%s/exec", containerID), strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create exec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to create exec (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode exec response: %w", err)
+	}
+
+	return result.ID, nil
+}
+
+// ExecResize resizes the TTY of an exec session
+func (c *client) ExecResize(ctx context.Context, execID string, height, width int) error {
+	path := fmt.Sprintf("/exec/%s/resize?h=%d&w=%d", execID, height, width)
+	resp, err := c.request(ctx, "POST", path, nil)
+	if err != nil {
+		return fmt.Errorf("failed to resize exec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to resize exec (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
+}
+
+// GetHTTPClient returns the underlying HTTP client
+func (c *client) GetHTTPClient() *http.Client {
+	return c.httpClient
+}
+
+// GetBaseURL returns the base URL for the Podman API
+func (c *client) GetBaseURL() string {
+	return c.baseURL
+}
+
+// GetSocketPath returns the socket path
+func (c *client) GetSocketPath() string {
+	return c.socketPath
 }

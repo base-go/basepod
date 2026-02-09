@@ -20,6 +20,7 @@ const tabs = computed(() => {
   // Only show container-specific tabs for non-static apps
   if (app.value?.type !== 'static') {
     baseTabs.push(
+      { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
     )
@@ -678,6 +679,15 @@ async function deleteApp() {
         <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
       </template>
     </UCard>
+
+    <!-- Terminal Tab -->
+    <div v-if="activeTab === 'terminal'">
+      <div v-if="app.status !== 'running'" class="text-center py-12">
+        <UIcon name="i-heroicons-command-line" class="w-12 h-12 mx-auto mb-2 text-gray-300" />
+        <p class="text-gray-500">App must be running to use terminal</p>
+      </div>
+      <AppsAppTerminal v-else :app-id="appId" />
+    </div>
 
     <!-- Volumes Tab -->
     <UCard v-if="activeTab === 'volumes'">
