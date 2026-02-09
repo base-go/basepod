@@ -812,7 +812,7 @@ async function deleteApp() {
 
     <!-- Settings Tab -->
     <div v-if="activeTab === 'settings'" class="space-y-6">
-      <!-- Row 1: General + Container -->
+      <!-- Row 1: General + Container (or just General + Aliases for static) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- General Settings -->
         <UCard>
@@ -831,8 +831,8 @@ async function deleteApp() {
           </div>
         </UCard>
 
-        <!-- Container Settings -->
-        <UCard>
+        <!-- Container Settings (non-static only) -->
+        <UCard v-if="app?.type !== 'static'">
           <template #header>
             <h3 class="font-semibold">Container</h3>
           </template>
@@ -852,10 +852,70 @@ async function deleteApp() {
             </div>
           </div>
         </UCard>
+
+        <!-- Domain Aliases (shown here for static sites to fill the 2-col row) -->
+        <UCard v-if="app?.type === 'static'">
+          <template #header>
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold">Domain Aliases</h3>
+              <UButton :loading="savingAliases" size="xs" @click="saveAliases">
+                Save
+              </UButton>
+            </div>
+          </template>
+
+          <div class="space-y-3">
+            <div class="flex gap-2">
+              <UInput
+                v-model="newAlias"
+                placeholder="example.com"
+                size="sm"
+                class="flex-1"
+                @keydown.enter="addAlias"
+              />
+              <UButton variant="outline" size="sm" @click="addAlias">
+                <UIcon name="i-heroicons-plus" class="w-4 h-4" />
+              </UButton>
+            </div>
+
+            <div v-if="aliases.length === 0" class="text-center py-3 text-gray-500">
+              <p class="text-sm">No aliases configured</p>
+            </div>
+
+            <div v-else class="space-y-1.5 max-h-48 overflow-y-auto">
+              <div
+                v-for="(alias, index) in aliases"
+                :key="alias"
+                class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-sm"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <UIcon name="i-heroicons-globe-alt" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                  <span class="font-mono text-xs truncate">{{ alias }}</span>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <a
+                    :href="`https://${alias}`"
+                    target="_blank"
+                    class="text-gray-400 hover:text-primary-500"
+                  >
+                    <UIcon name="i-heroicons-arrow-top-right-on-square" class="w-3.5 h-3.5" />
+                  </a>
+                  <UButton
+                    icon="i-heroicons-trash"
+                    color="error"
+                    variant="ghost"
+                    size="xs"
+                    @click="removeAlias(index)"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </UCard>
       </div>
 
-      <!-- Row 2: Resources + Network -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Row 2: Resources + Network + Aliases (non-static only) -->
+      <div v-if="app?.type !== 'static'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Resource Limits -->
         <UCard>
           <template #header>

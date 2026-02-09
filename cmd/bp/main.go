@@ -528,9 +528,17 @@ func cmdApps(args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATUS\tDOMAIN\tIMAGE")
+	fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tDOMAIN\tALIASES\tIMAGE")
 	for _, a := range result.Apps {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", a.Name, a.Status, a.Domain, a.Image)
+		aliases := ""
+		if len(a.Aliases) > 0 {
+			aliases = strings.Join(a.Aliases, ", ")
+		}
+		appType := a.Type
+		if appType == "" {
+			appType = "container"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, appType, a.Status, a.Domain, aliases, a.Image)
 	}
 	w.Flush()
 }
