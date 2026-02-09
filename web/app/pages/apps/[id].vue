@@ -812,156 +812,158 @@ async function deleteApp() {
 
     <!-- Settings Tab -->
     <div v-if="activeTab === 'settings'" class="space-y-6">
-      <!-- General Settings -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">General</h3>
-        </template>
+      <!-- Row 1: General + Container -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- General Settings -->
+        <UCard>
+          <template #header>
+            <h3 class="font-semibold">General</h3>
+          </template>
 
-        <div class="space-y-4 max-w-lg">
-          <UFormField label="App Name" hint="Unique identifier for your app">
-            <UInput v-model="settingsForm.name" placeholder="my-app" />
-          </UFormField>
+          <div class="space-y-4">
+            <UFormField label="App Name" hint="Unique identifier for your app">
+              <UInput v-model="settingsForm.name" placeholder="my-app" />
+            </UFormField>
 
-          <UFormField label="Domain" hint="Primary domain for your app">
-            <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
-          </UFormField>
-        </div>
-      </UCard>
-
-      <!-- Domain Aliases -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">Domain Aliases</h3>
-            <UButton :loading="savingAliases" size="sm" @click="saveAliases">
-              Save Aliases
-            </UButton>
+            <UFormField label="Domain" hint="Primary domain for your app">
+              <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
+            </UFormField>
           </div>
-        </template>
+        </UCard>
 
-        <div class="space-y-4">
-          <p class="text-sm text-gray-500">
-            Add additional domains that should point to this app. Make sure DNS records are configured to point to your server.
-          </p>
+        <!-- Container Settings -->
+        <UCard>
+          <template #header>
+            <h3 class="font-semibold">Container</h3>
+          </template>
 
-          <!-- Add new alias -->
-          <div class="flex gap-2">
-            <UInput
-              v-model="newAlias"
-              placeholder="example.com"
-              class="flex-1"
-              @keydown.enter="addAlias"
-            />
-            <UButton variant="outline" @click="addAlias">
-              <UIcon name="i-heroicons-plus" class="w-4 h-4 mr-1" />
-              Add
-            </UButton>
-          </div>
+          <div class="space-y-4">
+            <UFormField label="Image" hint="Docker image (changes require redeploy)">
+              <UInput v-model="settingsForm.image" placeholder="nginx:latest" />
+            </UFormField>
 
-          <!-- Aliases list -->
-          <div v-if="aliases.length === 0" class="text-center py-4 text-gray-500">
-            <UIcon name="i-heroicons-globe-alt" class="w-8 h-8 mx-auto mb-2 opacity-50" />
-            <p class="text-sm">No domain aliases configured</p>
-          </div>
+            <UFormField label="Container Port" hint="Port your app listens on">
+              <UInput v-model.number="settingsForm.port" type="number" placeholder="8080" />
+            </UFormField>
 
-          <div v-else class="space-y-2">
-            <div
-              v-for="(alias, index) in aliases"
-              :key="alias"
-              class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg"
-            >
-              <div class="flex items-center gap-2">
-                <UIcon name="i-heroicons-globe-alt" class="w-4 h-4 text-gray-400" />
-                <span class="font-mono text-sm">{{ alias }}</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <a
-                  :href="`https://${alias}`"
-                  target="_blank"
-                  class="text-gray-400 hover:text-primary-500"
-                >
-                  <UIcon name="i-heroicons-arrow-top-right-on-square" class="w-4 h-4" />
-                </a>
-                <UButton
-                  icon="i-heroicons-trash"
-                  color="error"
-                  variant="ghost"
-                  size="xs"
-                  @click="removeAlias(index)"
-                />
-              </div>
+            <div class="text-sm text-gray-500">
+              <strong>Container ID:</strong>
+              <code class="ml-2 px-2 py-0.5 bg-gray-100 dark:bg-gray-800 rounded">{{ app?.container_id ? app.container_id.slice(0, 12) : 'Not deployed' }}</code>
             </div>
           </div>
-        </div>
-      </UCard>
+        </UCard>
+      </div>
 
-      <!-- Container Settings -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">Container</h3>
-        </template>
+      <!-- Row 2: Resources + Network -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Resource Limits -->
+        <UCard>
+          <template #header>
+            <h3 class="font-semibold">Resource Limits</h3>
+          </template>
 
-        <div class="space-y-4 max-w-lg">
-          <UFormField label="Image" hint="Docker image to deploy (changes require redeploy)">
-            <UInput v-model="settingsForm.image" placeholder="nginx:latest" />
-          </UFormField>
+          <div class="space-y-4">
+            <UFormField label="Memory Limit (MB)" hint="0 for unlimited">
+              <UInput v-model.number="settingsForm.memory" type="number" placeholder="512" />
+            </UFormField>
 
-          <UFormField label="Container Port" hint="Port your application listens on">
-            <UInput v-model.number="settingsForm.port" type="number" placeholder="8080" />
-          </UFormField>
-
-          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-            <div>
-              <div class="font-medium">External Access</div>
-              <div class="text-sm text-gray-500">Allow direct TCP connections from outside (e.g., MySQL clients)</div>
-            </div>
-            <USwitch v-model="settingsForm.exposeExternal" />
+            <UFormField label="CPU Limit (cores)" hint="0 for unlimited">
+              <UInput v-model.number="settingsForm.cpus" type="number" step="0.1" placeholder="1.0" />
+            </UFormField>
           </div>
+        </UCard>
 
-          <div v-if="settingsForm.exposeExternal && app?.ports?.host_port" class="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm">
-            <div class="flex items-start gap-2">
-              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 text-yellow-500 shrink-0.5" />
+        <!-- Network & Access -->
+        <UCard>
+          <template #header>
+            <h3 class="font-semibold">Network</h3>
+          </template>
+
+          <div class="space-y-4">
+            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
               <div>
-                <strong class="text-yellow-700 dark:text-yellow-300">Security Warning:</strong>
-                <span class="text-yellow-600 dark:text-yellow-400"> Port {{ app.ports.host_port }} is accessible from the internet. Ensure your app has proper authentication.</span>
+                <div class="font-medium text-sm">External Access</div>
+                <div class="text-xs text-gray-500">Direct TCP from outside</div>
+              </div>
+              <USwitch v-model="settingsForm.exposeExternal" />
+            </div>
+
+            <div v-if="settingsForm.exposeExternal && app?.ports?.host_port" class="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm">
+              <div class="flex items-start gap-2">
+                <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 text-yellow-500 shrink-0" />
+                <span class="text-yellow-600 dark:text-yellow-400">Port {{ app.ports.host_port }} is accessible from the internet.</span>
+              </div>
+            </div>
+
+            <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+              <div class="flex items-start gap-2">
+                <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+                <span class="text-blue-600 dark:text-blue-400"><strong>SSL</strong> auto-managed by Caddy.</span>
               </div>
             </div>
           </div>
+        </UCard>
 
-          <div class="text-sm text-gray-500">
-            <strong>Container ID:</strong>
-            <code class="ml-2 px-2 py-0.5 bg-gray-100 dark:bg-gray-800 rounded">{{ app?.container_id ? app.container_id.slice(0, 12) : 'Not deployed' }}</code>
-          </div>
-        </div>
-      </UCard>
+        <!-- Domain Aliases -->
+        <UCard>
+          <template #header>
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold">Domain Aliases</h3>
+              <UButton :loading="savingAliases" size="xs" @click="saveAliases">
+                Save
+              </UButton>
+            </div>
+          </template>
 
-      <!-- Resource Limits -->
-      <UCard>
-        <template #header>
-          <h3 class="font-semibold">Resource Limits</h3>
-        </template>
+          <div class="space-y-3">
+            <div class="flex gap-2">
+              <UInput
+                v-model="newAlias"
+                placeholder="example.com"
+                size="sm"
+                class="flex-1"
+                @keydown.enter="addAlias"
+              />
+              <UButton variant="outline" size="sm" @click="addAlias">
+                <UIcon name="i-heroicons-plus" class="w-4 h-4" />
+              </UButton>
+            </div>
 
-        <div class="space-y-4 max-w-lg">
-          <UFormField label="Memory Limit (MB)" hint="0 for unlimited">
-            <UInput v-model.number="settingsForm.memory" type="number" placeholder="512" />
-          </UFormField>
+            <div v-if="aliases.length === 0" class="text-center py-3 text-gray-500">
+              <p class="text-sm">No aliases configured</p>
+            </div>
 
-          <UFormField label="CPU Limit (cores)" hint="0 for unlimited">
-            <UInput v-model.number="settingsForm.cpus" type="number" step="0.1" placeholder="1.0" />
-          </UFormField>
-
-          <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
-            <div class="flex items-start gap-2">
-              <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-              <div>
-                <strong class="text-blue-700 dark:text-blue-300">SSL:</strong>
-                <span class="text-blue-600 dark:text-blue-400"> Automatically managed by Caddy. All domains get HTTPS certificates on-demand.</span>
+            <div v-else class="space-y-1.5 max-h-48 overflow-y-auto">
+              <div
+                v-for="(alias, index) in aliases"
+                :key="alias"
+                class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-sm"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <UIcon name="i-heroicons-globe-alt" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                  <span class="font-mono text-xs truncate">{{ alias }}</span>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <a
+                    :href="`https://${alias}`"
+                    target="_blank"
+                    class="text-gray-400 hover:text-primary-500"
+                  >
+                    <UIcon name="i-heroicons-arrow-top-right-on-square" class="w-3.5 h-3.5" />
+                  </a>
+                  <UButton
+                    icon="i-heroicons-trash"
+                    color="error"
+                    variant="ghost"
+                    size="xs"
+                    @click="removeAlias(index)"
+                  />
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </UCard>
+        </UCard>
+      </div>
 
       <!-- Save Button -->
       <div class="flex justify-end">
@@ -976,16 +978,14 @@ async function deleteApp() {
           <h3 class="font-semibold text-red-600 dark:text-red-400">Danger Zone</h3>
         </template>
 
-        <div class="space-y-4">
-          <div class="flex items-center justify-between p-4 border border-red-200 dark:border-red-800 rounded-lg">
-            <div>
-              <h4 class="font-medium">Delete this app</h4>
-              <p class="text-sm text-gray-500">Once deleted, this app and all its data will be permanently removed.</p>
-            </div>
-            <UButton color="error" variant="outline" @click="showDeleteModal = true">
-              Delete App
-            </UButton>
+        <div class="flex items-center justify-between p-4 border border-red-200 dark:border-red-800 rounded-lg">
+          <div>
+            <h4 class="font-medium">Delete this app</h4>
+            <p class="text-sm text-gray-500">Once deleted, this app and all its data will be permanently removed.</p>
           </div>
+          <UButton color="error" variant="outline" @click="showDeleteModal = true">
+            Delete App
+          </UButton>
         </div>
       </UCard>
     </div>
