@@ -145,6 +145,7 @@ type UpdateAppRequest struct {
 	CPUs           *float64           `json:"cpus,omitempty"`
 	EnableSSL      *bool              `json:"enable_ssl,omitempty"`
 	ExposeExternal *bool              `json:"expose_external,omitempty"`
+	Volumes        *[]VolumeMount     `json:"volumes,omitempty"`
 }
 
 // DeployRequest represents a request to deploy an app

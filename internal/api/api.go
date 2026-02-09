@@ -792,6 +792,9 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.ExposeExternal != nil {
 		a.Ports.ExposeExternal = *req.ExposeExternal
 	}
+	if req.Volumes != nil {
+		a.Volumes = *req.Volumes
+	}
 
 	// Handle aliases update
 	aliasesChanged := false

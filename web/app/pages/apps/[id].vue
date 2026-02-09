@@ -228,6 +228,60 @@ async function saveEnvVars() {
   }
 }
 
+// Volumes management
+const volumeList = ref<Array<{ name: string; container_path: string; read_only: boolean; host_path?: string }>>([])
+const savingVolumes = ref(false)
+const volumesInitialized = ref(false)
+
+// Initialize volumes when app data loads (only once)
+watch(() => app.value, (appData) => {
+  if (appData?.volumes && !volumesInitialized.value) {
+    volumeList.value = appData.volumes.map((v: any) => ({
+      name: v.name || '',
+      container_path: v.container_path || '',
+      read_only: v.read_only || false,
+      host_path: v.host_path || ''
+    }))
+    volumesInitialized.value = true
+  }
+}, { immediate: true })
+
+function addVolume() {
+  volumeList.value.push({ name: '', container_path: '', read_only: false })
+  nextTick(() => {
+    const inputs = document.querySelectorAll('input[placeholder="volume-name"]')
+    const lastInput = inputs[inputs.length - 1] as HTMLInputElement
+    lastInput?.focus()
+  })
+}
+
+function removeVolume(index: number) {
+  volumeList.value.splice(index, 1)
+}
+
+async function saveVolumes() {
+  savingVolumes.value = true
+  try {
+    const volumes = volumeList.value
+      .filter(v => v.name.trim() && v.container_path.trim())
+      .map(v => ({
+        name: v.name.trim(),
+        container_path: v.container_path.trim(),
+        read_only: v.read_only
+      }))
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: { volumes }
+    })
+    toast.add({ title: 'Volumes saved', color: 'success' })
+    volumeList.value = volumes.map(v => ({ ...v, host_path: '' }))
+  } catch (error) {
+    toast.add({ title: 'Failed to save volumes', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingVolumes.value = false
+  }
+}
+
 // Initialize settings form when app data loads
 watch(() => app.value, (appData) => {
   if (appData) {
@@ -628,35 +682,74 @@ async function deleteApp() {
     <!-- Volumes Tab -->
     <UCard v-if="activeTab === 'volumes'">
       <template #header>
-        <h3 class="font-semibold">Persistent Volumes</h3>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Persistent Volumes</h3>
+          <div class="flex gap-2">
+            <UButton variant="outline" size="sm" @click="addVolume">
+              <UIcon name="i-heroicons-plus" class="w-4 h-4 mr-1" />
+              Add Volume
+            </UButton>
+            <UButton :loading="savingVolumes" @click="saveVolumes">
+              Save and Restart
+            </UButton>
+          </div>
+        </div>
       </template>
 
-      <div v-if="!app.volumes || app.volumes.length === 0" class="text-center py-8 text-gray-500">
-        <UIcon name="i-heroicons-circle-stack" class="w-12 h-12 mx-auto mb-2 opacity-50" />
-        <p>No volumes configured</p>
-        <p class="text-sm">Data will not persist across container restarts</p>
-      </div>
+      <div class="space-y-3">
+        <div v-if="volumeList.length === 0" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-circle-stack" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>No volumes configured</p>
+          <p class="text-sm">Click "Add Volume" to create one. Data will not persist across container restarts without volumes.</p>
+        </div>
 
-      <div v-else class="space-y-3">
         <div
-          v-for="volume in app.volumes"
-          :key="volume.name"
+          v-for="(volume, index) in volumeList"
+          :key="index"
           class="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
         >
-          <div class="flex items-center justify-between mb-2">
-            <span class="font-medium">{{ volume.name }}</span>
-            <UBadge v-if="volume.read_only" color="warning" size="xs">Read Only</UBadge>
+          <div class="flex items-start gap-3">
+            <div class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Name</label>
+                <input
+                  v-model="volume.name"
+                  type="text"
+                  placeholder="volume-name"
+                  class="w-full px-3 py-2 text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Container Path</label>
+                <input
+                  v-model="volume.container_path"
+                  type="text"
+                  placeholder="/data"
+                  class="w-full px-3 py-2 font-mono text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+              </div>
+            </div>
+            <div class="flex items-center gap-3 pt-5">
+              <label class="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 cursor-pointer whitespace-nowrap">
+                <input
+                  v-model="volume.read_only"
+                  type="checkbox"
+                  class="rounded border-gray-300 dark:border-gray-600"
+                >
+                Read Only
+              </label>
+              <UButton
+                icon="i-heroicons-trash"
+                color="error"
+                variant="ghost"
+                size="sm"
+                @click="removeVolume(index)"
+              />
+            </div>
           </div>
-          <dl class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-            <div>
-              <dt class="text-gray-500">Host Path</dt>
-              <dd class="font-mono text-xs bg-gray-100 dark:bg-gray-900 px-2 py-1 rounded mt-1 break-all">{{ volume.host_path }}</dd>
-            </div>
-            <div>
-              <dt class="text-gray-500">Container Path</dt>
-              <dd class="font-mono text-xs bg-gray-100 dark:bg-gray-900 px-2 py-1 rounded mt-1 break-all">{{ volume.container_path }}</dd>
-            </div>
-          </dl>
+          <p v-if="volume.host_path" class="mt-2 text-xs text-gray-400 font-mono">
+            Host: {{ volume.host_path }}
+          </p>
         </div>
       </div>
     </UCard>
