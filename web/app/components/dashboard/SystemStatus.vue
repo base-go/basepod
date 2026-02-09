@@ -65,7 +65,7 @@ onMounted(() => {
         <span class="text-gray-600 dark:text-gray-400">Version</span>
         <div class="flex items-center gap-2">
           <span class="font-mono text-sm">v{{ version?.current || systemInfo?.version || '0.1.0' }}</span>
-          <NuxtLink v-if="version?.updateAvailable" to="/settings" class="text-xs text-primary-500 hover:underline">
+          <NuxtLink v-if="version?.updateAvailable" to="/settings?tab=system" class="text-xs text-primary-500 hover:underline">
             Update to v{{ version?.latest }}
           </NuxtLink>
         </div>
@@ -73,8 +73,8 @@ onMounted(() => {
     </div>
 
     <template #footer>
-      <NuxtLink to="/settings" class="text-sm text-gray-500 hover:text-primary-500">
-        View all settings
+      <NuxtLink to="/settings?tab=system" class="text-sm text-gray-500 hover:text-primary-500">
+        System settings
       </NuxtLink>
     </template>
   </UCard>

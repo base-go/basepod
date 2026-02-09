@@ -41,12 +41,18 @@ const { data: health, refresh: refreshHealth } = await useApiFetch<HealthRespons
 const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
 
 // Tabs
+const route = useRoute()
 const tabs = [
-  { label: 'General', slot: 'general', icon: 'i-heroicons-cog-6-tooth' },
-  { label: 'Security', slot: 'security', icon: 'i-heroicons-shield-check' },
-  { label: 'Backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up' },
-  { label: 'System', slot: 'system', icon: 'i-heroicons-server' }
+  { label: 'General', value: 'general', slot: 'general', icon: 'i-heroicons-cog-6-tooth' },
+  { label: 'Security', value: 'security', slot: 'security', icon: 'i-heroicons-shield-check' },
+  { label: 'Backup', value: 'backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up' },
+  { label: 'System', value: 'system', slot: 'system', icon: 'i-heroicons-server' }
 ]
+const defaultTab = computed(() => {
+  const tab = route.query.tab as string
+  if (tab && tabs.some(t => t.value === tab)) return tab
+  return 'general'
+})
 
 // Version info
 const version = ref<VersionInfo | null>(null)
@@ -525,7 +531,7 @@ const formatDate = (dateStr: string) => {
       <p class="text-gray-500">Manage your Basepod configuration</p>
     </div>
 
-    <UTabs :items="tabs" class="w-full">
+    <UTabs :items="tabs" :default-value="defaultTab" class="w-full">
       <!-- General Tab -->
       <template #general>
         <div class="space-y-6 py-4">
