@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/base-go/basepod/internal/app"
+	"github.com/base-go/basepod/internal/diskutil"
 	"github.com/base-go/basepod/internal/auth"
 	"github.com/base-go/basepod/internal/backup"
 	"github.com/base-go/basepod/internal/caddy"
@@ -155,6 +156,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/system/version", s.requireAuth(s.handleGetVersion))
 	s.router.HandleFunc("POST /api/system/update", s.requireAuth(s.handleSystemUpdate))
 	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
+	s.router.HandleFunc("GET /api/system/storage", s.requireAuth(s.handleSystemStorage))
 	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
@@ -1326,6 +1328,167 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, info)
+}
+
+// handleSystemStorage returns full disk usage overview with basepod categories
+func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	paths, err := config.GetPaths()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to get paths: "+err.Error())
+		return
+	}
+
+	// Get filesystem disk usage
+	du, err := diskutil.GetDiskUsage(paths.Base)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to get disk usage: "+err.Error())
+		return
+	}
+
+	type StorageCategory struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Size      int64  `json:"size"`
+		Formatted string `json:"formatted"`
+		Count     int    `json:"count"`
+		Icon      string `json:"icon"`
+		Color     string `json:"color"`
+	}
+
+	var categories []StorageCategory
+	var basepodTotal int64
+
+	// Container Images
+	var imagesSize int64
+	var imagesCount int
+	images, err := s.podman.ListImages(ctx)
+	if err == nil {
+		for _, img := range images {
+			imagesSize += img.Size
+		}
+		imagesCount = len(images)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "images", Name: "Container Images",
+		Size: imagesSize, Formatted: diskutil.FormatBytes(imagesSize),
+		Count: imagesCount, Icon: "i-heroicons-square-3-stack-3d", Color: "blue",
+	})
+	basepodTotal += imagesSize
+
+	// Container Volumes
+	var volumesSize int64
+	var volumesCount int
+	volumes, err := s.podman.ListVolumes(ctx)
+	if err == nil {
+		volumesCount = len(volumes)
+		for _, vol := range volumes {
+			if vol.Mountpoint != "" {
+				volumesSize += diskutil.DirSize(vol.Mountpoint)
+			}
+		}
+	}
+	categories = append(categories, StorageCategory{
+		ID: "volumes", Name: "Container Volumes",
+		Size: volumesSize, Formatted: diskutil.FormatBytes(volumesSize),
+		Count: volumesCount, Icon: "i-heroicons-circle-stack", Color: "cyan",
+	})
+	basepodTotal += volumesSize
+
+	// Apps & Static Sites
+	appsSize := diskutil.DirSize(paths.Apps)
+	var appsCount int
+	if entries, err := os.ReadDir(paths.Apps); err == nil {
+		appsCount = len(entries)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "apps", Name: "Apps & Static Sites",
+		Size: appsSize, Formatted: diskutil.FormatBytes(appsSize),
+		Count: appsCount, Icon: "i-heroicons-globe-alt", Color: "green",
+	})
+	basepodTotal += appsSize
+
+	// Database
+	dbPath := filepath.Join(paths.Data, "basepod.db")
+	dbSize := diskutil.FileSize(dbPath)
+	categories = append(categories, StorageCategory{
+		ID: "database", Name: "Database",
+		Size: dbSize, Formatted: diskutil.FormatBytes(dbSize),
+		Count: 1, Icon: "i-heroicons-server", Color: "amber",
+	})
+	basepodTotal += dbSize
+
+	// Backups
+	backupsDir := filepath.Join(paths.Base, "backups")
+	backupsSize := diskutil.DirSize(backupsDir)
+	var backupsCount int
+	if entries, err := os.ReadDir(backupsDir); err == nil {
+		backupsCount = len(entries)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "backups", Name: "Backups",
+		Size: backupsSize, Formatted: diskutil.FormatBytes(backupsSize),
+		Count: backupsCount, Icon: "i-heroicons-archive-box", Color: "orange",
+	})
+	basepodTotal += backupsSize
+
+	// AI/FLUX
+	fluxDir := filepath.Join(paths.Data, "flux")
+	fluxSize := diskutil.DirSize(fluxDir)
+	var fluxCount int
+	if entries, err := os.ReadDir(fluxDir); err == nil {
+		fluxCount = len(entries)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "flux", Name: "AI / FLUX",
+		Size: fluxSize, Formatted: diskutil.FormatBytes(fluxSize),
+		Count: fluxCount, Icon: "i-heroicons-sparkles", Color: "purple",
+	})
+	basepodTotal += fluxSize
+
+	// AI/LLM Models
+	home, _ := os.UserHomeDir()
+	mlxDir := filepath.Join(home, ".local", "share", "basepod", "mlx")
+	mlxSize := diskutil.DirSize(mlxDir)
+	var mlxCount int
+	if entries, err := os.ReadDir(mlxDir); err == nil {
+		mlxCount = len(entries)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "llm", Name: "AI / LLM Models",
+		Size: mlxSize, Formatted: diskutil.FormatBytes(mlxSize),
+		Count: mlxCount, Icon: "i-heroicons-cpu-chip", Color: "pink",
+	})
+	basepodTotal += mlxSize
+
+	// Logs
+	logsSize := diskutil.DirSize(paths.Logs)
+	var logsCount int
+	if entries, err := os.ReadDir(paths.Logs); err == nil {
+		logsCount = len(entries)
+	}
+	categories = append(categories, StorageCategory{
+		ID: "logs", Name: "Logs",
+		Size: logsSize, Formatted: diskutil.FormatBytes(logsSize),
+		Count: logsCount, Icon: "i-heroicons-document-text", Color: "gray",
+	})
+	basepodTotal += logsSize
+
+	// Other/System usage = disk used - basepod total
+	otherSize := int64(du.Used) - basepodTotal
+	if otherSize < 0 {
+		otherSize = 0
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"disk":           du,
+		"categories":     categories,
+		"basepod_total":  basepodTotal,
+		"basepod_formatted": diskutil.FormatBytes(basepodTotal),
+		"other_size":     otherSize,
+		"other_formatted": diskutil.FormatBytes(otherSize),
+	})
 }
 
 // ProcessInfo represents a running process
