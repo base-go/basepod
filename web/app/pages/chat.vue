@@ -584,28 +584,30 @@ async function manualRefresh() {
                 <UIcon name="i-heroicons-chevron-down" class="w-3 h-3" />
               </button>
             </template>
-            <div class="p-2 w-72 max-h-80 overflow-y-auto">
-              <p class="text-xs text-gray-500 px-2 pb-2">Switch model</p>
-              <div v-for="model in downloadedModels" :key="model.id"
-                :class="[
-                  'p-2 rounded cursor-pointer transition-colors',
-                  model.id === mlxData?.active_model
-                    ? 'bg-primary-100 dark:bg-primary-900/30'
-                    : 'hover:bg-gray-100 dark:hover:bg-gray-800'
-                ]"
-                @click="switchModel(model.id)">
-                <div class="flex items-center justify-between">
-                  <span class="font-medium text-sm">{{ model.name }}</span>
-                  <div class="flex items-center gap-2">
-                    <UBadge v-if="model.category === 'vision'" color="secondary" size="xs">Vision</UBadge>
-                    <UBadge v-if="model.category === 'speech'" color="info" size="xs">Speech</UBadge>
-                    <UIcon v-if="model.id === mlxData?.active_model"
-                      name="i-heroicons-check" class="w-4 h-4 text-green-500" />
+            <template #content>
+              <div class="p-2 w-72 max-h-80 overflow-y-auto">
+                <p class="text-xs text-gray-500 px-2 pb-2">Switch model</p>
+                <div v-for="model in downloadedModels" :key="model.id"
+                  :class="[
+                    'p-2 rounded cursor-pointer transition-colors',
+                    model.id === mlxData?.active_model
+                      ? 'bg-primary-100 dark:bg-primary-900/30'
+                      : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                  ]"
+                  @click="switchModel(model.id)">
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium text-sm">{{ model.name }}</span>
+                    <div class="flex items-center gap-2">
+                      <UBadge v-if="model.category === 'vision'" color="secondary" size="xs">Vision</UBadge>
+                      <UBadge v-if="model.category === 'speech'" color="info" size="xs">Speech</UBadge>
+                      <UIcon v-if="model.id === mlxData?.active_model"
+                        name="i-heroicons-check" class="w-4 h-4 text-green-500" />
+                    </div>
                   </div>
+                  <span class="text-xs text-gray-500">{{ model.size }}</span>
                 </div>
-                <span class="text-xs text-gray-500">{{ model.size }}</span>
               </div>
-            </div>
+            </template>
           </UPopover>
           <!-- Single model display -->
           <p v-else-if="mlxData?.running" class="text-sm text-gray-500">
