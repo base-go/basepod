@@ -285,6 +285,17 @@ type AppMetric struct {
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
+// User represents a system user
+type User struct {
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	PasswordHash string     `json:"-"`
+	Role         string     `json:"role"` // "admin", "deployer", "viewer"
+	InviteToken  string     `json:"-"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+}
+
 // AppListResponse represents a list of apps
 type AppListResponse struct {
 	Apps  []App `json:"apps"`

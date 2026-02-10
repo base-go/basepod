@@ -295,3 +295,12 @@ export interface AppMetricsResponse {
     net_output: number
   }
 }
+
+// Users
+export interface User {
+  id: string
+  email: string
+  role: 'admin' | 'deployer' | 'viewer'
+  created_at: string
+  last_login_at?: string
+}

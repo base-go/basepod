@@ -129,6 +129,9 @@ func main() {
 	// Database
 	case "db":
 		cmdDB(args)
+	// AI analyze
+	case "analyze":
+		cmdAnalyze(args)
 	// Health check commands
 	case "health":
 		cmdHealth(args)
@@ -199,6 +202,9 @@ App Commands:
   metrics <name>          Show app resource metrics
   db link <app> <db>      Link database to app (inject DATABASE_URL)
   db info <name>          Show database connection info
+
+AI Commands:
+  analyze <repo-url>      Analyze repo and suggest deploy config
 
 Notification & CI/CD Commands:
   notify list             List notification hooks
@@ -4423,6 +4429,66 @@ func cmdTokens(args []string) {
 		fmt.Fprintf(os.Stderr, "Unknown token subcommand: %s\n", subcmd)
 		os.Exit(1)
 	}
+}
+
+func cmdAnalyze(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: bp analyze <github-repo-url>")
+		os.Exit(1)
+	}
+
+	repoURL := args[0]
+	fmt.Printf("Analyzing repository: %s\n", repoURL)
+
+	resp, err := apiRequest("POST", "/api/ai/analyze", map[string]string{"repo_url": repoURL})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+		os.Exit(1)
+	}
+
+	var result struct {
+		RepoURL   string `json:"repo_url"`
+		Stack     string `json:"stack"`
+		HasDocker bool   `json:"has_docker"`
+		Suggestion struct {
+			Port       int               `json:"port"`
+			Env        map[string]string  `json:"env"`
+			Dockerfile string            `json:"dockerfile"`
+		} `json:"suggestion"`
+		AIAnalysis string `json:"ai_analysis"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	fmt.Printf("\nStack:      %s\n", result.Stack)
+	fmt.Printf("Dockerfile: %v\n", result.HasDocker)
+	fmt.Printf("Port:       %d\n", result.Suggestion.Port)
+
+	if len(result.Suggestion.Env) > 0 {
+		fmt.Println("\nSuggested Environment:")
+		for k, v := range result.Suggestion.Env {
+			fmt.Printf("  %s=%s\n", k, v)
+		}
+	}
+
+	if result.Suggestion.Dockerfile != "" {
+		fmt.Println("\nGenerated Dockerfile:")
+		fmt.Println("---")
+		fmt.Print(result.Suggestion.Dockerfile)
+		fmt.Println("---")
+	}
+
+	if result.AIAnalysis != "" {
+		fmt.Println("\nAI Analysis:")
+		fmt.Println(result.AIAnalysis)
+	}
+
+	fmt.Printf("\nDeploy with: bp deploy %s\n", repoURL)
 }
 
 func cmdMetrics(args []string) {

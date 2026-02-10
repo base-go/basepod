@@ -158,6 +158,13 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/auth/setup", s.handleSetup) // Initial password setup
 	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.handleChangePassword))
 
+	// User management (admin only)
+	s.router.HandleFunc("GET /api/users", s.requireAdmin(s.handleListUsers))
+	s.router.HandleFunc("POST /api/users/invite", s.requireAdmin(s.handleInviteUser))
+	s.router.HandleFunc("PUT /api/users/{id}/role", s.requireAdmin(s.handleUpdateUserRole))
+	s.router.HandleFunc("DELETE /api/users/{id}", s.requireAdmin(s.handleDeleteUser))
+	s.router.HandleFunc("POST /api/auth/accept-invite", s.handleAcceptInvite)
+
 	// Apps (auth required)
 	s.router.HandleFunc("GET /api/apps", s.requireAuth(s.handleListApps))
 	s.router.HandleFunc("POST /api/apps", s.requireAuth(s.handleCreateApp))
@@ -267,6 +274,9 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/apps/{id}/link/{dbId}", s.requireAuth(s.handleLinkDatabase))
 	s.router.HandleFunc("GET /api/apps/{id}/connection-info", s.requireAuth(s.handleConnectionInfo))
 
+	// AI Deploy Assistant (auth required)
+	s.router.HandleFunc("POST /api/ai/analyze", s.requireAuth(s.handleAIAnalyze))
+
 	// Status badge (no auth)
 	s.router.HandleFunc("GET /api/badge/{id}", s.handleStatusBadge)
 
@@ -310,28 +320,87 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// handleLogin handles password authentication
+// getSessionToken extracts the auth token from request
+func (s *Server) getSessionToken(r *http.Request) string {
+	token := ""
+	if cookie, err := r.Cookie("basepod_token"); err == nil {
+		token = cookie.Value
+	}
+	if token == "" {
+		token = r.Header.Get("Authorization")
+		token = strings.TrimPrefix(token, "Bearer ")
+	}
+	return token
+}
+
+// requireAdmin wraps a handler, requiring the user to be an admin
+func (s *Server) requireAdmin(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.auth.NeedsSetup() {
+			errorResponse(w, http.StatusForbidden, "Setup required")
+			return
+		}
+
+		token := s.getSessionToken(r)
+		session := s.auth.GetSession(token)
+		if session == nil {
+			errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		if session.UserRole != "admin" {
+			errorResponse(w, http.StatusForbidden, "Admin access required")
+			return
+		}
+
+		handler(w, r)
+	}
+}
+
+// handleLogin handles password authentication (supports legacy admin + multi-user)
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
+		Email    string `json:"email,omitempty"` // optional: for multi-user login
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
-	if !s.auth.ValidatePassword(req.Password) {
-		errorResponse(w, http.StatusUnauthorized, "Invalid password")
-		return
+	var session *auth.Session
+	var err error
+
+	if req.Email != "" {
+		// Multi-user login: authenticate against users table
+		user, userErr := s.storage.GetUserByEmail(req.Email)
+		if userErr != nil || user == nil {
+			errorResponse(w, http.StatusUnauthorized, "Invalid email or password")
+			return
+		}
+		if auth.HashPassword(req.Password) != user.PasswordHash {
+			errorResponse(w, http.StatusUnauthorized, "Invalid email or password")
+			return
+		}
+		session, err = s.auth.CreateUserSession(user.ID, user.Email, user.Role)
+		if err == nil {
+			s.storage.UpdateUserLogin(user.ID)
+		}
+	} else {
+		// Legacy admin login: password only
+		if !s.auth.ValidatePassword(req.Password) {
+			errorResponse(w, http.StatusUnauthorized, "Invalid password")
+			return
+		}
+		session, err = s.auth.CreateSession()
 	}
 
-	session, err := s.auth.CreateSession()
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
-	// Set cookie - check both TLS and X-Forwarded-Proto for HTTPS detection
+	// Set cookie
 	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "basepod_token",
@@ -339,13 +408,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   isSecure,
-		SameSite: http.SameSiteLaxMode, // Lax allows same-site navigation
+		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"token":     session.Token,
 		"expiresAt": session.ExpiresAt,
+		"user": map[string]string{
+			"id":    session.UserID,
+			"email": session.UserEmail,
+			"role":  session.UserRole,
+		},
 	})
 }
 
@@ -6135,4 +6209,379 @@ func (s *Server) handleConnectionInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, info)
+}
+
+// --- User Management ---
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.storage.ListUsers()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to list users")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"users": users})
+}
+
+func (s *Server) handleInviteUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if req.Email == "" {
+		errorResponse(w, http.StatusBadRequest, "Email is required")
+		return
+	}
+	if req.Role == "" {
+		req.Role = "viewer"
+	}
+	if req.Role != "admin" && req.Role != "deployer" && req.Role != "viewer" {
+		errorResponse(w, http.StatusBadRequest, "Role must be admin, deployer, or viewer")
+		return
+	}
+
+	// Check if user already exists
+	existing, _ := s.storage.GetUserByEmail(req.Email)
+	if existing != nil {
+		errorResponse(w, http.StatusConflict, "User with this email already exists")
+		return
+	}
+
+	// Generate invite token
+	inviteToken := generateRandomString(32)
+
+	user := &app.User{
+		ID:           uuid.New().String(),
+		Email:        req.Email,
+		PasswordHash: "", // Will be set when invite is accepted
+		Role:         req.Role,
+		InviteToken:  inviteToken,
+		CreatedAt:    time.Now(),
+	}
+
+	if err := s.storage.CreateUser(user); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create user: "+err.Error())
+		return
+	}
+
+	s.logActivity("user", "invite_user", "user", user.ID, req.Email, "success", fmt.Sprintf("role: %s", req.Role))
+
+	jsonResponse(w, http.StatusCreated, map[string]interface{}{
+		"user":         user,
+		"invite_token": inviteToken,
+		"invite_url":   fmt.Sprintf("/setup?invite=%s", inviteToken),
+	})
+}
+
+func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		InviteToken string `json:"invite_token"`
+		Password    string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if req.InviteToken == "" || req.Password == "" {
+		errorResponse(w, http.StatusBadRequest, "Invite token and password are required")
+		return
+	}
+
+	if len(req.Password) < 8 {
+		errorResponse(w, http.StatusBadRequest, "Password must be at least 8 characters")
+		return
+	}
+
+	user, err := s.storage.GetUserByInviteToken(req.InviteToken)
+	if err != nil || user == nil {
+		errorResponse(w, http.StatusNotFound, "Invalid or expired invite token")
+		return
+	}
+
+	// Set password and clear invite token
+	passwordHash := auth.HashPassword(req.Password)
+	s.storage.UpdateUserPassword(user.ID, passwordHash)
+	s.storage.ClearInviteToken(user.ID)
+
+	// Create session
+	session, err := s.auth.CreateUserSession(user.ID, user.Email, user.Role)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create session")
+		return
+	}
+
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, &http.Cookie{
+		Name:     "basepod_token",
+		Value:    session.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isSecure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  session.ExpiresAt,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"token":     session.Token,
+		"expiresAt": session.ExpiresAt,
+		"user": map[string]string{
+			"id":    user.ID,
+			"email": user.Email,
+			"role":  user.Role,
+		},
+	})
+}
+
+func (s *Server) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if req.Role != "admin" && req.Role != "deployer" && req.Role != "viewer" {
+		errorResponse(w, http.StatusBadRequest, "Role must be admin, deployer, or viewer")
+		return
+	}
+
+	if err := s.storage.UpdateUserRole(userID, req.Role); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to update role")
+		return
+	}
+
+	s.logActivity("user", "update_role", "user", userID, "", "success", fmt.Sprintf("role: %s", req.Role))
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+
+	user, err := s.storage.GetUserByID(userID)
+	if err != nil || user == nil {
+		errorResponse(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	if err := s.storage.DeleteUser(userID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to delete user")
+		return
+	}
+
+	s.logActivity("user", "delete_user", "user", userID, user.Email, "success", "")
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- AI Deploy Assistant ---
+
+func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RepoURL string `json:"repo_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if req.RepoURL == "" {
+		errorResponse(w, http.StatusBadRequest, "repo_url is required")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Clone repo to temp directory
+	tmpDir, err := os.MkdirTemp("", "basepod-analyze-*")
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create temp dir")
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cloneCmd := fmt.Sprintf("git clone --depth 1 %s %s", req.RepoURL, tmpDir+"/repo")
+	if output, err := execCommand(ctx, "sh", "-c", cloneCmd); err != nil {
+		errorResponse(w, http.StatusBadRequest, fmt.Sprintf("Failed to clone repo: %v\n%s", err, output))
+		return
+	}
+
+	repoDir := tmpDir + "/repo"
+
+	// Scan repo structure
+	files := scanRepoStructure(repoDir)
+
+	// Detect stack using heuristics
+	stack := detectStack(repoDir)
+
+	// Build analysis result
+	result := map[string]interface{}{
+		"repo_url":   req.RepoURL,
+		"stack":      stack,
+		"files":      files,
+		"has_docker": fileExists(repoDir + "/Dockerfile"),
+	}
+
+	// Generate config suggestion
+	suggestion := map[string]interface{}{
+		"port": 8080,
+		"env":  map[string]string{},
+	}
+
+	switch stack {
+	case "nodejs":
+		suggestion["port"] = 3000
+		suggestion["env"] = map[string]string{"NODE_ENV": "production"}
+	case "go":
+		suggestion["port"] = 8080
+	case "python":
+		suggestion["port"] = 8000
+		suggestion["env"] = map[string]string{"PYTHONUNBUFFERED": "1"}
+	case "ruby":
+		suggestion["port"] = 3000
+		suggestion["env"] = map[string]string{"RAILS_ENV": "production"}
+	case "rust":
+		suggestion["port"] = 8080
+	}
+
+	// If no Dockerfile exists, generate one
+	if !fileExists(repoDir + "/Dockerfile") {
+		dockerfile := generateDockerfile(repoDir, suggestion["port"].(int))
+		if dockerfile != "" {
+			suggestion["dockerfile"] = dockerfile
+		}
+	} else {
+		// Read existing Dockerfile
+		if content, err := os.ReadFile(repoDir + "/Dockerfile"); err == nil {
+			result["dockerfile_content"] = string(content)
+		}
+	}
+
+	result["suggestion"] = suggestion
+
+	// Try AI analysis via MLX if available
+	svc := mlx.GetService()
+	status := svc.GetStatus()
+	if status.Running && status.ActiveModel != "" {
+		aiAnalysis := s.analyzeWithLLM(ctx, status, files, stack)
+		if aiAnalysis != "" {
+			result["ai_analysis"] = aiAnalysis
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+func scanRepoStructure(dir string) []string {
+	var files []string
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		// Skip hidden dirs and common non-essential dirs
+		name := info.Name()
+		if info.IsDir() && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "__pycache__" || name == "target") {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() {
+			relPath, _ := filepath.Rel(dir, path)
+			files = append(files, relPath)
+		}
+		return nil
+	})
+	// Limit to first 100 files
+	if len(files) > 100 {
+		files = files[:100]
+	}
+	return files
+}
+
+func detectStack(dir string) string {
+	if fileExists(dir + "/package.json") {
+		return "nodejs"
+	}
+	if fileExists(dir + "/go.mod") {
+		return "go"
+	}
+	if fileExists(dir + "/requirements.txt") || fileExists(dir + "/pyproject.toml") || fileExists(dir + "/setup.py") {
+		return "python"
+	}
+	if fileExists(dir + "/Gemfile") {
+		return "ruby"
+	}
+	if fileExists(dir + "/Cargo.toml") {
+		return "rust"
+	}
+	if fileExists(dir + "/pom.xml") || fileExists(dir + "/build.gradle") {
+		return "java"
+	}
+	if fileExists(dir + "/composer.json") {
+		return "php"
+	}
+	return "unknown"
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func (s *Server) analyzeWithLLM(ctx context.Context, status mlx.Status, files []string, stack string) string {
+	// Build prompt for LLM
+	fileList := strings.Join(files, "\n")
+	if len(fileList) > 2000 {
+		fileList = fileList[:2000] + "\n..."
+	}
+
+	prompt := fmt.Sprintf(`Analyze this project structure and give a brief deployment recommendation. The detected stack is: %s
+
+Files:
+%s
+
+In 2-3 sentences, suggest:
+1. The best way to deploy this app
+2. Any environment variables needed
+3. The likely port it runs on`, stack, fileList)
+
+	// Call MLX endpoint
+	payload := map[string]interface{}{
+		"model": status.ActiveModel,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens": 256,
+	}
+
+	body, _ := json.Marshal(payload)
+	endpoint := fmt.Sprintf("http://localhost:%d/v1/chat/completions", status.Port)
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(body)))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content
+	}
+	return ""
 }

@@ -224,6 +224,18 @@ func (s *Storage) migrate() error {
 			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_metrics_app_time ON app_metrics(app_id, recorded_at)`,
+		// Users table
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			email TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'viewer',
+			invite_token TEXT,
+			created_at DATETIME NOT NULL,
+			last_login_at DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_invite ON users(invite_token)`,
 	}
 
 	for _, migration := range migrations {
@@ -1074,6 +1086,112 @@ func (s *Storage) DeleteDeployToken(id string) error {
 		return fmt.Errorf("failed to delete deploy token: %w", err)
 	}
 	return nil
+}
+
+// --- Users ---
+
+func (s *Storage) CreateUser(u *app.User) error {
+	_, err := s.db.Exec(
+		`INSERT INTO users (id, email, password_hash, role, invite_token, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Email, u.PasswordHash, u.Role, u.InviteToken, u.CreatedAt,
+	)
+	return err
+}
+
+func (s *Storage) GetUserByEmail(email string) (*app.User, error) {
+	var u app.User
+	var lastLogin sql.NullTime
+	err := s.db.QueryRow(
+		"SELECT id, email, password_hash, role, created_at, last_login_at FROM users WHERE email = ?", email,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &lastLogin)
+	if err != nil {
+		return nil, err
+	}
+	if lastLogin.Valid {
+		u.LastLoginAt = &lastLogin.Time
+	}
+	return &u, nil
+}
+
+func (s *Storage) GetUserByID(id string) (*app.User, error) {
+	var u app.User
+	var lastLogin sql.NullTime
+	err := s.db.QueryRow(
+		"SELECT id, email, password_hash, role, created_at, last_login_at FROM users WHERE id = ?", id,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &lastLogin)
+	if err != nil {
+		return nil, err
+	}
+	if lastLogin.Valid {
+		u.LastLoginAt = &lastLogin.Time
+	}
+	return &u, nil
+}
+
+func (s *Storage) GetUserByInviteToken(token string) (*app.User, error) {
+	var u app.User
+	err := s.db.QueryRow(
+		"SELECT id, email, password_hash, role, invite_token, created_at FROM users WHERE invite_token = ?", token,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.InviteToken, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Storage) ListUsers() ([]app.User, error) {
+	rows, err := s.db.Query(
+		"SELECT id, email, role, created_at, last_login_at FROM users ORDER BY created_at DESC",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []app.User
+	for rows.Next() {
+		var u app.User
+		var lastLogin sql.NullTime
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.CreatedAt, &lastLogin); err != nil {
+			return nil, err
+		}
+		if lastLogin.Valid {
+			u.LastLoginAt = &lastLogin.Time
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+func (s *Storage) UpdateUserRole(id, role string) error {
+	_, err := s.db.Exec("UPDATE users SET role = ? WHERE id = ?", role, id)
+	return err
+}
+
+func (s *Storage) UpdateUserLogin(id string) error {
+	_, err := s.db.Exec("UPDATE users SET last_login_at = ? WHERE id = ?", time.Now(), id)
+	return err
+}
+
+func (s *Storage) UpdateUserPassword(id, passwordHash string) error {
+	_, err := s.db.Exec("UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, id)
+	return err
+}
+
+func (s *Storage) DeleteUser(id string) error {
+	_, err := s.db.Exec("DELETE FROM users WHERE id = ?", id)
+	return err
+}
+
+func (s *Storage) ClearInviteToken(id string) error {
+	_, err := s.db.Exec("UPDATE users SET invite_token = NULL WHERE id = ?", id)
+	return err
+}
+
+func (s *Storage) CountUsers() (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	return count, err
 }
 
 // --- App Metrics ---

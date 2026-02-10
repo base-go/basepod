@@ -12,6 +12,9 @@ import (
 // Session represents an authenticated session
 type Session struct {
 	Token     string
+	UserID    string // empty for legacy admin sessions
+	UserEmail string
+	UserRole  string // "admin", "deployer", "viewer"
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -50,8 +53,13 @@ func (m *Manager) IsAuthRequired() bool {
 	return m.passwordHash != ""
 }
 
-// CreateSession creates a new session for authenticated user
+// CreateSession creates a new session for authenticated user (legacy admin)
 func (m *Manager) CreateSession() (*Session, error) {
+	return m.CreateUserSession("", "", "admin")
+}
+
+// CreateUserSession creates a session for a specific user
+func (m *Manager) CreateUserSession(userID, email, role string) (*Session, error) {
 	token := make([]byte, 32)
 	if _, err := rand.Read(token); err != nil {
 		return nil, err
@@ -59,8 +67,11 @@ func (m *Manager) CreateSession() (*Session, error) {
 
 	session := &Session{
 		Token:     hex.EncodeToString(token),
+		UserID:    userID,
+		UserEmail: email,
+		UserRole:  role,
 		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hour sessions
+		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 
 	m.mu.Lock()
@@ -68,6 +79,20 @@ func (m *Manager) CreateSession() (*Session, error) {
 	m.mu.Unlock()
 
 	return session, nil
+}
+
+// GetSession returns the session details for a valid token
+func (m *Manager) GetSession(token string) *Session {
+	if token == "" {
+		return nil
+	}
+	m.mu.RLock()
+	session, exists := m.sessions[token]
+	m.mu.RUnlock()
+	if !exists || time.Now().After(session.ExpiresAt) {
+		return nil
+	}
+	return session
 }
 
 // ValidateSession checks if a session token is valid
