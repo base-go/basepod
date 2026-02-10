@@ -683,7 +683,7 @@ async function deleteApp() {
           <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
           <p>App has not been deployed yet</p>
         </div>
-        <pre v-else class="bg-[#1a1b26] text-[#c0caf5] p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto" style="max-height: calc(100vh - 300px);" v-html="logsHtml || 'No logs available'" />
+        <pre v-else class="bg-[#1a1b26] text-[#c0caf5] p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto" style="min-height: calc(100vh - 320px); max-height: calc(100vh - 320px);" v-html="logsHtml || 'No logs available'" />
       </template>
     </UCard>
 
