@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
       </UButton>
     </div>
 
-    <!-- Terminal -->
-    <div ref="terminalRef" class="flex-1 min-h-[400px] bg-[#1a1b26] rounded-b-lg" />
+    <!-- Terminal — fill remaining viewport -->
+    <div ref="terminalRef" class="flex-1 bg-[#1a1b26] rounded-b-lg" style="min-height: calc(100vh - 320px);" />
   </div>
 </template>

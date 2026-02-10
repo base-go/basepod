@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import type { App } from '~/types'
+import Convert from 'ansi-to-html'
 
 const route = useRoute()
 const toast = useToast()
+const ansiConvert = new Convert({ fg: '#c0caf5', bg: '#1a1b26', newline: true })
 const appId = route.params.id as string
 
 const { data: app, refresh } = await useApiFetch<App>(`/apps/${appId}`)
@@ -63,6 +65,11 @@ function getStatusColor(status: number): string {
   if (status < 400) return 'warning'
   return 'error'
 }
+
+const logsHtml = computed(() => {
+  if (!logs.value) return ''
+  return ansiConvert.toHtml(logs.value)
+})
 
 watch(activeTab, (tab) => {
   if (tab === 'logs') {
@@ -676,7 +683,7 @@ async function deleteApp() {
           <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
           <p>App has not been deployed yet</p>
         </div>
-        <pre v-else class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono max-h-[500px] overflow-y-auto">{{ logs || 'No logs available' }}</pre>
+        <pre v-else class="bg-[#1a1b26] text-[#c0caf5] p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto" style="max-height: calc(100vh - 300px);" v-html="logsHtml || 'No logs available'" />
       </template>
     </UCard>
 

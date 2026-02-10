@@ -1318,15 +1318,40 @@ func (s *Server) handleGetAppLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 
-	buf := make([]byte, 4096)
+	// Podman multiplexed stream: each frame has an 8-byte header
+	// [stream_type(1), padding(3), size(4 big-endian)]
+	// Strip headers and output only the payload
+	reader := bufio.NewReader(logs)
+	header := make([]byte, 8)
 	for {
-		n, err := logs.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-		}
+		_, err := io.ReadFull(reader, header)
 		if err != nil {
 			break
 		}
+		// Frame size from bytes 4-7 (big-endian uint32)
+		frameSize := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
+		if frameSize <= 0 || frameSize > 1<<20 {
+			// Invalid frame - likely not multiplexed, dump remaining as-is
+			w.Write(header[:])
+			buf := make([]byte, 4096)
+			for {
+				n, err := reader.Read(buf)
+				if n > 0 {
+					w.Write(buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
+			break
+		}
+		// Read and write the payload
+		payload := make([]byte, frameSize)
+		_, err = io.ReadFull(reader, payload)
+		if err != nil {
+			break
+		}
+		w.Write(payload)
 	}
 }
 
