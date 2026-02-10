@@ -60,7 +60,7 @@ function formatLogTime(ts: number): string {
   return d.toLocaleString()
 }
 
-function getStatusColor(status: number): string {
+function getStatusColor(status: number): "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" {
   if (status < 300) return 'success'
   if (status < 400) return 'warning'
   return 'error'

@@ -4,7 +4,6 @@ definePageMeta({
 })
 
 const toast = useToast()
-const { $api } = useNuxtApp()
 
 // Model types
 interface MLXModel {
@@ -578,7 +577,7 @@ async function manualRefresh() {
           <h2 class="text-lg font-semibold">Chat</h2>
           <!-- Model Selector -->
           <UPopover v-if="mlxData?.running && downloadedModels.length > 1" v-model:open="showModelSelector">
-            <template #trigger>
+            <template #default>
               <button class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">
                 <span class="w-2 h-2 bg-green-500 rounded-full" />
                 {{ modelName }}
@@ -598,8 +597,8 @@ async function manualRefresh() {
                 <div class="flex items-center justify-between">
                   <span class="font-medium text-sm">{{ model.name }}</span>
                   <div class="flex items-center gap-2">
-                    <UBadge v-if="model.category === 'vision'" color="purple" size="xs">Vision</UBadge>
-                    <UBadge v-if="model.category === 'speech'" color="blue" size="xs">Speech</UBadge>
+                    <UBadge v-if="model.category === 'vision'" color="secondary" size="xs">Vision</UBadge>
+                    <UBadge v-if="model.category === 'speech'" color="info" size="xs">Speech</UBadge>
                     <UIcon v-if="model.id === mlxData?.active_model"
                       name="i-heroicons-check" class="w-4 h-4 text-green-500" />
                   </div>
@@ -618,7 +617,7 @@ async function manualRefresh() {
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <UBadge v-if="isVisionModel" color="purple" variant="soft" size="sm">
+        <UBadge v-if="isVisionModel" color="secondary" variant="soft" size="sm">
           <UIcon name="i-heroicons-eye" class="w-3 h-3 mr-1" />
           Vision
         </UBadge>
@@ -705,7 +704,7 @@ async function manualRefresh() {
         <div v-if="canAnalyzeDeeper" class="flex justify-center">
           <UButton
             variant="soft"
-            color="purple"
+            color="secondary"
             size="sm"
             @click="analyzeDeeper"
           >
@@ -752,7 +751,7 @@ async function manualRefresh() {
         </div>
 
         <!-- Input form -->
-        <form @submit.prevent="sendMessage" class="flex gap-2 items-end">
+        <form @submit.prevent="() => sendMessage()" class="flex gap-2 items-end">
           <!-- Voice input button -->
           <div v-if="hasWhisperModel">
             <UButton

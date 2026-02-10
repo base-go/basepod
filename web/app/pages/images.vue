@@ -277,7 +277,8 @@ async function uploadImage(event: Event) {
 
 // Remove uploaded image
 function removeUploadedImage(index: number) {
-  URL.revokeObjectURL(uploadedImages.value[index].preview)
+  const img = uploadedImages.value[index]
+  if (img) URL.revokeObjectURL(img.preview)
   uploadedImages.value.splice(index, 1)
 }
 
@@ -916,7 +917,7 @@ const sortedSessions = computed(() => {
                   <UBadge v-if="model.downloaded" color="success" variant="soft" size="xs">
                     Compatible
                   </UBadge>
-                  <UBadge v-else color="amber" variant="soft" size="xs">
+                  <UBadge v-else color="warning" variant="soft" size="xs">
                     {{ model.ram_required }}GB+ RAM needed
                   </UBadge>
                 </div>
@@ -934,7 +935,7 @@ const sortedSessions = computed(() => {
 
               <!-- Not enough RAM -->
               <template v-else>
-                <UBadge color="amber" variant="soft">
+                <UBadge color="warning" variant="soft">
                   Needs {{ model.ram_required }}GB RAM
                 </UBadge>
               </template>
@@ -1035,7 +1036,7 @@ const sortedSessions = computed(() => {
               <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <div class="text-xs text-gray-500 mb-1">Type</div>
                 <div class="font-medium flex items-center gap-2">
-                  <UBadge v-if="selectedImage.type === 'edit'" color="purple" variant="soft" size="xs">
+                  <UBadge v-if="selectedImage.type === 'edit'" color="secondary" variant="soft" size="xs">
                     Edit
                   </UBadge>
                   <UBadge v-else color="primary" variant="soft" size="xs">

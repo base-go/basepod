@@ -75,6 +75,7 @@ export interface HealthResponse {
 
 export interface DomainConfig {
   root: string
+  base?: string
   suffix: string
   wildcard: boolean
 }

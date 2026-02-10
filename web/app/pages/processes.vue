@@ -72,7 +72,7 @@ const typeInfo: Record<string, { label: string; icon: string; color: string }> =
 }
 
 // Status colors
-function getStatusColor(status: string): string {
+function getStatusColor(status: string): "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" {
   switch (status.toLowerCase()) {
     case 'running':
     case 'completed':
@@ -189,7 +189,7 @@ const hasProcesses = computed(() => {
             variant="soft"
             size="sm"
             :loading="fetchStatus === 'pending'"
-            @click="refresh"
+            @click="() => refresh()"
           >
             Refresh
           </UButton>
@@ -211,7 +211,7 @@ const hasProcesses = computed(() => {
       <UCard v-if="groupedProcesses.mlx?.length">
         <template #header>
           <div class="flex items-center gap-2">
-            <UIcon :name="typeInfo.mlx.icon" class="text-primary-500" />
+            <UIcon :name="typeInfo.mlx?.icon" class="text-primary-500" />
             <h3 class="font-semibold">MLX LLM Server</h3>
           </div>
         </template>
@@ -251,7 +251,7 @@ const hasProcesses = computed(() => {
       <UCard v-if="groupedProcesses.flux?.length">
         <template #header>
           <div class="flex items-center gap-2">
-            <UIcon :name="typeInfo.flux.icon" class="text-purple-500" />
+            <UIcon :name="typeInfo.flux?.icon" class="text-purple-500" />
             <h3 class="font-semibold">Image Generation</h3>
           </div>
         </template>
@@ -265,13 +265,13 @@ const hasProcesses = computed(() => {
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2">
                 <p class="font-medium">{{ proc.name }}</p>
-                <UBadge color="purple" variant="soft" size="xs">
+                <UBadge color="secondary" variant="soft" size="xs">
                   {{ proc.model }}
                 </UBadge>
               </div>
               <span class="text-sm text-gray-500">{{ proc.progress }}%</span>
             </div>
-            <UProgress :value="proc.progress || 0" color="purple" />
+            <UProgress :value="proc.progress || 0" color="secondary" />
           </div>
         </div>
       </UCard>
@@ -294,7 +294,7 @@ const hasProcesses = computed(() => {
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2">
                 <p class="font-medium">{{ proc.name }}</p>
-                <UBadge :color="proc.type.includes('flux') ? 'purple' : 'primary'" variant="soft" size="xs">
+                <UBadge :color="proc.type.includes('flux') ? 'secondary' : 'primary'" variant="soft" size="xs">
                   {{ proc.type.includes('flux') ? 'FLUX' : 'MLX' }}
                 </UBadge>
               </div>
@@ -302,7 +302,7 @@ const hasProcesses = computed(() => {
             </div>
             <UProgress
               :value="proc.progress || 0"
-              :color="proc.type.includes('flux') ? 'purple' : 'primary'"
+              :color="proc.type.includes('flux') ? 'secondary' : 'primary'"
             />
           </div>
         </div>
@@ -312,7 +312,7 @@ const hasProcesses = computed(() => {
       <UCard v-if="groupedProcesses.container?.length">
         <template #header>
           <div class="flex items-center gap-2">
-            <UIcon :name="typeInfo.container.icon" class="text-green-500" />
+            <UIcon :name="typeInfo.container?.icon" class="text-green-500" />
             <h3 class="font-semibold">Containers</h3>
             <UBadge color="success" variant="soft" size="xs">
               {{ groupedProcesses.container.length }}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MLXModelsResponse, MLXDownloadProgress } from '~/types'
+import type { MLXModel, MLXModelsResponse, MLXDownloadProgress } from '~/types'
 
 definePageMeta({
   title: 'LLMs'
@@ -65,7 +65,7 @@ const categories = ['chat', 'code', 'reasoning', 'vision', 'embedding', 'speech'
 const modelsByCategory = computed(() => {
   if (!mlxData.value?.models) return {}
 
-  const grouped: Record<string, typeof mlxData.value.models> = {}
+  const grouped: Record<string, MLXModel[]> = {}
 
   for (const category of categories) {
     const categoryModels = mlxData.value.models
@@ -90,14 +90,14 @@ const modelsByCategory = computed(() => {
 
 // Categories with models (for rendering)
 const activeCategories = computed(() => {
-  return categories.filter(c => modelsByCategory.value[c]?.length > 0)
+  return categories.filter(c => (modelsByCategory.value[c]?.length ?? 0) > 0)
 })
 
 // Model detail modal
-const selectedModel = ref<typeof mlxData.value.models[0] | null>(null)
+const selectedModel = ref<MLXModel | null>(null)
 const showModelModal = ref(false)
 
-function openModelDetail(model: typeof mlxData.value.models[0]) {
+function openModelDetail(model: MLXModel) {
   selectedModel.value = model
   showModelModal.value = true
 }
@@ -384,11 +384,11 @@ onUnmounted(() => {
           <UIcon name="i-heroicons-cpu-chip" class="w-6 h-6 text-orange-500" />
           <div>
             <div class="text-sm text-orange-600 dark:text-orange-400">Active Model</div>
-            <div class="font-medium">{{ mlxData.models.find(m => m.id === mlxData.active_model)?.name || mlxData.active_model }}</div>
+            <div class="font-medium">{{ mlxData?.models?.find(m => m.id === mlxData?.active_model)?.name || mlxData?.active_model }}</div>
           </div>
         </div>
         <div class="flex items-center gap-3">
-          <code class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded text-gray-500">{{ mlxData.endpoint }}</code>
+          <code class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded text-gray-500">{{ mlxData?.endpoint }}</code>
           <NuxtLink to="/chat">
             <UButton size="sm">
               <UIcon name="i-heroicons-chat-bubble-left-right" class="w-4 h-4 mr-1" />
@@ -405,10 +405,10 @@ onUnmounted(() => {
         <!-- Category Header -->
         <div class="mb-4">
           <div class="flex items-center gap-2 mb-1">
-            <UIcon :name="categoryInfo[category].icon" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            <h3 class="text-lg font-semibold">{{ categoryInfo[category].label }}</h3>
+            <UIcon :name="categoryInfo[category]?.icon" class="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <h3 class="text-lg font-semibold">{{ categoryInfo[category]?.label }}</h3>
           </div>
-          <p class="text-sm text-gray-500">{{ categoryInfo[category].description }}</p>
+          <p class="text-sm text-gray-500">{{ categoryInfo[category]?.description }}</p>
         </div>
 
         <!-- Models Grid for this category -->
@@ -428,7 +428,7 @@ onUnmounted(() => {
                 @click="openModelDetail(model)"
               >
                 <div class="w-10 h-10 bg-orange-100 dark:bg-orange-900/50 rounded-lg flex items-center justify-center">
-                  <UIcon :name="categoryInfo[category].icon" class="w-5 h-5 text-orange-500" />
+                  <UIcon :name="categoryInfo[category]?.icon" class="w-5 h-5 text-orange-500" />
                 </div>
                 <div>
                   <div class="font-medium flex items-center gap-2">

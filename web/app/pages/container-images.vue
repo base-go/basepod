@@ -31,7 +31,7 @@ function formatDate(dateStr: string): string {
 
 function getImageName(image: ContainerImage): string {
   if (image.RepoTags && image.RepoTags.length > 0 && image.RepoTags[0] !== '<none>:<none>') {
-    return image.RepoTags[0]
+    return image.RepoTags[0] ?? image.Id.substring(0, 12)
   }
   return image.Id.substring(0, 12)
 }
@@ -43,7 +43,7 @@ function getShortId(id: string): string {
 async function deleteImage(image: ContainerImage) {
   deleting.value = image.Id
   try {
-    await useApiFetch(`/container-images/${encodeURIComponent(image.Id)}?force=true`, {
+    await $api(`/container-images/${encodeURIComponent(image.Id)}?force=true`, {
       method: 'DELETE'
     })
     await refresh()

@@ -219,9 +219,9 @@ async function toggleFlux() {
 const fluxCategories = computed(() => {
   if (!fluxStorage.value) return []
   return [
-    { id: 'models', name: 'Models', icon: 'i-heroicons-cpu-chip', ...fluxStorage.value.models, color: 'purple' },
-    { id: 'generations', name: 'Generated Images', icon: 'i-heroicons-photo', ...fluxStorage.value.generations, color: 'green' },
-    { id: 'uploads', name: 'Uploads', icon: 'i-heroicons-arrow-up-tray', ...fluxStorage.value.uploads, color: 'amber' },
+    { id: 'models', name: 'Models', icon: 'i-heroicons-cpu-chip', ...fluxStorage.value.models, color: 'purple', readonly: false },
+    { id: 'generations', name: 'Generated Images', icon: 'i-heroicons-photo', ...fluxStorage.value.generations, color: 'green', readonly: false },
+    { id: 'uploads', name: 'Uploads', icon: 'i-heroicons-arrow-up-tray', ...fluxStorage.value.uploads, color: 'amber', readonly: false },
     { id: 'venv', name: 'Python Environment', icon: 'i-heroicons-code-bracket', ...fluxStorage.value.venv, color: 'gray', readonly: true }
   ]
 })

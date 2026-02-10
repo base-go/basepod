@@ -382,12 +382,12 @@ let progressInterval: ReturnType<typeof setInterval> | null = null
 
 const startProgressSimulation = () => {
   backupProgress.value.step = 0
-  backupProgress.value.message = backupProgress.value.steps[0].label
+  backupProgress.value.message = backupProgress.value.steps[0]?.label ?? ''
 
   progressInterval = setInterval(() => {
     if (backupProgress.value.step < backupProgress.value.steps.length - 1) {
       backupProgress.value.step++
-      backupProgress.value.message = backupProgress.value.steps[backupProgress.value.step].label
+      backupProgress.value.message = backupProgress.value.steps[backupProgress.value.step]?.label ?? ''
     }
   }, 2000) // Move to next step every 2 seconds
 }
