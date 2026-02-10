@@ -31,9 +31,11 @@ type App struct {
 	Deployment  DeploymentConfig   `json:"deployment"`
 	Deployments []DeploymentRecord `json:"deployments,omitempty"` // Deployment history
 	SSL         SSLConfig          `json:"ssl"`
-	MLX         *MLXConfig         `json:"mlx,omitempty"` // MLX LLM configuration
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	MLX          *MLXConfig          `json:"mlx,omitempty"`          // MLX LLM configuration
+	HealthCheck  *HealthCheckConfig  `json:"health_check,omitempty"` // Health check configuration
+	Health       *HealthStatus       `json:"health,omitempty"`       // Runtime health status (not persisted)
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
 // DeploymentRecord represents a single deployment
@@ -54,6 +56,26 @@ type MLXConfig struct {
 	Temperature float64 `json:"temperature"` // Default temperature (default: 0.7)
 	VenvPath    string `json:"venv_path"`    // Path to Python venv
 	PID         int    `json:"pid"`          // Process ID when running
+}
+
+// HealthCheckConfig holds health check configuration for an app
+type HealthCheckConfig struct {
+	Endpoint    string `json:"endpoint"`     // e.g. "/health" (default)
+	Interval    int    `json:"interval"`     // seconds between checks (default: 30)
+	Timeout     int    `json:"timeout"`      // seconds per check (default: 5)
+	MaxFailures int    `json:"max_failures"` // consecutive failures before restart (default: 3)
+	AutoRestart bool   `json:"auto_restart"` // restart on failure (default: true)
+}
+
+// HealthStatus holds runtime health check status (not persisted)
+type HealthStatus struct {
+	Status              string    `json:"status"`                         // "healthy", "unhealthy", "unknown"
+	LastCheck           time.Time `json:"last_check"`
+	LastSuccess         time.Time `json:"last_success"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	LastError           string    `json:"last_error,omitempty"`
+	TotalChecks         int       `json:"total_checks"`
+	TotalFailures       int       `json:"total_failures"`
 }
 
 // AppStatus represents the current status of an app
@@ -93,11 +115,26 @@ type ResourceConfig struct {
 
 // DeploymentConfig holds deployment settings
 type DeploymentConfig struct {
-	Source       DeploymentSource `json:"source"`
-	Dockerfile   string           `json:"dockerfile"`    // Path to Dockerfile (default: Dockerfile)
-	BuildContext string           `json:"build_context"` // Build context path (default: .)
-	Branch       string           `json:"branch"`        // Git branch
-	AutoDeploy   bool             `json:"auto_deploy"`   // Deploy on git push
+	Source        DeploymentSource `json:"source"`
+	Dockerfile    string           `json:"dockerfile"`              // Path to Dockerfile (default: Dockerfile)
+	BuildContext  string           `json:"build_context"`           // Build context path (default: .)
+	Branch        string           `json:"branch"`                  // Git branch
+	AutoDeploy    bool             `json:"auto_deploy"`             // Deploy on git push
+	GitURL        string           `json:"git_url,omitempty"`       // Repository clone URL for webhooks
+	WebhookSecret string           `json:"webhook_secret,omitempty"` // HMAC secret for webhook validation
+}
+
+// WebhookDelivery represents a single webhook delivery from GitHub
+type WebhookDelivery struct {
+	ID        string    `json:"id"`
+	AppID     string    `json:"app_id"`
+	Event     string    `json:"event"`            // "push", "ping"
+	Branch    string    `json:"branch,omitempty"`
+	Commit    string    `json:"commit,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Status    string    `json:"status"`           // "success", "failed", "skipped", "deploying"
+	Error     string    `json:"error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // DeploymentSource represents the source of the deployment
@@ -144,8 +181,10 @@ type UpdateAppRequest struct {
 	Memory         *int64             `json:"memory,omitempty"`
 	CPUs           *float64           `json:"cpus,omitempty"`
 	EnableSSL      *bool              `json:"enable_ssl,omitempty"`
-	ExposeExternal *bool              `json:"expose_external,omitempty"`
-	Volumes        *[]VolumeMount     `json:"volumes,omitempty"`
+	ExposeExternal *bool               `json:"expose_external,omitempty"`
+	Volumes        *[]VolumeMount      `json:"volumes,omitempty"`
+	HealthCheck    *HealthCheckConfig   `json:"health_check,omitempty"`
+	Deployment     *DeploymentConfig    `json:"deployment,omitempty"`
 }
 
 // DeployRequest represents a request to deploy an app

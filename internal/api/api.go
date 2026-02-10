@@ -4,6 +4,10 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -14,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -27,7 +32,6 @@ import (
 	"github.com/base-go/basepod/internal/caddy"
 	"github.com/base-go/basepod/internal/config"
 	"github.com/base-go/basepod/internal/diskutil"
-	"github.com/base-go/basepod/internal/flux"
 	"github.com/base-go/basepod/internal/mlx"
 	"github.com/base-go/basepod/internal/podman"
 	"github.com/base-go/basepod/internal/storage"
@@ -53,10 +57,13 @@ type Server struct {
 	config       *config.Config
 	auth         *auth.Manager
 	backup       *backup.Service
-	router       *http.ServeMux
-	staticFS     http.Handler
-	staticDir    string // Path to static files on disk (preferred over embedded)
-	version      string
+	router         *http.ServeMux
+	staticFS       http.Handler
+	staticDir      string // Path to static files on disk (preferred over embedded)
+	version        string
+	healthStates   map[string]*app.HealthStatus
+	healthStatesMu sync.RWMutex
+	healthStop     chan struct{}
 }
 
 // NewServer creates a new API server
@@ -119,7 +126,13 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 		}
 	}
 
+	s.healthStates = make(map[string]*app.HealthStatus)
+	s.healthStop = make(chan struct{})
+
 	s.setupRoutes()
+
+	go s.runHealthChecker()
+
 	return s
 }
 
@@ -150,6 +163,10 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.requireAuth(s.handleDeployApp))
 	s.router.HandleFunc("GET /api/apps/{id}/logs", s.requireAuth(s.handleGetAppLogs))
 	s.router.HandleFunc("GET /api/apps/{id}/terminal", s.requireAuth(s.handleTerminal))
+
+	// App health checks (auth required)
+	s.router.HandleFunc("GET /api/apps/{id}/health", s.requireAuth(s.handleGetAppHealth))
+	s.router.HandleFunc("POST /api/apps/{id}/health/check", s.requireAuth(s.handleTriggerHealthCheck))
 
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
@@ -186,25 +203,6 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/chat/messages/{modelId}", s.requireAuth(s.handleSaveChatMessage))
 	s.router.HandleFunc("DELETE /api/chat/messages/{modelId}", s.requireAuth(s.handleClearChatMessages))
 
-	// FLUX image generation (auth required)
-	s.router.HandleFunc("GET /api/flux/status", s.requireAuth(s.handleFluxStatus))
-	s.router.HandleFunc("GET /api/flux/models", s.requireAuth(s.handleFluxModels))
-	s.router.HandleFunc("POST /api/flux/models/{id}", s.requireAuth(s.handleFluxDownloadModel))
-	s.router.HandleFunc("DELETE /api/flux/models/{id}", s.requireAuth(s.handleFluxDeleteModel))
-	s.router.HandleFunc("GET /api/flux/models/{id}/progress", s.requireAuth(s.handleFluxDownloadProgress))
-	s.router.HandleFunc("POST /api/flux/generate", s.requireAuth(s.handleFluxGenerate))
-	s.router.HandleFunc("POST /api/flux/edit", s.requireAuth(s.handleFluxEdit))
-	s.router.HandleFunc("POST /api/flux/upload", s.requireAuth(s.handleFluxUpload))
-	s.router.HandleFunc("GET /api/flux/jobs/{id}", s.requireAuth(s.handleFluxGetJob))
-	s.router.HandleFunc("GET /api/flux/generations", s.requireAuth(s.handleFluxListGenerations))
-	s.router.HandleFunc("GET /api/flux/image/{id}", s.handleFluxGetImage) // No auth - images use random IDs
-	s.router.HandleFunc("DELETE /api/flux/generations/{id}", s.requireAuth(s.handleFluxDeleteGeneration))
-	s.router.HandleFunc("GET /api/flux/sessions", s.requireAuth(s.handleFluxListSessions))
-	s.router.HandleFunc("GET /api/flux/sessions/{id}", s.requireAuth(s.handleFluxGetSession))
-	s.router.HandleFunc("DELETE /api/flux/sessions/{id}", s.requireAuth(s.handleFluxDeleteSession))
-	s.router.HandleFunc("GET /api/flux/storage", s.requireAuth(s.handleFluxStorage))
-	s.router.HandleFunc("GET /api/flux/storage/{type}", s.requireAuth(s.handleFluxStorageFiles))
-
 	// Image tags (auth required)
 	s.router.HandleFunc("GET /api/images/tags", s.requireAuth(s.handleImageTags))
 
@@ -217,6 +215,13 @@ func (s *Server) setupRoutes() {
 
 	// Caddy on-demand TLS check (no auth - called by Caddy)
 	s.router.HandleFunc("GET /api/caddy/check", s.handleCaddyCheck)
+
+	// Webhook endpoint - NO auth (GitHub calls this, validated via HMAC)
+	s.router.HandleFunc("POST /api/apps/{id}/webhook", s.handleWebhook)
+
+	// Webhook management (auth required)
+	s.router.HandleFunc("POST /api/apps/{id}/webhook/setup", s.requireAuth(s.handleWebhookSetup))
+	s.router.HandleFunc("GET /api/apps/{id}/webhook/deliveries", s.requireAuth(s.handleWebhookDeliveries))
 
 	// Source deploy endpoint (auth required)
 	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
@@ -567,6 +572,15 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		apps = []app.App{}
 	}
 
+	// Inject runtime health status
+	s.healthStatesMu.RLock()
+	for i := range apps {
+		if hs, ok := s.healthStates[apps[i].ID]; ok {
+			apps[i].Health = hs
+		}
+	}
+	s.healthStatesMu.RUnlock()
+
 	jsonResponse(w, http.StatusOK, app.AppListResponse{
 		Apps:  apps,
 		Total: len(apps),
@@ -717,6 +731,13 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inject runtime health status
+	s.healthStatesMu.RLock()
+	if hs, ok := s.healthStates[a.ID]; ok {
+		a.Health = hs
+	}
+	s.healthStatesMu.RUnlock()
+
 	// Build response with computed fields
 	response := AppResponse{
 		App:          a,
@@ -801,6 +822,12 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Volumes != nil {
 		a.Volumes = *req.Volumes
+	}
+	if req.HealthCheck != nil {
+		a.HealthCheck = req.HealthCheck
+	}
+	if req.Deployment != nil {
+		a.Deployment = *req.Deployment
 	}
 
 	// Handle aliases update
@@ -1488,20 +1515,6 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	})
 	basepodTotal += backupsSize
 
-	// AI/FLUX
-	fluxDir := filepath.Join(paths.Data, "flux")
-	fluxSize := diskutil.DirSize(fluxDir)
-	var fluxCount int
-	if entries, err := os.ReadDir(fluxDir); err == nil {
-		fluxCount = len(entries)
-	}
-	categories = append(categories, StorageCategory{
-		ID: "flux", Name: "AI / FLUX",
-		Size: fluxSize, Formatted: diskutil.FormatBytes(fluxSize),
-		Count: fluxCount, Icon: "i-heroicons-sparkles", Color: "purple",
-	})
-	basepodTotal += fluxSize
-
 	// AI/LLM Models
 	home, _ := os.UserHomeDir()
 	mlxDir := filepath.Join(home, ".local", "share", "basepod", "mlx")
@@ -1631,7 +1644,7 @@ func (s *Server) handleDeleteStorageCategory(w http.ResponseWriter, r *http.Requ
 type ProcessInfo struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
-	Type     string `json:"type"` // mlx, flux, container, system
+	Type     string `json:"type"` // mlx, container, system
 	Status   string `json:"status"`
 	PID      int    `json:"pid,omitempty"`
 	Port     int    `json:"port,omitempty"`
@@ -1680,37 +1693,7 @@ func (s *Server) handleSystemProcesses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. FLUX generation in progress
-	fluxService := flux.GetService(s.storage.DB())
-	fluxStatus := fluxService.GetStatus()
-	if fluxStatus.Generating && fluxStatus.CurrentJob != nil {
-		processes = append(processes, ProcessInfo{
-			ID:       fluxStatus.CurrentJob.ID,
-			Name:     "Image Generation",
-			Type:     "flux",
-			Status:   "generating",
-			Model:    fluxStatus.CurrentJob.Model,
-			Progress: fluxStatus.CurrentJob.Progress,
-		})
-	}
-
-	// 4. FLUX Downloads in progress
-	fluxDownloads := []string{"schnell", "dev"}
-	for _, modelID := range fluxDownloads {
-		dp := flux.GetDownloadProgress(modelID)
-		if dp != nil && (dp.Status == "downloading" || dp.Status == "pending") {
-			processes = append(processes, ProcessInfo{
-				ID:       "flux-download-" + modelID,
-				Name:     "Downloading FLUX " + modelID,
-				Type:     "flux-download",
-				Status:   dp.Status,
-				Model:    modelID,
-				Progress: int(dp.Progress),
-			})
-		}
-	}
-
-	// 5. Running containers
+	// 3. Running containers
 	containers, err := s.podman.ListContainers(ctx, false) // Only running
 	if err == nil {
 		// Get apps to match container IDs
@@ -3175,6 +3158,245 @@ func (s *Server) handleAppAccessLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetAppHealth returns health status for an app
+func (s *Server) handleGetAppHealth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	s.healthStatesMu.RLock()
+	hs := s.healthStates[a.ID]
+	s.healthStatesMu.RUnlock()
+
+	if hs == nil {
+		hs = &app.HealthStatus{Status: "unknown"}
+	}
+
+	jsonResponse(w, http.StatusOK, hs)
+}
+
+// handleTriggerHealthCheck triggers an immediate health check for an app
+func (s *Server) handleTriggerHealthCheck(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	if a.HealthCheck == nil {
+		errorResponse(w, http.StatusBadRequest, "Health checks not configured for this app")
+		return
+	}
+
+	if a.Status != app.StatusRunning {
+		errorResponse(w, http.StatusBadRequest, "App is not running")
+		return
+	}
+
+	hs := s.checkAppHealth(a)
+
+	jsonResponse(w, http.StatusOK, hs)
+}
+
+// checkAppHealth performs a single health check for an app and updates state
+func (s *Server) checkAppHealth(a *app.App) *app.HealthStatus {
+	s.healthStatesMu.Lock()
+	hs, ok := s.healthStates[a.ID]
+	if !ok {
+		hs = &app.HealthStatus{Status: "unknown"}
+		s.healthStates[a.ID] = hs
+	}
+	s.healthStatesMu.Unlock()
+
+	hc := a.HealthCheck
+	endpoint := hc.Endpoint
+	if endpoint == "" {
+		endpoint = "/health"
+	}
+	timeout := hc.Timeout
+	if timeout <= 0 {
+		timeout = 5
+	}
+
+	checkURL := fmt.Sprintf("http://localhost:%d%s", a.Ports.HostPort, endpoint)
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+
+	resp, err := client.Get(checkURL)
+
+	s.healthStatesMu.Lock()
+	defer s.healthStatesMu.Unlock()
+
+	hs.TotalChecks++
+	hs.LastCheck = time.Now()
+
+	if err != nil {
+		hs.ConsecutiveFailures++
+		hs.TotalFailures++
+		hs.LastError = err.Error()
+		hs.Status = "unhealthy"
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			hs.ConsecutiveFailures = 0
+			hs.LastSuccess = time.Now()
+			hs.LastError = ""
+			hs.Status = "healthy"
+		} else {
+			hs.ConsecutiveFailures++
+			hs.TotalFailures++
+			hs.LastError = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			hs.Status = "unhealthy"
+		}
+	}
+
+	// Auto-restart if configured
+	maxFailures := hc.MaxFailures
+	if maxFailures <= 0 {
+		maxFailures = 3
+	}
+	if hc.AutoRestart && hs.ConsecutiveFailures >= maxFailures {
+		log.Printf("Health check: app %s (%s) exceeded %d failures, restarting...", a.Name, a.ID, maxFailures)
+		go s.restartAppForHealth(a)
+		hs.ConsecutiveFailures = 0
+	}
+
+	return hs
+}
+
+// restartAppForHealth restarts an app due to health check failure
+func (s *Server) restartAppForHealth(a *app.App) {
+	ctx := context.Background()
+
+	if a.Type == app.AppTypeMLX {
+		return
+	}
+
+	if a.ContainerID == "" && a.Image == "" {
+		return
+	}
+
+	containerName := "basepod-" + a.Name
+	if a.ContainerID != "" {
+		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	}
+	_ = s.podman.StopContainer(ctx, containerName, 10)
+	_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		if v.HostPath != "" && v.ContainerPath != "" {
+			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+		}
+	}
+
+	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+		Name:     containerName,
+		Image:    a.Image,
+		Env:      a.Env,
+		Networks: []string{"basepod"},
+		Volumes:  volumeMounts,
+		Ports: map[string]string{
+			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+		},
+		Labels: map[string]string{
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
+		},
+	})
+	if err != nil {
+		log.Printf("Health check restart failed for %s: %v", a.Name, err)
+		return
+	}
+
+	if err := s.podman.StartContainer(ctx, containerID); err != nil {
+		log.Printf("Health check restart failed to start %s: %v", a.Name, err)
+		return
+	}
+
+	a.ContainerID = containerID
+	a.Status = app.StatusRunning
+	s.storage.UpdateApp(a)
+	log.Printf("Health check: successfully restarted app %s", a.Name)
+}
+
+// runHealthChecker runs the background health check loop
+func (s *Server) runHealthChecker() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.healthStop:
+			return
+		case <-ticker.C:
+			s.runHealthChecks()
+		}
+	}
+}
+
+// runHealthChecks performs health checks on all configured apps
+func (s *Server) runHealthChecks() {
+	apps, err := s.storage.ListApps()
+	if err != nil {
+		return
+	}
+
+	for i := range apps {
+		a := &apps[i]
+		if a.HealthCheck == nil || a.Status != app.StatusRunning {
+			continue
+		}
+		if a.Ports.HostPort == 0 {
+			continue
+		}
+
+		// Check if enough time has elapsed since last check
+		interval := a.HealthCheck.Interval
+		if interval <= 0 {
+			interval = 30
+		}
+
+		s.healthStatesMu.RLock()
+		hs := s.healthStates[a.ID]
+		s.healthStatesMu.RUnlock()
+
+		if hs != nil && time.Since(hs.LastCheck) < time.Duration(interval)*time.Second {
+			continue
+		}
+
+		s.checkAppHealth(a)
+	}
+}
+
 // handleListContainerImages returns all container images
 func (s *Server) handleListContainerImages(w http.ResponseWriter, r *http.Request) {
 	if s.podman == nil {
@@ -3708,375 +3930,6 @@ func (s *Server) handleClearChatMessages(w http.ResponseWriter, r *http.Request)
 }
 
 // ============================================================================
-// FLUX Image Generation Handlers
-// ============================================================================
-
-// handleFluxStatus returns FLUX service status
-func (s *Server) handleFluxStatus(w http.ResponseWriter, r *http.Request) {
-	svc := flux.GetService(s.storage.DB())
-	status := svc.GetStatus()
-	jsonResponse(w, http.StatusOK, status)
-}
-
-// handleFluxModels returns available FLUX models
-func (s *Server) handleFluxModels(w http.ResponseWriter, r *http.Request) {
-	svc := flux.GetService(s.storage.DB())
-	models := svc.ListModels()
-	jsonResponse(w, http.StatusOK, models)
-}
-
-// handleFluxDownloadModel starts downloading a model
-func (s *Server) handleFluxDownloadModel(w http.ResponseWriter, r *http.Request) {
-	modelID := r.PathValue("id")
-	if modelID == "" {
-		errorResponse(w, http.StatusBadRequest, "model ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	progress, err := svc.DownloadModel(modelID)
-	if err != nil {
-		errorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusAccepted, map[string]interface{}{
-		"status":  progress.Status,
-		"message": progress.Message,
-	})
-}
-
-// handleFluxDeleteModel deletes a downloaded model
-func (s *Server) handleFluxDeleteModel(w http.ResponseWriter, r *http.Request) {
-	modelID := r.PathValue("id")
-	if modelID == "" {
-		errorResponse(w, http.StatusBadRequest, "model ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	if err := svc.DeleteModel(modelID); err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handleFluxDownloadProgress returns download progress for a model
-func (s *Server) handleFluxDownloadProgress(w http.ResponseWriter, r *http.Request) {
-	modelID := r.PathValue("id")
-	if modelID == "" {
-		errorResponse(w, http.StatusBadRequest, "model ID required")
-		return
-	}
-
-	progress := flux.GetDownloadProgress(modelID)
-	if progress == nil {
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "idle"})
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, progress)
-}
-
-// handleFluxGenerate starts an image generation job
-func (s *Server) handleFluxGenerate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt    string `json:"prompt"`
-		Model     string `json:"model"`
-		Width     int    `json:"width"`
-		Height    int    `json:"height"`
-		Steps     int    `json:"steps"`
-		Seed      int64  `json:"seed"`
-		SessionID string `json:"session_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Prompt == "" {
-		errorResponse(w, http.StatusBadRequest, "prompt required")
-		return
-	}
-	if req.Model == "" {
-		req.Model = "z-image-turbo" // Default model
-	}
-	if req.Width == 0 {
-		req.Width = 1024
-	}
-	if req.Height == 0 {
-		req.Height = 1024
-	}
-	if req.Steps == 0 {
-		// Get default steps from model config
-		for _, m := range flux.GetAvailableModels() {
-			if m.ID == req.Model {
-				req.Steps = m.Steps
-				break
-			}
-		}
-		if req.Steps == 0 {
-			req.Steps = 4
-		}
-	}
-	if req.Seed == 0 {
-		req.Seed = -1 // Random
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	job, err := svc.Generate(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.SessionID)
-	if err != nil {
-		errorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusAccepted, job)
-}
-
-// handleFluxEdit starts an image editing job with reference images
-func (s *Server) handleFluxEdit(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt     string   `json:"prompt"`
-		Model      string   `json:"model"`
-		Width      int      `json:"width"`
-		Height     int      `json:"height"`
-		Steps      int      `json:"steps"`
-		Seed       int64    `json:"seed"`
-		ImagePaths []string `json:"image_paths"` // Paths to uploaded reference images
-		SessionID  string   `json:"session_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Prompt == "" {
-		errorResponse(w, http.StatusBadRequest, "prompt required")
-		return
-	}
-	if len(req.ImagePaths) == 0 {
-		errorResponse(w, http.StatusBadRequest, "at least one reference image required")
-		return
-	}
-	if req.Model == "" {
-		req.Model = "flux2-klein-9b" // Default edit model
-	}
-	if req.Width == 0 {
-		req.Width = 1024
-	}
-	if req.Height == 0 {
-		req.Height = 1024
-	}
-	if req.Steps == 0 {
-		req.Steps = 4
-	}
-	if req.Seed == 0 {
-		req.Seed = -1 // Random
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	job, err := svc.GenerateEdit(req.Prompt, req.Model, req.Width, req.Height, req.Steps, req.Seed, req.ImagePaths, req.SessionID)
-	if err != nil {
-		errorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusAccepted, job)
-}
-
-// handleFluxUpload handles image upload for editing
-func (s *Server) handleFluxUpload(w http.ResponseWriter, r *http.Request) {
-	// Max 50MB
-	r.ParseMultipartForm(50 << 20)
-
-	file, header, err := r.FormFile("image")
-	if err != nil {
-		errorResponse(w, http.StatusBadRequest, "failed to read uploaded file")
-		return
-	}
-	defer file.Close()
-
-	// Validate file type
-	contentType := header.Header.Get("Content-Type")
-	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
-		errorResponse(w, http.StatusBadRequest, "only JPEG, PNG, and WebP images are supported")
-		return
-	}
-
-	// Generate unique filename
-	svc := flux.GetService(s.storage.DB())
-	ext := ".jpg"
-	if contentType == "image/png" {
-		ext = ".png"
-	} else if contentType == "image/webp" {
-		ext = ".webp"
-	}
-
-	filename := fmt.Sprintf("upload_%d%s", time.Now().UnixNano(), ext)
-	filepath := filepath.Join(svc.GetUploadsDir(), filename)
-
-	// Save file
-	dst, err := os.Create(filepath)
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, "failed to save file")
-		return
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, file); err != nil {
-		errorResponse(w, http.StatusInternalServerError, "failed to save file")
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]string{
-		"path":     filepath,
-		"filename": filename,
-	})
-}
-
-// handleFluxGetJob returns a generation job status
-func (s *Server) handleFluxGetJob(w http.ResponseWriter, r *http.Request) {
-	jobID := r.PathValue("id")
-	if jobID == "" {
-		errorResponse(w, http.StatusBadRequest, "job ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	job, err := svc.GetJob(jobID)
-	if err != nil {
-		errorResponse(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, job)
-}
-
-// handleFluxListGenerations returns all generations
-func (s *Server) handleFluxListGenerations(w http.ResponseWriter, r *http.Request) {
-	svc := flux.GetService(s.storage.DB())
-	generations, err := svc.ListGenerations()
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Convert to response format
-	var result []flux.Generation
-	for _, g := range generations {
-		result = append(result, g.ToGeneration())
-	}
-	if result == nil {
-		result = []flux.Generation{}
-	}
-
-	jsonResponse(w, http.StatusOK, result)
-}
-
-// handleFluxGetImage serves a generated image
-func (s *Server) handleFluxGetImage(w http.ResponseWriter, r *http.Request) {
-	jobID := r.PathValue("id")
-	if jobID == "" {
-		errorResponse(w, http.StatusBadRequest, "job ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	imagePath, err := svc.GetImagePath(jobID)
-	if err != nil {
-		errorResponse(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	http.ServeFile(w, r, imagePath)
-}
-
-// handleFluxDeleteGeneration deletes a generation
-func (s *Server) handleFluxDeleteGeneration(w http.ResponseWriter, r *http.Request) {
-	jobID := r.PathValue("id")
-	if jobID == "" {
-		errorResponse(w, http.StatusBadRequest, "job ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	if err := svc.DeleteGeneration(jobID); err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handleFluxListSessions returns all image generation sessions
-func (s *Server) handleFluxListSessions(w http.ResponseWriter, r *http.Request) {
-	svc := flux.GetService(s.storage.DB())
-	sessions, err := svc.ListSessions()
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	jsonResponse(w, http.StatusOK, sessions)
-}
-
-// handleFluxGetSession returns a session with all its jobs
-func (s *Server) handleFluxGetSession(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.PathValue("id")
-	if sessionID == "" {
-		errorResponse(w, http.StatusBadRequest, "session ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	session, err := svc.GetSessionWithJobs(sessionID)
-	if err != nil {
-		errorResponse(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, session)
-}
-
-// handleFluxDeleteSession deletes a session and all its jobs
-func (s *Server) handleFluxDeleteSession(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.PathValue("id")
-	if sessionID == "" {
-		errorResponse(w, http.StatusBadRequest, "session ID required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	if err := svc.DeleteSession(sessionID); err != nil {
-		errorResponse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handleFluxStorage returns storage usage information
-func (s *Server) handleFluxStorage(w http.ResponseWriter, r *http.Request) {
-	svc := flux.GetService(s.storage.DB())
-	info := svc.GetStorageInfo()
-	jsonResponse(w, http.StatusOK, info)
-}
-
-// handleFluxStorageFiles returns detailed file list for a storage type
-func (s *Server) handleFluxStorageFiles(w http.ResponseWriter, r *http.Request) {
-	storageType := r.PathValue("type")
-	if storageType == "" {
-		errorResponse(w, http.StatusBadRequest, "storage type required")
-		return
-	}
-
-	svc := flux.GetService(s.storage.DB())
-	files := svc.GetStorageFiles(storageType)
-	jsonResponse(w, http.StatusOK, files)
-}
-
-// ============================================================================
 // Backup Handlers
 // ============================================================================
 
@@ -4499,4 +4352,449 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
+}
+
+// validateGitHubSignature validates the HMAC-SHA256 signature from GitHub webhooks
+func validateGitHubSignature(body []byte, signature, secret string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// handleWebhookSetup sets up a webhook for an app
+func (s *Server) handleWebhookSetup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	var req struct {
+		GitURL string `json:"git_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.GitURL == "" {
+		errorResponse(w, http.StatusBadRequest, "git_url is required")
+		return
+	}
+
+	// Generate random webhook secret (32 bytes hex)
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to generate secret")
+		return
+	}
+	secret := hex.EncodeToString(secretBytes)
+
+	a.Deployment.GitURL = req.GitURL
+	a.Deployment.WebhookSecret = secret
+	a.Deployment.AutoDeploy = true
+	if a.Deployment.Branch == "" {
+		a.Deployment.Branch = "main"
+	}
+
+	if err := s.storage.UpdateApp(a); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Build webhook URL
+	webhookURL := fmt.Sprintf("/api/apps/%s/webhook", a.ID)
+	if a.Domain != "" {
+		webhookURL = fmt.Sprintf("https://%s/api/apps/%s/webhook", a.Domain, a.ID)
+	} else if s.config != nil && s.config.Domain.Base != "" {
+		webhookURL = fmt.Sprintf("https://bp.%s/api/apps/%s/webhook", s.config.Domain.Base, a.ID)
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"webhook_url": webhookURL,
+		"secret":      secret,
+		"branch":      a.Deployment.Branch,
+	})
+}
+
+// handleWebhook handles incoming webhook requests from GitHub
+func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	if a.Deployment.WebhookSecret == "" {
+		errorResponse(w, http.StatusForbidden, "Webhook not configured for this app")
+		return
+	}
+
+	// Read body for HMAC verification
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+
+	// Validate signature
+	signature := r.Header.Get("X-Hub-Signature-256")
+	if signature == "" {
+		errorResponse(w, http.StatusForbidden, "Missing signature")
+		return
+	}
+	if !validateGitHubSignature(body, signature, a.Deployment.WebhookSecret) {
+		errorResponse(w, http.StatusForbidden, "Invalid signature")
+		return
+	}
+
+	// Parse event type
+	event := r.Header.Get("X-GitHub-Event")
+
+	deliveryID := uuid.New().String()
+
+	// Handle ping event
+	if event == "ping" {
+		delivery := &app.WebhookDelivery{
+			ID:        deliveryID,
+			AppID:     a.ID,
+			Event:     "ping",
+			Status:    "success",
+			Message:   "Webhook configured successfully",
+			CreatedAt: time.Now(),
+		}
+		s.storage.SaveWebhookDelivery(delivery)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "pong"})
+		return
+	}
+
+	// Handle push event
+	if event != "push" {
+		delivery := &app.WebhookDelivery{
+			ID:        deliveryID,
+			AppID:     a.ID,
+			Event:     event,
+			Status:    "skipped",
+			Message:   "Unsupported event type: " + event,
+			CreatedAt: time.Now(),
+		}
+		s.storage.SaveWebhookDelivery(delivery)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "skipped", "reason": "unsupported event"})
+		return
+	}
+
+	// Parse push payload
+	var payload struct {
+		Ref        string `json:"ref"`
+		HeadCommit struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"head_commit"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Failed to parse payload")
+		return
+	}
+
+	// Extract branch from ref (refs/heads/main -> main)
+	branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
+	commitHash := payload.HeadCommit.ID
+	if len(commitHash) > 7 {
+		commitHash = commitHash[:7]
+	}
+	commitMsg := payload.HeadCommit.Message
+	// Truncate commit message to first line
+	if idx := strings.Index(commitMsg, "\n"); idx > 0 {
+		commitMsg = commitMsg[:idx]
+	}
+
+	// Check branch matches
+	if branch != a.Deployment.Branch {
+		delivery := &app.WebhookDelivery{
+			ID:        deliveryID,
+			AppID:     a.ID,
+			Event:     "push",
+			Branch:    branch,
+			Commit:    commitHash,
+			Message:   commitMsg,
+			Status:    "skipped",
+			Error:     fmt.Sprintf("Branch %s does not match configured branch %s", branch, a.Deployment.Branch),
+			CreatedAt: time.Now(),
+		}
+		s.storage.SaveWebhookDelivery(delivery)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "skipped", "reason": "branch mismatch"})
+		return
+	}
+
+	// Check auto_deploy is enabled
+	if !a.Deployment.AutoDeploy {
+		delivery := &app.WebhookDelivery{
+			ID:        deliveryID,
+			AppID:     a.ID,
+			Event:     "push",
+			Branch:    branch,
+			Commit:    commitHash,
+			Message:   commitMsg,
+			Status:    "skipped",
+			Error:     "Auto-deploy is disabled",
+			CreatedAt: time.Now(),
+		}
+		s.storage.SaveWebhookDelivery(delivery)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "skipped", "reason": "auto_deploy disabled"})
+		return
+	}
+
+	// Save delivery as deploying
+	delivery := &app.WebhookDelivery{
+		ID:        deliveryID,
+		AppID:     a.ID,
+		Event:     "push",
+		Branch:    branch,
+		Commit:    commitHash,
+		Message:   commitMsg,
+		Status:    "deploying",
+		CreatedAt: time.Now(),
+	}
+	s.storage.SaveWebhookDelivery(delivery)
+
+	// Start async deploy
+	go s.deployFromGit(a, commitHash, commitMsg, branch, deliveryID)
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "deploying"})
+}
+
+// deployFromGit clones a git repo and builds+deploys the app
+func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, deliveryID string) {
+	ctx := context.Background()
+
+	log.Printf("Webhook deploy %s: branch=%s commit=%s msg=%s", a.Name, branch, commitHash, commitMsg)
+
+	paths, _ := config.GetPaths()
+	buildDir := fmt.Sprintf("%s/builds/%s", paths.Base, a.ID)
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		log.Printf("Webhook deploy %s: failed to create build dir: %v", a.Name, err)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", err.Error())
+		return
+	}
+
+	sourceDir := buildDir + "/source"
+	// Clean up old source if exists
+	os.RemoveAll(sourceDir)
+
+	// Clone the repo
+	gitURL := a.Deployment.GitURL
+	log.Printf("Webhook deploy %s: cloning %s branch %s", a.Name, gitURL, branch)
+
+	cloneCmd := fmt.Sprintf("git clone --depth 1 --branch %s %s %s", branch, gitURL, sourceDir)
+	output, err := execCommand(ctx, "sh", "-c", cloneCmd)
+	if err != nil {
+		errMsg := fmt.Sprintf("Git clone failed: %v\n%s", err, output)
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
+	// Check for Dockerfile
+	dockerfile := "Dockerfile"
+	if a.Deployment.Dockerfile != "" {
+		dockerfile = a.Deployment.Dockerfile
+	}
+	dockerfilePath := sourceDir + "/" + dockerfile
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		errMsg := "Dockerfile not found at " + dockerfilePath
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
+	// Build image
+	imageName := fmt.Sprintf("basepod/%s:latest", a.Name)
+	log.Printf("Webhook deploy %s: building image %s", a.Name, imageName)
+
+	a.Status = app.StatusDeploying
+	s.storage.UpdateApp(a)
+
+	podmanPath := "podman"
+	if _, err := exec.LookPath("podman"); err != nil {
+		for _, p := range []string{"/opt/homebrew/bin/podman", "/usr/local/bin/podman"} {
+			if _, err := os.Stat(p); err == nil {
+				podmanPath = p
+				break
+			}
+		}
+	}
+
+	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -f %s .", sourceDir, podmanPath, imageName, dockerfile)
+	output, err = execCommand(ctx, "sh", "-c", buildCmd)
+	if err != nil {
+		errMsg := fmt.Sprintf("Build failed: %v\n%s", err, output)
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
+	// Remove old container
+	containerName := "basepod-" + a.Name
+	if a.ContainerID != "" {
+		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	}
+	_ = s.podman.StopContainer(ctx, containerName, 10)
+	_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+	// Assign host port if not set
+	if a.Ports.HostPort == 0 {
+		a.Ports.HostPort = assignHostPort(a.ID)
+	}
+
+	// Build volume mounts
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
+	}
+
+	// Create new container
+	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+		Name:     containerName,
+		Image:    imageName,
+		Env:      a.Env,
+		Networks: []string{"basepod"},
+		Volumes:  volumeMounts,
+		Ports: map[string]string{
+			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+		},
+		Labels: map[string]string{
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
+		},
+	})
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to create container: %v", err)
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
+	// Start container
+	if err := s.podman.StartContainer(ctx, containerID); err != nil {
+		errMsg := fmt.Sprintf("Failed to start container: %v", err)
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
+	// Update app record
+	a.ContainerID = containerID
+	a.Image = imageName
+	a.Status = app.StatusRunning
+	a.UpdatedAt = time.Now()
+
+	// Add deployment record
+	deployRecord := app.DeploymentRecord{
+		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		CommitHash: commitHash,
+		CommitMsg:  commitMsg,
+		Branch:     branch,
+		Status:     "success",
+		DeployedAt: time.Now(),
+	}
+	a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
+	if len(a.Deployments) > 10 {
+		a.Deployments = a.Deployments[:10]
+	}
+
+	s.storage.UpdateApp(a)
+
+	// Configure Caddy
+	if a.Domain != "" && s.caddy != nil {
+		_ = s.caddy.AddRoute(caddy.Route{
+			ID:        "basepod-" + a.Name,
+			Domain:    a.Domain,
+			Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
+			EnableSSL: a.SSL.Enabled,
+		})
+		for _, alias := range a.Aliases {
+			_ = s.caddy.AddRoute(caddy.Route{
+				ID:        fmt.Sprintf("alias-%s-%s", a.ID[:8], alias),
+				Domain:    alias,
+				Upstream:  fmt.Sprintf("localhost:%d", a.Ports.HostPort),
+				EnableSSL: a.SSL.Enabled,
+			})
+		}
+	}
+
+	// Clean up build directory
+	os.RemoveAll(buildDir)
+
+	s.storage.UpdateWebhookDeliveryStatus(deliveryID, "success", "")
+	log.Printf("Webhook deploy %s: completed successfully (commit: %s)", a.Name, commitHash)
+}
+
+// handleWebhookDeliveries returns recent webhook deliveries for an app
+func (s *Server) handleWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	deliveries, err := s.storage.ListWebhookDeliveries(a.ID, 20)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if deliveries == nil {
+		deliveries = []app.WebhookDelivery{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"deliveries": deliveries,
+	})
 }

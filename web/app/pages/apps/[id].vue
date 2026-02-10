@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { App } from '~/types'
+import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse } from '~/types'
 import Convert from 'ansi-to-html'
 
 const route = useRoute()
@@ -22,6 +22,7 @@ const tabs = computed(() => {
   // Only show container-specific tabs for non-static apps
   if (app.value?.type !== 'static') {
     baseTabs.push(
+      { label: 'Health', value: 'health', icon: 'i-heroicons-heart' },
       { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
@@ -367,6 +368,235 @@ async function saveSettings() {
   }
 }
 
+// Health check management
+const healthStatus = ref<AppHealthStatus | null>(null)
+const healthLoading = ref(false)
+const healthCheckEnabled = ref(false)
+const healthForm = ref<HealthCheckConfig>({
+  endpoint: '/health',
+  interval: 30,
+  timeout: 5,
+  max_failures: 3,
+  auto_restart: true,
+})
+const savingHealth = ref(false)
+const healthInitialized = ref(false)
+let healthInterval: ReturnType<typeof setInterval> | null = null
+
+// Initialize health config when app data loads
+watch(() => app.value, (appData) => {
+  if (appData && !healthInitialized.value) {
+    healthCheckEnabled.value = !!appData.health_check
+    if (appData.health_check) {
+      healthForm.value = { ...appData.health_check }
+    }
+    if (appData.health) {
+      healthStatus.value = appData.health
+    }
+    healthInitialized.value = true
+  }
+}, { immediate: true })
+
+// Auto-refresh health status when tab is active
+watch(activeTab, (tab) => {
+  if (tab === 'health') {
+    fetchHealthStatus()
+    healthInterval = setInterval(fetchHealthStatus, 10000)
+  } else {
+    if (healthInterval) {
+      clearInterval(healthInterval)
+      healthInterval = null
+    }
+  }
+})
+
+onUnmounted(() => {
+  if (healthInterval) {
+    clearInterval(healthInterval)
+  }
+})
+
+async function fetchHealthStatus() {
+  if (!app.value) return
+  healthLoading.value = true
+  try {
+    healthStatus.value = await $api<AppHealthStatus>(`/apps/${appId}/health`)
+  } catch {
+    // Health endpoint may not be available yet
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function triggerHealthCheck() {
+  healthLoading.value = true
+  try {
+    healthStatus.value = await $api<AppHealthStatus>(`/apps/${appId}/health/check`, { method: 'POST' })
+    toast.add({ title: 'Health check triggered', color: 'success' })
+  } catch (error) {
+    toast.add({ title: 'Health check failed', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function saveHealthConfig() {
+  savingHealth.value = true
+  try {
+    const healthCheck = healthCheckEnabled.value ? healthForm.value : {
+      endpoint: '',
+      interval: 0,
+      timeout: 0,
+      max_failures: 0,
+      auto_restart: false,
+    }
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: { health_check: healthCheckEnabled.value ? healthCheck : null }
+    })
+    toast.add({ title: 'Health check configuration saved', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingHealth.value = false
+  }
+}
+
+function getHealthColor(status?: string): "success" | "error" | "neutral" {
+  if (status === 'healthy') return 'success'
+  if (status === 'unhealthy') return 'error'
+  return 'neutral'
+}
+
+function formatTime(ts?: string): string {
+  if (!ts || ts === '0001-01-01T00:00:00Z') return 'Never'
+  return new Date(ts).toLocaleString()
+}
+
+// Webhook management
+const webhookGitUrl = ref('')
+const webhookSetupLoading = ref(false)
+const webhookDeliveries = ref<WebhookDelivery[]>([])
+const webhookDeliveriesLoading = ref(false)
+const showWebhookSecret = ref(false)
+const webhookInitialized = ref(false)
+let webhookInterval: ReturnType<typeof setInterval> | null = null
+
+// Initialize webhook form when app data loads
+watch(() => app.value, (appData) => {
+  if (appData && !webhookInitialized.value) {
+    webhookGitUrl.value = appData.deployment?.git_url || ''
+    webhookInitialized.value = true
+  }
+}, { immediate: true })
+
+// Auto-refresh webhook deliveries when deployments tab is active
+watch(activeTab, (tab) => {
+  if (tab === 'deployments') {
+    fetchWebhookDeliveries()
+    webhookInterval = setInterval(fetchWebhookDeliveries, 10000)
+  } else {
+    if (webhookInterval) {
+      clearInterval(webhookInterval)
+      webhookInterval = null
+    }
+  }
+})
+
+onUnmounted(() => {
+  if (webhookInterval) {
+    clearInterval(webhookInterval)
+  }
+})
+
+async function setupWebhook() {
+  if (!webhookGitUrl.value.trim()) {
+    toast.add({ title: 'Git URL is required', color: 'error' })
+    return
+  }
+  webhookSetupLoading.value = true
+  try {
+    const result = await $api<WebhookSetupResponse>(`/apps/${appId}/webhook/setup`, {
+      method: 'POST',
+      body: { git_url: webhookGitUrl.value.trim() }
+    })
+    toast.add({ title: 'Webhook enabled', description: 'Copy the URL and secret to your GitHub repository settings.', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to setup webhook', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function disableWebhook() {
+  webhookSetupLoading.value = true
+  try {
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: {
+        deployment: {
+          ...app.value?.deployment,
+          git_url: '',
+          webhook_secret: '',
+          auto_deploy: false,
+        }
+      }
+    })
+    webhookGitUrl.value = ''
+    showWebhookSecret.value = false
+    toast.add({ title: 'Webhook disabled', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to disable webhook', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function regenerateSecret() {
+  if (!app.value?.deployment?.git_url) return
+  webhookSetupLoading.value = true
+  try {
+    await $api<WebhookSetupResponse>(`/apps/${appId}/webhook/setup`, {
+      method: 'POST',
+      body: { git_url: app.value.deployment.git_url }
+    })
+    toast.add({ title: 'Secret regenerated', description: 'Update the secret in your GitHub repository settings.', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to regenerate secret', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function fetchWebhookDeliveries() {
+  if (!app.value) return
+  webhookDeliveriesLoading.value = true
+  try {
+    const data = await $api<{ deliveries: WebhookDelivery[] }>(`/apps/${appId}/webhook/deliveries`)
+    webhookDeliveries.value = data.deliveries || []
+  } catch {
+    // Webhook deliveries endpoint may not have any data yet
+  } finally {
+    webhookDeliveriesLoading.value = false
+  }
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text)
+  toast.add({ title: 'Copied to clipboard', color: 'success' })
+}
+
+function getDeliveryStatusColor(status: string): "success" | "error" | "warning" | "neutral" {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'error'
+  if (status === 'deploying') return 'warning'
+  return 'neutral'
+}
+
 // Restart reminder modal (shown when external access setting changes)
 const showRestartModal = ref(false)
 
@@ -621,6 +851,53 @@ async function deleteApp() {
       </div>
     </UCard>
 
+    <!-- Webhook Deliveries (in Deployments tab) -->
+    <UCard v-if="activeTab === 'deployments' && app?.deployment?.webhook_secret" class="mt-6">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Webhook Deliveries</h3>
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="webhookDeliveriesLoading" @click="fetchWebhookDeliveries">
+            Refresh
+          </UButton>
+        </div>
+      </template>
+
+      <div v-if="webhookDeliveries.length === 0" class="text-center py-6 text-gray-500">
+        <UIcon name="i-heroicons-inbox" class="w-10 h-10 mx-auto mb-2 opacity-50" />
+        <p class="text-sm">No webhook deliveries yet</p>
+        <p class="text-xs mt-1">Push to your repository to trigger a deployment</p>
+      </div>
+
+      <div v-else class="space-y-2">
+        <div
+          v-for="delivery in webhookDeliveries"
+          :key="delivery.id"
+          class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <UBadge :color="getDeliveryStatusColor(delivery.status)" size="xs">
+                {{ delivery.status }}
+              </UBadge>
+              <span class="text-sm font-medium">{{ delivery.event }}</span>
+              <span v-if="delivery.commit" class="font-mono text-xs text-gray-500">{{ delivery.commit }}</span>
+            </div>
+            <span class="text-xs text-gray-500">{{ new Date(delivery.created_at).toLocaleString() }}</span>
+          </div>
+          <div v-if="delivery.message" class="text-sm text-gray-600 dark:text-gray-400 mt-1 truncate">
+            {{ delivery.message }}
+          </div>
+          <div v-if="delivery.branch" class="text-xs text-gray-500 mt-1">
+            <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
+            {{ delivery.branch }}
+          </div>
+          <div v-if="delivery.error" class="text-xs text-red-500 mt-1 truncate">
+            {{ delivery.error }}
+          </div>
+        </div>
+      </div>
+    </UCard>
+
     <!-- Logs Tab -->
     <UCard v-if="activeTab === 'logs'">
       <template #header>
@@ -686,6 +963,125 @@ async function deleteApp() {
         <pre v-else class="bg-[#1a1b26] text-[#c0caf5] p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto" style="min-height: calc(100vh - 320px); max-height: calc(100vh - 320px);" v-html="logsHtml || 'No logs available'" />
       </template>
     </UCard>
+
+    <!-- Health Tab -->
+    <div v-if="activeTab === 'health'" class="space-y-6">
+      <!-- Health Status -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Health Status</h3>
+            <UButton
+              variant="outline"
+              size="sm"
+              icon="i-heroicons-arrow-path"
+              :loading="healthLoading"
+              :disabled="!app.health_check"
+              @click="triggerHealthCheck"
+            >
+              Check Now
+            </UButton>
+          </div>
+        </template>
+
+        <div v-if="!app.health_check" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-heart" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>Health checks are not enabled</p>
+          <p class="text-sm mt-1">Enable health checks below to monitor this app</p>
+        </div>
+
+        <div v-else-if="healthStatus" class="space-y-4">
+          <div class="flex items-center gap-3">
+            <UBadge :color="getHealthColor(healthStatus.status)" size="lg">
+              {{ healthStatus.status }}
+            </UBadge>
+            <span class="text-sm text-gray-500">
+              Last checked: {{ formatTime(healthStatus.last_check) }}
+            </span>
+          </div>
+
+          <dl class="grid grid-cols-2 gap-4">
+            <div>
+              <dt class="text-sm text-gray-500">Last Success</dt>
+              <dd class="font-medium">{{ formatTime(healthStatus.last_success) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Consecutive Failures</dt>
+              <dd class="font-medium">{{ healthStatus.consecutive_failures }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Total Checks</dt>
+              <dd class="font-medium">{{ healthStatus.total_checks }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Total Failures</dt>
+              <dd class="font-medium">{{ healthStatus.total_failures }}</dd>
+            </div>
+          </dl>
+
+          <div v-if="healthStatus.last_error" class="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 text-red-500 shrink-0" />
+              <span class="text-sm text-red-600 dark:text-red-400">{{ healthStatus.last_error }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="text-center py-4 text-gray-500">
+          <p class="text-sm">No health data yet. Waiting for first check...</p>
+        </div>
+      </UCard>
+
+      <!-- Health Check Configuration -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Configuration</h3>
+            <UButton :loading="savingHealth" @click="saveHealthConfig">
+              Save
+            </UButton>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div>
+              <div class="font-medium text-sm">Enable Health Checks</div>
+              <div class="text-xs text-gray-500">Periodically check if your app is responding</div>
+            </div>
+            <USwitch v-model="healthCheckEnabled" />
+          </div>
+
+          <template v-if="healthCheckEnabled">
+            <UFormField label="Health Endpoint" hint="HTTP path to check">
+              <UInput v-model="healthForm.endpoint" placeholder="/health" />
+            </UFormField>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <UFormField label="Check Interval (seconds)" hint="Time between checks">
+                <UInput v-model.number="healthForm.interval" type="number" min="5" placeholder="30" />
+              </UFormField>
+
+              <UFormField label="Timeout (seconds)" hint="Max wait per check">
+                <UInput v-model.number="healthForm.timeout" type="number" min="1" placeholder="5" />
+              </UFormField>
+
+              <UFormField label="Max Failures" hint="Before auto-restart">
+                <UInput v-model.number="healthForm.max_failures" type="number" min="1" placeholder="3" />
+              </UFormField>
+            </div>
+
+            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+              <div>
+                <div class="font-medium text-sm">Auto-Restart on Failure</div>
+                <div class="text-xs text-gray-500">Automatically restart the app after consecutive failures</div>
+              </div>
+              <USwitch v-model="healthForm.auto_restart" />
+            </div>
+          </template>
+        </div>
+      </UCard>
+    </div>
 
     <!-- Terminal Tab -->
     <div v-if="activeTab === 'terminal'">
@@ -1048,6 +1444,81 @@ async function deleteApp() {
           Save All Changes
         </UButton>
       </div>
+
+      <!-- Webhook Setup -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Webhook (Auto-Deploy)</h3>
+            <template v-if="app?.deployment?.webhook_secret">
+              <div class="flex gap-2">
+                <UButton variant="outline" size="xs" @click="regenerateSecret" :loading="webhookSetupLoading">
+                  Regenerate Secret
+                </UButton>
+                <UButton color="error" variant="outline" size="xs" @click="disableWebhook" :loading="webhookSetupLoading">
+                  Disable
+                </UButton>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Webhook not configured -->
+        <div v-if="!app?.deployment?.webhook_secret" class="space-y-4">
+          <p class="text-sm text-gray-500">
+            Enable webhooks to automatically deploy when you push to GitHub.
+          </p>
+          <UFormField label="Git Repository URL" hint="HTTPS clone URL">
+            <UInput v-model="webhookGitUrl" placeholder="https://github.com/user/repo.git" />
+          </UFormField>
+          <UButton :loading="webhookSetupLoading" @click="setupWebhook">
+            Enable Webhook
+          </UButton>
+        </div>
+
+        <!-- Webhook configured -->
+        <div v-else class="space-y-4">
+          <div class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+              <span class="text-sm text-green-700 dark:text-green-300">Webhook is active. Push to <code class="font-mono bg-green-100 dark:bg-green-800 px-1 rounded">{{ app.deployment?.branch || 'main' }}</code> to auto-deploy.</span>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+              <div class="flex gap-2">
+                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
+                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook`)" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Secret</label>
+              <div class="flex gap-2">
+                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
+                <UButton variant="outline" size="sm" :icon="showWebhookSecret ? 'i-heroicons-eye-slash' : 'i-heroicons-eye'" @click="showWebhookSecret = !showWebhookSecret" />
+                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.deployment?.webhook_secret || '')" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Git URL</label>
+              <code class="block px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
+            </div>
+          </div>
+
+          <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+              <div class="text-blue-700 dark:text-blue-300">
+                <strong>GitHub Setup:</strong> Go to your repository Settings &rarr; Webhooks &rarr; Add webhook. Paste the URL and secret above. Set content type to <code class="font-mono bg-blue-100 dark:bg-blue-800 px-1 rounded">application/json</code>.
+              </div>
+            </div>
+          </div>
+        </div>
+      </UCard>
 
       <!-- Danger Zone -->
       <UCard class="border-red-200 dark:border-red-800">

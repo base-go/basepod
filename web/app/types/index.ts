@@ -24,6 +24,52 @@ export interface DeploymentRecord {
   deployed_at: string
 }
 
+export interface HealthCheckConfig {
+  endpoint: string
+  interval: number
+  timeout: number
+  max_failures: number
+  auto_restart: boolean
+}
+
+export interface AppHealthStatus {
+  status: 'healthy' | 'unhealthy' | 'unknown'
+  last_check: string
+  last_success: string
+  consecutive_failures: number
+  last_error?: string
+  total_checks: number
+  total_failures: number
+}
+
+export interface DeploymentConfig {
+  source?: string
+  dockerfile?: string
+  build_context?: string
+  branch?: string
+  auto_deploy?: boolean
+  git_url?: string
+  webhook_secret?: string
+}
+
+export interface WebhookSetupResponse {
+  webhook_url: string
+  secret: string
+  branch: string
+}
+
+export interface WebhookDelivery {
+  id: string
+  app_id: string
+  event: string
+  branch?: string
+  commit?: string
+  message?: string
+  status: 'success' | 'failed' | 'skipped' | 'deploying'
+  error?: string
+  created_at: string
+}
+
 export interface App {
   id: string
   name: string
@@ -47,8 +93,11 @@ export interface App {
   }
   env?: Record<string, string>
   volumes?: VolumeMount[]
+  deployment?: DeploymentConfig
   deployments?: DeploymentRecord[]
   mlx?: MLXConfig
+  health_check?: HealthCheckConfig
+  health?: AppHealthStatus
   internal_host?: string
   external_host?: string
   created_at: string

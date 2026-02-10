@@ -122,36 +122,22 @@ func (s *Storage) migrate() error {
 		`ALTER TABLE apps ADD COLUMN aliases TEXT`,
 		// Add deployments column for deployment history
 		`ALTER TABLE apps ADD COLUMN deployments TEXT`,
-		// FLUX generations table
-		`CREATE TABLE IF NOT EXISTS flux_generations (
+		// Add health_check column for health check configuration
+		`ALTER TABLE apps ADD COLUMN health_check TEXT`,
+		// Webhook deliveries table
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id TEXT PRIMARY KEY,
-			prompt TEXT NOT NULL,
-			model TEXT NOT NULL,
-			width INTEGER NOT NULL,
-			height INTEGER NOT NULL,
-			steps INTEGER NOT NULL,
-			seed INTEGER NOT NULL,
-			status TEXT NOT NULL DEFAULT 'pending',
-			progress INTEGER DEFAULT 0,
-			image_path TEXT,
+			app_id TEXT NOT NULL,
+			event TEXT NOT NULL,
+			branch TEXT,
+			commit_hash TEXT,
+			commit_msg TEXT,
+			status TEXT NOT NULL,
 			error TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
 		)`,
-		// Migration: add progress column if missing
-		`ALTER TABLE flux_generations ADD COLUMN progress INTEGER DEFAULT 0`,
-		// Migration: add type and image_paths columns for edit support
-		`ALTER TABLE flux_generations ADD COLUMN type TEXT DEFAULT 'generate'`,
-		`ALTER TABLE flux_generations ADD COLUMN image_paths TEXT DEFAULT ''`,
-		// Image generation sessions
-		`CREATE TABLE IF NOT EXISTS flux_sessions (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			mode TEXT NOT NULL DEFAULT 'generate',
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-		// Add session_id to generations
-		`ALTER TABLE flux_generations ADD COLUMN session_id TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_app_id ON webhook_deliveries(app_id)`,
 	}
 
 	for _, migration := range migrations {
@@ -198,6 +184,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 	sslJSON, _ := json.Marshal(a.SSL)
 	mlxJSON, _ := json.Marshal(a.MLX)
 	aliasesJSON, _ := json.Marshal(a.Aliases)
+	healthCheckJSON, _ := json.Marshal(a.HealthCheck)
 
 	// Convert empty domain to NULL (for database apps without domains)
 	var domain interface{} = a.Domain
@@ -212,12 +199,12 @@ func (s *Storage) CreateApp(a *app.App) error {
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.ID, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
-		appType, string(mlxJSON),
+		appType, string(mlxJSON), string(healthCheckJSON),
 		a.CreatedAt, a.UpdatedAt)
 
 	if err != nil {
@@ -230,7 +217,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 // GetApp retrieves an app by ID
 func (s *Storage) GetApp(id string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, created_at, updated_at
 		FROM apps WHERE id = ?
 	`, id)
 
@@ -240,7 +227,7 @@ func (s *Storage) GetApp(id string) (*app.App, error) {
 // GetAppByName retrieves an app by name
 func (s *Storage) GetAppByName(name string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, created_at, updated_at
 		FROM apps WHERE name = ?
 	`, name)
 
@@ -250,7 +237,7 @@ func (s *Storage) GetAppByName(name string) (*app.App, error) {
 // GetAppByDomain retrieves an app by domain
 func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, created_at, updated_at
 		FROM apps WHERE domain = ?
 	`, domain)
 
@@ -261,12 +248,12 @@ func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	var a app.App
 	var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-	var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON sql.NullString
+	var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON, healthCheckJSON sql.NullString
 
 	err := row.Scan(
 		&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 		&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-		&appType, &mlxJSON,
+		&appType, &mlxJSON, &healthCheckJSON,
 		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -299,6 +286,9 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	if deploymentsJSON.Valid && deploymentsJSON.String != "" {
 		json.Unmarshal([]byte(deploymentsJSON.String), &a.Deployments)
 	}
+	if healthCheckJSON.Valid && healthCheckJSON.String != "" {
+		json.Unmarshal([]byte(healthCheckJSON.String), &a.HealthCheck)
+	}
 
 	return &a, nil
 }
@@ -306,7 +296,7 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 // ListApps retrieves all apps
 func (s *Storage) ListApps() ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, created_at, updated_at
 		FROM apps ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -318,12 +308,12 @@ func (s *Storage) ListApps() ([]app.App, error) {
 	for rows.Next() {
 		var a app.App
 		var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
-		var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON sql.NullString
+		var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON, healthCheckJSON sql.NullString
 
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-			&appType, &mlxJSON,
+			&appType, &mlxJSON, &healthCheckJSON,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
 		if err != nil {
@@ -353,6 +343,9 @@ func (s *Storage) ListApps() ([]app.App, error) {
 		if deploymentsJSON.Valid && deploymentsJSON.String != "" {
 			json.Unmarshal([]byte(deploymentsJSON.String), &a.Deployments)
 		}
+		if healthCheckJSON.Valid && healthCheckJSON.String != "" {
+			json.Unmarshal([]byte(healthCheckJSON.String), &a.HealthCheck)
+		}
 
 		apps = append(apps, a)
 	}
@@ -373,6 +366,7 @@ func (s *Storage) UpdateApp(a *app.App) error {
 	sslJSON, _ := json.Marshal(a.SSL)
 	mlxJSON, _ := json.Marshal(a.MLX)
 	aliasesJSON, _ := json.Marshal(a.Aliases)
+	healthCheckJSON, _ := json.Marshal(a.HealthCheck)
 
 	// Convert empty domain to NULL (for database apps without domains)
 	var domain interface{} = a.Domain
@@ -390,13 +384,13 @@ func (s *Storage) UpdateApp(a *app.App) error {
 		UPDATE apps SET
 			name = ?, domain = ?, aliases = ?, container_id = ?, image = ?, status = ?,
 			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, deployments = ?, ssl = ?,
-			type = ?, mlx = ?,
+			type = ?, mlx = ?, health_check = ?,
 			updated_at = ?
 		WHERE id = ?
 	`, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
-		appType, string(mlxJSON),
+		appType, string(mlxJSON), string(healthCheckJSON),
 		a.UpdatedAt, a.ID)
 
 	if err != nil {
@@ -565,4 +559,59 @@ func (s *Storage) ClearAllChatMessages() error {
 		return fmt.Errorf("failed to clear all chat messages: %w", err)
 	}
 	return nil
+}
+
+// SaveWebhookDelivery saves a webhook delivery record
+func (s *Storage) SaveWebhookDelivery(d *app.WebhookDelivery) error {
+	_, err := s.db.Exec(`
+		INSERT INTO webhook_deliveries (id, app_id, event, branch, commit_hash, commit_msg, status, error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.AppID, d.Event, d.Branch, d.Commit, d.Message, d.Status, d.Error, d.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to save webhook delivery: %w", err)
+	}
+	return nil
+}
+
+// UpdateWebhookDeliveryStatus updates the status and error of a webhook delivery
+func (s *Storage) UpdateWebhookDeliveryStatus(id, status, errMsg string) error {
+	_, err := s.db.Exec(`UPDATE webhook_deliveries SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
+	if err != nil {
+		return fmt.Errorf("failed to update webhook delivery: %w", err)
+	}
+	return nil
+}
+
+// ListWebhookDeliveries retrieves recent webhook deliveries for an app
+func (s *Storage) ListWebhookDeliveries(appID string, limit int) ([]app.WebhookDelivery, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, app_id, event, branch, commit_hash, commit_msg, status, error, created_at
+		FROM webhook_deliveries
+		WHERE app_id = ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, appID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	var deliveries []app.WebhookDelivery
+	for rows.Next() {
+		var d app.WebhookDelivery
+		var branch, commit, msg, errStr sql.NullString
+		if err := rows.Scan(&d.ID, &d.AppID, &d.Event, &branch, &commit, &msg, &d.Status, &errStr, &d.CreatedAt); err != nil {
+			continue
+		}
+		d.Branch = branch.String
+		d.Commit = commit.String
+		d.Message = msg.String
+		d.Error = errStr.String
+		deliveries = append(deliveries, d)
+	}
+	return deliveries, nil
 }

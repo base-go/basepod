@@ -105,6 +105,15 @@ func main() {
 		cmdModel(args)
 	case "chat":
 		cmdChat(args)
+	// Webhook commands
+	case "webhook":
+		cmdWebhook(args)
+	// Health check commands
+	case "health":
+		cmdHealth(args)
+	// Environment commands
+	case "env":
+		cmdEnv(args)
 	// System commands
 	case "info":
 		cmdInfo(args)
@@ -149,6 +158,17 @@ App Commands:
   restart <name>          Restart an app
   logs <name>             View app logs
   delete <name>           Delete an app
+  env <name>              Show environment variables
+  env set <name> K=V...   Set environment variables
+  env unset <name> KEY... Remove environment variables
+  health <name>           Show app health status
+  health check <name>     Trigger immediate health check
+  health enable <name>    Enable health checks with defaults
+  health disable <name>   Disable health checks
+  webhook <name>          Show webhook config
+  webhook setup <name> <url>  Enable webhook for git URL
+  webhook disable <name>  Disable webhook
+  webhook deliveries <name>  Show recent deliveries
 
 Template Commands:
   templates               List available templates
@@ -188,6 +208,9 @@ Examples:
   bp deploy                        # Deploy from local source
   bp deploy --image nginx:latest   # Deploy Docker image
   bp template deploy postgres
+  bp env myapp                    # Show env vars
+  bp env set myapp DB_HOST=localhost
+  bp env unset myapp SECRET_KEY
   bp model pull Llama-3.2-3B
   bp chat`)
 }
@@ -2261,6 +2284,437 @@ func cmdDelete(args []string) {
 	fmt.Printf("App '%s' deleted\n", name)
 }
 
+func cmdEnv(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, `Usage:
+  bp env <name>              Show environment variables
+  bp env set <name> K=V...   Set environment variables
+  bp env unset <name> KEY... Remove environment variables`)
+		os.Exit(1)
+	}
+
+	subcmd := args[0]
+
+	switch subcmd {
+	case "set":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp env set <name> KEY=VALUE [KEY=VALUE...]")
+			os.Exit(1)
+		}
+		appName := args[1]
+		pairs := args[2:]
+
+		// Fetch current app to get existing env
+		currentApp := fetchApp(appName)
+		env := currentApp.Env
+		if env == nil {
+			env = make(map[string]string)
+		}
+
+		for _, pair := range pairs {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 {
+				fmt.Fprintf(os.Stderr, "Invalid format: %s (expected KEY=VALUE)\n", pair)
+				os.Exit(1)
+			}
+			env[parts[0]] = parts[1]
+		}
+
+		updateEnv(appName, env)
+		fmt.Printf("Environment updated for '%s'\n", appName)
+		for _, pair := range pairs {
+			parts := strings.SplitN(pair, "=", 2)
+			fmt.Printf("  %s=%s\n", parts[0], parts[1])
+		}
+
+	case "unset":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp env unset <name> KEY [KEY...]")
+			os.Exit(1)
+		}
+		appName := args[1]
+		keys := args[2:]
+
+		currentApp := fetchApp(appName)
+		env := currentApp.Env
+		if env == nil {
+			env = make(map[string]string)
+		}
+
+		for _, key := range keys {
+			delete(env, key)
+		}
+
+		updateEnv(appName, env)
+		fmt.Printf("Environment updated for '%s'\n", appName)
+		for _, key := range keys {
+			fmt.Printf("  Removed: %s\n", key)
+		}
+
+	default:
+		// "bp env <name>" — show env vars
+		appName := subcmd
+		currentApp := fetchApp(appName)
+
+		if len(currentApp.Env) == 0 {
+			fmt.Printf("No environment variables set for '%s'\n", appName)
+			return
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "KEY\tVALUE\n")
+		for k, v := range currentApp.Env {
+			fmt.Fprintf(w, "%s\t%s\n", k, v)
+		}
+		w.Flush()
+	}
+}
+
+func fetchApp(name string) app.App {
+	resp, err := apiRequest("GET", "/api/apps/"+name, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Failed to get app: %s\n", string(body))
+		os.Exit(1)
+	}
+
+	var a app.App
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse response: %v\n", err)
+		os.Exit(1)
+	}
+	return a
+}
+
+func updateEnv(appName string, env map[string]string) {
+	body := map[string]interface{}{
+		"env": env,
+	}
+
+	resp, err := apiRequest("PUT", "/api/apps/"+appName, body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Failed to update environment: %s\n", string(respBody))
+		os.Exit(1)
+	}
+}
+
+func cmdHealth(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, `Usage:
+  bp health <name>           Show health status
+  bp health check <name>     Trigger immediate check
+  bp health enable <name>    Enable health checks
+  bp health disable <name>   Disable health checks`)
+		os.Exit(1)
+	}
+
+	subcmd := args[0]
+
+	switch subcmd {
+	case "check":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp health check <name>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		resp, err := apiRequest("POST", fmt.Sprintf("/api/apps/%s/health/check", appName), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(body))
+			os.Exit(1)
+		}
+
+		var hs struct {
+			Status              string `json:"status"`
+			LastCheck           string `json:"last_check"`
+			LastSuccess         string `json:"last_success"`
+			ConsecutiveFailures int    `json:"consecutive_failures"`
+			LastError           string `json:"last_error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&hs)
+		fmt.Printf("Status: %s\n", hs.Status)
+		if hs.LastError != "" {
+			fmt.Printf("Error: %s\n", hs.LastError)
+		}
+
+	case "enable":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp health enable <name>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		body := map[string]interface{}{
+			"health_check": map[string]interface{}{
+				"endpoint":     "/health",
+				"interval":     30,
+				"timeout":      5,
+				"max_failures": 3,
+				"auto_restart": true,
+			},
+		}
+		resp, err := apiRequest("PUT", fmt.Sprintf("/api/apps/%s", appName), body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		fmt.Printf("Health checks enabled for %s (endpoint: /health, interval: 30s)\n", appName)
+
+	case "disable":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp health disable <name>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		body := map[string]interface{}{
+			"health_check": nil,
+		}
+		resp, err := apiRequest("PUT", fmt.Sprintf("/api/apps/%s", appName), body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		fmt.Printf("Health checks disabled for %s\n", appName)
+
+	default:
+		// bp health <name> - show health status
+		appName := subcmd
+		resp, err := apiRequest("GET", fmt.Sprintf("/api/apps/%s/health", appName), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(body))
+			os.Exit(1)
+		}
+
+		var hs struct {
+			Status              string `json:"status"`
+			LastCheck           string `json:"last_check"`
+			LastSuccess         string `json:"last_success"`
+			ConsecutiveFailures int    `json:"consecutive_failures"`
+			LastError           string `json:"last_error"`
+			TotalChecks         int    `json:"total_checks"`
+			TotalFailures       int    `json:"total_failures"`
+		}
+		json.NewDecoder(resp.Body).Decode(&hs)
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "Status:\t%s\n", hs.Status)
+		fmt.Fprintf(w, "Last Check:\t%s\n", formatCLITime(hs.LastCheck))
+		fmt.Fprintf(w, "Last Success:\t%s\n", formatCLITime(hs.LastSuccess))
+		fmt.Fprintf(w, "Consecutive Failures:\t%d\n", hs.ConsecutiveFailures)
+		fmt.Fprintf(w, "Total Checks:\t%d\n", hs.TotalChecks)
+		fmt.Fprintf(w, "Total Failures:\t%d\n", hs.TotalFailures)
+		if hs.LastError != "" {
+			fmt.Fprintf(w, "Last Error:\t%s\n", hs.LastError)
+		}
+		w.Flush()
+	}
+}
+
+func cmdWebhook(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, `Usage:
+  bp webhook <name>              Show webhook config
+  bp webhook setup <name> <url>  Enable webhook for git URL
+  bp webhook disable <name>      Disable webhook
+  bp webhook deliveries <name>   Show recent deliveries`)
+		os.Exit(1)
+	}
+
+	subcmd := args[0]
+
+	switch subcmd {
+	case "setup":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp webhook setup <name> <git_url>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		gitURL := args[2]
+		body := map[string]string{"git_url": gitURL}
+		resp, err := apiRequest("POST", fmt.Sprintf("/api/apps/%s/webhook/setup", appName), body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		var result struct {
+			WebhookURL string `json:"webhook_url"`
+			Secret     string `json:"secret"`
+			Branch     string `json:"branch"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "Webhook URL:\t%s\n", result.WebhookURL)
+		fmt.Fprintf(w, "Secret:\t%s\n", result.Secret)
+		fmt.Fprintf(w, "Branch:\t%s\n", result.Branch)
+		w.Flush()
+		fmt.Println("\nAdd this webhook URL and secret to your GitHub repository settings.")
+
+	case "disable":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp webhook disable <name>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		body := map[string]interface{}{
+			"deployment": map[string]interface{}{
+				"git_url":        "",
+				"webhook_secret": "",
+				"auto_deploy":    false,
+			},
+		}
+		resp, err := apiRequest("PUT", fmt.Sprintf("/api/apps/%s", appName), body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		fmt.Printf("Webhook disabled for %s\n", appName)
+
+	case "deliveries":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp webhook deliveries <name>")
+			os.Exit(1)
+		}
+		appName := args[1]
+		resp, err := apiRequest("GET", fmt.Sprintf("/api/apps/%s/webhook/deliveries", appName), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		var result struct {
+			Deliveries []struct {
+				ID        string `json:"id"`
+				Event     string `json:"event"`
+				Branch    string `json:"branch"`
+				Commit    string `json:"commit"`
+				Message   string `json:"message"`
+				Status    string `json:"status"`
+				Error     string `json:"error"`
+				CreatedAt string `json:"created_at"`
+			} `json:"deliveries"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+
+		if len(result.Deliveries) == 0 {
+			fmt.Println("No webhook deliveries yet")
+			return
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "TIME\tEVENT\tBRANCH\tCOMMIT\tSTATUS\tMESSAGE\n")
+		for _, d := range result.Deliveries {
+			msg := d.Message
+			if len(msg) > 40 {
+				msg = msg[:37] + "..."
+			}
+			if d.Error != "" {
+				msg = d.Error
+				if len(msg) > 40 {
+					msg = msg[:37] + "..."
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				formatCLITime(d.CreatedAt), d.Event, d.Branch, d.Commit, d.Status, msg)
+		}
+		w.Flush()
+
+	default:
+		// bp webhook <name> - show webhook config
+		appName := subcmd
+		resp, err := apiRequest("GET", fmt.Sprintf("/api/apps/%s", appName), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		var appData app.App
+		json.NewDecoder(resp.Body).Decode(&appData)
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		if appData.Deployment.WebhookSecret == "" {
+			fmt.Println("Webhook is not configured for this app.")
+			fmt.Println("\nTo enable: bp webhook setup", appName, "<git_url>")
+		} else {
+			fmt.Fprintf(w, "Git URL:\t%s\n", appData.Deployment.GitURL)
+			fmt.Fprintf(w, "Branch:\t%s\n", appData.Deployment.Branch)
+			fmt.Fprintf(w, "Auto Deploy:\t%v\n", appData.Deployment.AutoDeploy)
+			fmt.Fprintf(w, "Secret:\t%s...%s\n", appData.Deployment.WebhookSecret[:4], appData.Deployment.WebhookSecret[len(appData.Deployment.WebhookSecret)-4:])
+			w.Flush()
+		}
+	}
+}
+
+func formatCLITime(ts string) string {
+	if ts == "" || ts == "0001-01-01T00:00:00Z" {
+		return "Never"
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ts
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
 func cmdInfo(args []string) {
 	resp, err := apiRequest("GET", "/api/system/info", nil)
 	if err != nil {
@@ -3460,7 +3914,7 @@ _bp_completions() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="login logout context init deploy apps create start stop restart logs delete templates template models model chat info status prune upgrade completion version help"
+    commands="login logout context init deploy apps create start stop restart logs delete env templates template models model chat info status prune upgrade completion version help"
 
     case "${prev}" in
         bp)
@@ -3473,6 +3927,10 @@ _bp_completions() {
             ;;
         model)
             COMPREPLY=( $(compgen -W "pull run stop rm" -- ${cur}) )
+            return 0
+            ;;
+        env)
+            COMPREPLY=( $(compgen -W "set unset" -- ${cur}) )
             return 0
             ;;
         completion)
@@ -3509,6 +3967,7 @@ _bp() {
         'restart:Restart an app'
         'logs:View app logs'
         'delete:Delete an app'
+        'env:Manage environment variables'
         'templates:List available templates'
         'template:Template commands (deploy, export)'
         'models:List LLM models'
@@ -3523,9 +3982,10 @@ _bp() {
         'help:Show help'
     )
 
-    local -a template_cmds model_cmds completion_shells
+    local -a template_cmds model_cmds env_cmds completion_shells
     template_cmds=('deploy:Deploy a template' 'export:Export app as template')
     model_cmds=('pull:Download a model' 'run:Start LLM server' 'stop:Stop LLM server' 'rm:Delete a model')
+    env_cmds=('set:Set environment variables' 'unset:Remove environment variables')
     completion_shells=('bash:Bash completion' 'zsh:Zsh completion' 'fish:Fish completion')
 
     _arguments -C \
@@ -3543,6 +4003,9 @@ _bp() {
                     ;;
                 model)
                     _describe -t model_cmds 'model command' model_cmds
+                    ;;
+                env)
+                    _describe -t env_cmds 'env command' env_cmds
                     ;;
                 completion)
                     _describe -t completion_shells 'shell' completion_shells
@@ -3573,6 +4036,7 @@ complete -c bp -n "__fish_use_subcommand" -a "stop" -d "Stop an app"
 complete -c bp -n "__fish_use_subcommand" -a "restart" -d "Restart an app"
 complete -c bp -n "__fish_use_subcommand" -a "logs" -d "View app logs"
 complete -c bp -n "__fish_use_subcommand" -a "delete" -d "Delete an app"
+complete -c bp -n "__fish_use_subcommand" -a "env" -d "Manage environment variables"
 complete -c bp -n "__fish_use_subcommand" -a "templates" -d "List templates"
 complete -c bp -n "__fish_use_subcommand" -a "template" -d "Template commands"
 complete -c bp -n "__fish_use_subcommand" -a "models" -d "List LLM models"
@@ -3592,5 +4056,7 @@ complete -c bp -n "__fish_seen_subcommand_from model" -a "pull" -d "Download a m
 complete -c bp -n "__fish_seen_subcommand_from model" -a "run" -d "Start LLM server"
 complete -c bp -n "__fish_seen_subcommand_from model" -a "stop" -d "Stop LLM server"
 complete -c bp -n "__fish_seen_subcommand_from model" -a "rm" -d "Delete a model"
+complete -c bp -n "__fish_seen_subcommand_from env" -a "set" -d "Set environment variables"
+complete -c bp -n "__fish_seen_subcommand_from env" -a "unset" -d "Remove environment variables"
 complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 `
