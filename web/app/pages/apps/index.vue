@@ -122,11 +122,19 @@ const columns: TableColumn<App>[] = [
         </template>
 
         <template #status-cell="{ row }">
-          <UBadge
-            :color="row.original.status === 'running' ? 'success' : row.original.status === 'stopped' ? 'warning' : 'neutral'"
-          >
-            {{ row.original.status }}
-          </UBadge>
+          <div class="flex items-center gap-2">
+            <UBadge
+              :color="row.original.status === 'running' ? 'success' : row.original.status === 'stopped' ? 'warning' : 'neutral'"
+            >
+              {{ row.original.status }}
+            </UBadge>
+            <UIcon
+              v-if="row.original.health"
+              :name="row.original.health.status === 'healthy' ? 'i-heroicons-heart-solid' : row.original.health.status === 'unhealthy' ? 'i-heroicons-heart' : 'i-heroicons-heart'"
+              :class="row.original.health.status === 'healthy' ? 'text-green-500' : row.original.health.status === 'unhealthy' ? 'text-red-500' : 'text-gray-400'"
+              class="w-4 h-4"
+            />
+          </div>
         </template>
 
         <template #domain-cell="{ row }">

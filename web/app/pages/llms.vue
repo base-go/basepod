@@ -107,6 +107,20 @@ function closeModelModal() {
   selectedModel.value = null
 }
 
+// Delete a downloaded model
+async function deleteModel(modelId: string) {
+  if (!confirm('Delete this model? This will free disk space but you will need to re-download it.')) return
+  try {
+    await $api(`/mlx/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' })
+    toast.add({ title: 'Model deleted', color: 'success' })
+    closeModelModal()
+    refresh()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete model', description: err.data?.error, color: 'error' })
+  }
+}
+
 // Pull a model
 async function pullModel(modelId: string) {
   pullingModels.value.add(modelId)
@@ -609,6 +623,15 @@ onUnmounted(() => {
                   Downloading...
                 </UButton>
               </template>
+              <UButton
+                v-if="selectedModel.downloaded && mlxData?.active_model !== selectedModel.id"
+                variant="soft"
+                color="error"
+                icon="i-heroicons-trash"
+                @click="deleteModel(selectedModel.id)"
+              >
+                Delete
+              </UButton>
               <UButton variant="outline" @click="closeModelModal">
                 Close
               </UButton>

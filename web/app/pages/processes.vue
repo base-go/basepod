@@ -2,7 +2,7 @@
 interface ProcessInfo {
   id: string
   name: string
-  type: 'mlx' | 'mlx-download' | 'flux' | 'flux-download' | 'container' | 'system'
+  type: 'mlx' | 'mlx-download' | 'container' | 'system'
   status: string
   pid?: number
   port?: number
@@ -65,8 +65,6 @@ function toggleAutoRefresh() {
 const typeInfo: Record<string, { label: string; icon: string; color: string }> = {
   mlx: { label: 'MLX Server', icon: 'i-heroicons-cpu-chip', color: 'primary' },
   'mlx-download': { label: 'MLX Download', icon: 'i-heroicons-arrow-down-tray', color: 'info' },
-  flux: { label: 'Image Generation', icon: 'i-heroicons-photo', color: 'purple' },
-  'flux-download': { label: 'FLUX Download', icon: 'i-heroicons-arrow-down-tray', color: 'purple' },
   container: { label: 'Container', icon: 'i-heroicons-cube', color: 'success' },
   system: { label: 'System', icon: 'i-heroicons-server', color: 'neutral' },
 }
@@ -247,35 +245,6 @@ const hasProcesses = computed(() => {
         </div>
       </UCard>
 
-      <!-- FLUX Generation -->
-      <UCard v-if="groupedProcesses.flux?.length">
-        <template #header>
-          <div class="flex items-center gap-2">
-            <UIcon :name="typeInfo.flux?.icon" class="text-purple-500" />
-            <h3 class="font-semibold">Image Generation</h3>
-          </div>
-        </template>
-
-        <div class="space-y-3">
-          <div
-            v-for="proc in groupedProcesses.flux"
-            :key="proc.id"
-            class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
-          >
-            <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center gap-2">
-                <p class="font-medium">{{ proc.name }}</p>
-                <UBadge color="secondary" variant="soft" size="xs">
-                  {{ proc.model }}
-                </UBadge>
-              </div>
-              <span class="text-sm text-gray-500">{{ proc.progress }}%</span>
-            </div>
-            <UProgress :value="proc.progress || 0" color="secondary" />
-          </div>
-        </div>
-      </UCard>
-
       <!-- Downloads -->
       <UCard v-if="groupedProcesses.downloads?.length">
         <template #header>
@@ -294,15 +263,15 @@ const hasProcesses = computed(() => {
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2">
                 <p class="font-medium">{{ proc.name }}</p>
-                <UBadge :color="proc.type.includes('flux') ? 'secondary' : 'primary'" variant="soft" size="xs">
-                  {{ proc.type.includes('flux') ? 'FLUX' : 'MLX' }}
+                <UBadge color="primary" variant="soft" size="xs">
+                  MLX
                 </UBadge>
               </div>
               <span class="text-sm text-gray-500">{{ proc.progress }}%</span>
             </div>
             <UProgress
               :value="proc.progress || 0"
-              :color="proc.type.includes('flux') ? 'secondary' : 'primary'"
+              color="primary"
             />
           </div>
         </div>
