@@ -28,24 +28,39 @@ import (
 )
 
 var (
-	version = "1.1.5"
+	version = "1.1.6"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
 )
 
 func main() {
+	// Custom usage output
+	flag.Usage = printUsage
+
 	// Check for subcommands first
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "update":
-			runUpdate()
+		case "start":
+			runStart()
+			return
+		case "stop":
+			runStop()
+			return
+		case "status":
+			runStatus()
 			return
 		case "restart":
 			runRestart()
 			return
+		case "update":
+			runUpdate()
+			return
 		case "version":
 			fmt.Printf("basepod version %s\n", version)
+			return
+		case "help", "--help", "-h":
+			printUsage()
 			return
 		}
 	}
@@ -453,6 +468,179 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 
 	log.Printf("Configured Caddy with %d app routes, %d static sites, and %d aliases", len(routes), staticCount, aliasCount)
 	return nil
+}
+
+// printUsage displays the custom help output with subcommands and flags
+func printUsage() {
+	fmt.Fprintf(os.Stderr, `basepod - Container PaaS platform
+
+Usage:
+  basepod [command]
+  basepod [flags]
+
+Commands:
+  start       Start the basepod service
+  stop        Stop the basepod service
+  restart     Restart the basepod service
+  status      Show service status
+  update      Update to latest version
+  version     Show version
+  help        Show this help
+
+Flags:
+`)
+	flag.PrintDefaults()
+}
+
+// runStart starts the basepod service using the system service manager
+func runStart() {
+	fmt.Println("Starting basepod...")
+
+	if runtime.GOOS == "darwin" {
+		plistPath := "/Library/LaunchDaemons/com.basepod.plist"
+		cmd := exec.Command("launchctl", "load", "-w", plistPath)
+		if err := cmd.Run(); err != nil {
+			// Try bootstrap (newer macOS)
+			cmd = exec.Command("launchctl", "bootstrap", "system", plistPath)
+			if err := cmd.Run(); err != nil {
+				fmt.Println("No launchd service found.")
+				fmt.Println("If running manually, start with: basepod")
+				fmt.Println("If using Homebrew services: brew services start basepod")
+				os.Exit(1)
+			}
+		}
+		fmt.Println("Basepod started successfully.")
+		return
+	}
+
+	// Linux: try system-level systemctl first
+	cmd := exec.Command("systemctl", "start", "basepod")
+	if err := cmd.Run(); err != nil {
+		// Try user-level systemd
+		cmd = exec.Command("systemctl", "--user", "start", "basepod")
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Error: failed to start basepod service: %v\n", err)
+			fmt.Println("You may need to run with sudo: sudo systemctl start basepod")
+			os.Exit(1)
+		}
+	}
+	fmt.Println("Basepod started successfully.")
+}
+
+// runStop stops the basepod service using the system service manager
+func runStop() {
+	fmt.Println("Stopping basepod...")
+
+	if runtime.GOOS == "darwin" {
+		plistPath := "/Library/LaunchDaemons/com.basepod.plist"
+		cmd := exec.Command("launchctl", "unload", plistPath)
+		if err := cmd.Run(); err != nil {
+			// Try bootout (newer macOS)
+			cmd = exec.Command("launchctl", "bootout", "system/com.basepod")
+			if err := cmd.Run(); err != nil {
+				fmt.Println("No launchd service found.")
+				fmt.Println("If running manually, stop the process with Ctrl+C or kill.")
+				fmt.Println("If using Homebrew services: brew services stop basepod")
+				os.Exit(1)
+			}
+		}
+		fmt.Println("Basepod stopped successfully.")
+		return
+	}
+
+	// Linux: try system-level systemctl first
+	cmd := exec.Command("systemctl", "stop", "basepod")
+	if err := cmd.Run(); err != nil {
+		// Try user-level systemd
+		cmd = exec.Command("systemctl", "--user", "stop", "basepod")
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Error: failed to stop basepod service: %v\n", err)
+			fmt.Println("You may need to run with sudo: sudo systemctl stop basepod")
+			os.Exit(1)
+		}
+	}
+	fmt.Println("Basepod stopped successfully.")
+}
+
+// runStatus shows the current status of the basepod service
+func runStatus() {
+	fmt.Printf("Basepod v%s\n\n", version)
+
+	serviceRunning := false
+
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("launchctl", "list", "com.basepod")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			fmt.Println("Service: running (launchd)")
+			// Parse PID from launchctl output
+			for _, line := range strings.Split(string(output), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "\"PID\"") || strings.Contains(line, "PID") {
+					fmt.Printf("  %s\n", line)
+				}
+			}
+			serviceRunning = true
+		} else {
+			fmt.Println("Service: not registered with launchd")
+		}
+	} else {
+		cmd := exec.Command("systemctl", "is-active", "basepod")
+		output, err := cmd.Output()
+		status := strings.TrimSpace(string(output))
+		if err == nil && status == "active" {
+			fmt.Println("Service: running (systemd)")
+			serviceRunning = true
+			// Show more details
+			cmd = exec.Command("systemctl", "show", "basepod", "--property=MainPID,ActiveEnterTimestamp")
+			if details, err := cmd.Output(); err == nil {
+				for _, line := range strings.Split(string(details), "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						fmt.Printf("  %s\n", line)
+					}
+				}
+			}
+		} else {
+			// Try user-level
+			cmd = exec.Command("systemctl", "--user", "is-active", "basepod")
+			output, err = cmd.Output()
+			status = strings.TrimSpace(string(output))
+			if err == nil && status == "active" {
+				fmt.Println("Service: running (systemd user)")
+				serviceRunning = true
+			} else {
+				fmt.Println("Service: not running (systemd)")
+			}
+		}
+	}
+
+	// Health check via HTTP
+	fmt.Println()
+	port := 3000
+	// Try to read port from config
+	if cfg, err := config.Load(); err == nil && cfg.Server.APIPort > 0 {
+		port = cfg.Server.APIPort
+	}
+
+	healthURL := fmt.Sprintf("http://localhost:%d/api/health", port)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(healthURL)
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf("API: responding on port %d\n", port)
+			serviceRunning = true
+		} else {
+			fmt.Printf("API: unhealthy (status %d) on port %d\n", resp.StatusCode, port)
+		}
+	} else {
+		fmt.Printf("API: not responding on port %d\n", port)
+	}
+
+	if !serviceRunning {
+		fmt.Println("\nBasepod is not running. Start with: basepod start")
+	}
 }
 
 // runUpdate checks for and installs the latest version
