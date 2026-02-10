@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed dist/*
+//go:embed all:dist
 var embeddedFiles embed.FS
 
 // configuredPath is set by SetWebUIPath to use disk-based serving
