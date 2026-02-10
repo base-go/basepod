@@ -203,3 +203,70 @@ export interface MLXDownloadProgress {
   eta: number
   message: string
 }
+
+// Cron Jobs
+export interface CronJob {
+  id: string
+  app_id: string
+  name: string
+  schedule: string
+  command: string
+  enabled: boolean
+  last_run?: string
+  last_status?: 'success' | 'failed' | 'running'
+  last_error?: string
+  next_run?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CronExecution {
+  id: string
+  cron_job_id: string
+  started_at: string
+  ended_at?: string
+  status: 'success' | 'failed' | 'running'
+  output: string
+  exit_code?: number
+}
+
+// Activity Log
+export interface ActivityLog {
+  id: string
+  actor_type: 'user' | 'system' | 'webhook'
+  action: string
+  target_type?: string
+  target_id?: string
+  target_name?: string
+  details?: string
+  status?: string
+  ip_address?: string
+  created_at: string
+}
+
+// Notification Hooks
+export interface NotificationConfig {
+  id: string
+  name: string
+  type: 'webhook' | 'slack' | 'discord'
+  enabled: boolean
+  scope: 'global' | 'app'
+  scope_id?: string
+  webhook_url?: string
+  slack_webhook_url?: string
+  discord_webhook_url?: string
+  events: string[]
+  created_at: string
+  updated_at: string
+}
+
+// Deploy Tokens
+export interface DeployToken {
+  id: string
+  name: string
+  prefix: string
+  scopes: string[]
+  last_used_at?: string
+  created_at: string
+  expires_at?: string
+}

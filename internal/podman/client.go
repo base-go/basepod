@@ -47,6 +47,8 @@ type Client interface {
 
 	// Exec operations
 	ExecCreate(ctx context.Context, containerID string, cmd []string) (string, error)
+	ExecCreateDetached(ctx context.Context, containerID string, cmd []string) (string, error)
+	ExecStart(ctx context.Context, execID string) (string, error)
 	ExecResize(ctx context.Context, execID string, height, width int) error
 
 	// Access underlying HTTP client (for raw hijack)
@@ -733,6 +735,73 @@ func (c *client) ExecCreate(ctx context.Context, containerID string, cmd []strin
 	}
 
 	return result.ID, nil
+}
+
+// ExecCreateDetached creates an exec session without TTY (for capturing output)
+func (c *client) ExecCreateDetached(ctx context.Context, containerID string, cmd []string) (string, error) {
+	spec := map[string]interface{}{
+		"Cmd":          cmd,
+		"AttachStdin":  false,
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          false,
+	}
+
+	body, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal exec spec: %w", err)
+	}
+
+	resp, err := c.request(ctx, "POST", fmt.Sprintf("/containers/%s/exec", containerID), strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create exec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to create exec (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode exec response: %w", err)
+	}
+
+	return result.ID, nil
+}
+
+// ExecStart starts an exec session and returns the output
+func (c *client) ExecStart(ctx context.Context, execID string) (string, error) {
+	startSpec := map[string]interface{}{
+		"Detach": false,
+		"Tty":    false,
+	}
+
+	body, err := json.Marshal(startSpec)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal exec start spec: %w", err)
+	}
+
+	resp, err := c.request(ctx, "POST", fmt.Sprintf("/exec/%s/start", execID), strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("failed to start exec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to start exec (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	output, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read exec output: %w", err)
+	}
+
+	return string(output), nil
 }
 
 // ExecResize resizes the TTY of an exec session

@@ -138,6 +138,79 @@ func (s *Storage) migrate() error {
 			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_app_id ON webhook_deliveries(app_id)`,
+		// Cron jobs table
+		`CREATE TABLE IF NOT EXISTS cron_jobs (
+			id TEXT PRIMARY KEY,
+			app_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			schedule TEXT NOT NULL,
+			command TEXT NOT NULL,
+			enabled INTEGER DEFAULT 1,
+			last_run DATETIME,
+			last_status TEXT,
+			last_error TEXT,
+			next_run DATETIME,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cron_app_id ON cron_jobs(app_id)`,
+		// Cron executions table
+		`CREATE TABLE IF NOT EXISTS cron_executions (
+			id TEXT PRIMARY KEY,
+			cron_job_id TEXT NOT NULL,
+			started_at DATETIME NOT NULL,
+			ended_at DATETIME,
+			status TEXT NOT NULL,
+			output TEXT,
+			exit_code INTEGER,
+			FOREIGN KEY (cron_job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_exec_cron_id ON cron_executions(cron_job_id)`,
+		// Activity log table
+		`CREATE TABLE IF NOT EXISTS activity_log (
+			id TEXT PRIMARY KEY,
+			actor_type TEXT NOT NULL,
+			action TEXT NOT NULL,
+			target_type TEXT,
+			target_id TEXT,
+			target_name TEXT,
+			details TEXT,
+			status TEXT,
+			ip_address TEXT,
+			created_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_log(action)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_target ON activity_log(target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC)`,
+		// Notification configs table
+		`CREATE TABLE IF NOT EXISTS notification_configs (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			enabled INTEGER DEFAULT 1,
+			scope TEXT NOT NULL,
+			scope_id TEXT,
+			webhook_url TEXT,
+			slack_webhook_url TEXT,
+			discord_webhook_url TEXT,
+			events TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notif_scope ON notification_configs(scope, scope_id)`,
+		// Deploy tokens table
+		`CREATE TABLE IF NOT EXISTS deploy_tokens (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			prefix TEXT NOT NULL,
+			scopes TEXT NOT NULL,
+			last_used_at DATETIME,
+			created_at DATETIME NOT NULL,
+			expires_at DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_token_hash ON deploy_tokens(token_hash)`,
 	}
 
 	for _, migration := range migrations {
@@ -578,6 +651,414 @@ func (s *Storage) UpdateWebhookDeliveryStatus(id, status, errMsg string) error {
 	_, err := s.db.Exec(`UPDATE webhook_deliveries SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
 	if err != nil {
 		return fmt.Errorf("failed to update webhook delivery: %w", err)
+	}
+	return nil
+}
+
+// --- Cron Jobs ---
+
+// CreateCronJob creates a new cron job
+func (s *Storage) CreateCronJob(j *app.CronJob) error {
+	_, err := s.db.Exec(`
+		INSERT INTO cron_jobs (id, app_id, name, schedule, command, enabled, next_run, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, j.ID, j.AppID, j.Name, j.Schedule, j.Command, j.Enabled, j.NextRun, j.CreatedAt, j.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create cron job: %w", err)
+	}
+	return nil
+}
+
+// GetCronJob retrieves a cron job by ID
+func (s *Storage) GetCronJob(id string) (*app.CronJob, error) {
+	var j app.CronJob
+	var lastRun, nextRun sql.NullTime
+	var lastStatus, lastError sql.NullString
+	err := s.db.QueryRow(`
+		SELECT id, app_id, name, schedule, command, enabled, last_run, last_status, last_error, next_run, created_at, updated_at
+		FROM cron_jobs WHERE id = ?
+	`, id).Scan(&j.ID, &j.AppID, &j.Name, &j.Schedule, &j.Command, &j.Enabled,
+		&lastRun, &lastStatus, &lastError, &nextRun, &j.CreatedAt, &j.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cron job: %w", err)
+	}
+	if lastRun.Valid {
+		j.LastRun = &lastRun.Time
+	}
+	j.LastStatus = lastStatus.String
+	j.LastError = lastError.String
+	if nextRun.Valid {
+		j.NextRun = &nextRun.Time
+	}
+	return &j, nil
+}
+
+// ListCronJobs lists cron jobs for an app
+func (s *Storage) ListCronJobs(appID string) ([]app.CronJob, error) {
+	rows, err := s.db.Query(`
+		SELECT id, app_id, name, schedule, command, enabled, last_run, last_status, last_error, next_run, created_at, updated_at
+		FROM cron_jobs WHERE app_id = ? ORDER BY created_at DESC
+	`, appID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cron jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []app.CronJob
+	for rows.Next() {
+		var j app.CronJob
+		var lastRun, nextRun sql.NullTime
+		var lastStatus, lastError sql.NullString
+		if err := rows.Scan(&j.ID, &j.AppID, &j.Name, &j.Schedule, &j.Command, &j.Enabled,
+			&lastRun, &lastStatus, &lastError, &nextRun, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			continue
+		}
+		if lastRun.Valid {
+			j.LastRun = &lastRun.Time
+		}
+		j.LastStatus = lastStatus.String
+		j.LastError = lastError.String
+		if nextRun.Valid {
+			j.NextRun = &nextRun.Time
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, nil
+}
+
+// UpdateCronJob updates a cron job
+func (s *Storage) UpdateCronJob(j *app.CronJob) error {
+	j.UpdatedAt = time.Now()
+	_, err := s.db.Exec(`
+		UPDATE cron_jobs SET name=?, schedule=?, command=?, enabled=?, last_run=?, last_status=?, last_error=?, next_run=?, updated_at=?
+		WHERE id = ?
+	`, j.Name, j.Schedule, j.Command, j.Enabled, j.LastRun, j.LastStatus, j.LastError, j.NextRun, j.UpdatedAt, j.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update cron job: %w", err)
+	}
+	return nil
+}
+
+// DeleteCronJob deletes a cron job
+func (s *Storage) DeleteCronJob(id string) error {
+	_, err := s.db.Exec("DELETE FROM cron_jobs WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete cron job: %w", err)
+	}
+	return nil
+}
+
+// CreateCronExecution creates a cron execution record
+func (s *Storage) CreateCronExecution(e *app.CronExecution) error {
+	_, err := s.db.Exec(`
+		INSERT INTO cron_executions (id, cron_job_id, started_at, status, output, exit_code)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, e.ID, e.CronJobID, e.StartedAt, e.Status, e.Output, e.ExitCode)
+	if err != nil {
+		return fmt.Errorf("failed to create cron execution: %w", err)
+	}
+	return nil
+}
+
+// UpdateCronExecution updates a cron execution
+func (s *Storage) UpdateCronExecution(e *app.CronExecution) error {
+	_, err := s.db.Exec(`
+		UPDATE cron_executions SET ended_at=?, status=?, output=?, exit_code=? WHERE id = ?
+	`, e.EndedAt, e.Status, e.Output, e.ExitCode, e.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update cron execution: %w", err)
+	}
+	return nil
+}
+
+// ListCronExecutions lists executions for a cron job
+func (s *Storage) ListCronExecutions(cronJobID string, limit int) ([]app.CronExecution, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, cron_job_id, started_at, ended_at, status, output, exit_code
+		FROM cron_executions WHERE cron_job_id = ? ORDER BY started_at DESC LIMIT ?
+	`, cronJobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cron executions: %w", err)
+	}
+	defer rows.Close()
+
+	var execs []app.CronExecution
+	for rows.Next() {
+		var e app.CronExecution
+		var endedAt sql.NullTime
+		var output sql.NullString
+		if err := rows.Scan(&e.ID, &e.CronJobID, &e.StartedAt, &endedAt, &e.Status, &output, &e.ExitCode); err != nil {
+			continue
+		}
+		if endedAt.Valid {
+			e.EndedAt = &endedAt.Time
+		}
+		e.Output = output.String
+		execs = append(execs, e)
+	}
+	return execs, nil
+}
+
+// --- Activity Log ---
+
+// SaveActivityLog saves an activity log entry
+func (s *Storage) SaveActivityLog(l *app.ActivityLog) error {
+	_, err := s.db.Exec(`
+		INSERT INTO activity_log (id, actor_type, action, target_type, target_id, target_name, details, status, ip_address, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, l.ID, l.ActorType, l.Action, l.TargetType, l.TargetID, l.TargetName, l.Details, l.Status, l.IPAddress, l.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to save activity log: %w", err)
+	}
+	return nil
+}
+
+// ListActivityLogs retrieves activity logs with optional filters
+func (s *Storage) ListActivityLogs(targetID string, action string, limit int) ([]app.ActivityLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := "SELECT id, actor_type, action, target_type, target_id, target_name, details, status, ip_address, created_at FROM activity_log WHERE 1=1"
+	var args []interface{}
+
+	if targetID != "" {
+		query += " AND target_id = ?"
+		args = append(args, targetID)
+	}
+	if action != "" {
+		query += " AND action = ?"
+		args = append(args, action)
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list activity logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []app.ActivityLog
+	for rows.Next() {
+		var l app.ActivityLog
+		var targetType, targetID, targetName, details, status, ipAddr sql.NullString
+		if err := rows.Scan(&l.ID, &l.ActorType, &l.Action, &targetType, &targetID, &targetName, &details, &status, &ipAddr, &l.CreatedAt); err != nil {
+			continue
+		}
+		l.TargetType = targetType.String
+		l.TargetID = targetID.String
+		l.TargetName = targetName.String
+		l.Details = details.String
+		l.Status = status.String
+		l.IPAddress = ipAddr.String
+		logs = append(logs, l)
+	}
+	return logs, nil
+}
+
+// --- Notification Configs ---
+
+// CreateNotificationConfig creates a notification config
+func (s *Storage) CreateNotificationConfig(n *app.NotificationConfig) error {
+	eventsJSON, _ := json.Marshal(n.Events)
+	_, err := s.db.Exec(`
+		INSERT INTO notification_configs (id, name, type, enabled, scope, scope_id, webhook_url, slack_webhook_url, discord_webhook_url, events, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, n.ID, n.Name, n.Type, n.Enabled, n.Scope, n.ScopeID, n.WebhookURL, n.SlackWebhookURL, n.DiscordWebhook, string(eventsJSON), n.CreatedAt, n.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create notification config: %w", err)
+	}
+	return nil
+}
+
+// GetNotificationConfig retrieves a notification config by ID
+func (s *Storage) GetNotificationConfig(id string) (*app.NotificationConfig, error) {
+	var n app.NotificationConfig
+	var scopeID, webhookURL, slackURL, discordURL sql.NullString
+	var eventsJSON string
+	err := s.db.QueryRow(`
+		SELECT id, name, type, enabled, scope, scope_id, webhook_url, slack_webhook_url, discord_webhook_url, events, created_at, updated_at
+		FROM notification_configs WHERE id = ?
+	`, id).Scan(&n.ID, &n.Name, &n.Type, &n.Enabled, &n.Scope, &scopeID, &webhookURL, &slackURL, &discordURL, &eventsJSON, &n.CreatedAt, &n.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get notification config: %w", err)
+	}
+	n.ScopeID = scopeID.String
+	n.WebhookURL = webhookURL.String
+	n.SlackWebhookURL = slackURL.String
+	n.DiscordWebhook = discordURL.String
+	json.Unmarshal([]byte(eventsJSON), &n.Events)
+	return &n, nil
+}
+
+// ListNotificationConfigs lists notification configs, optionally filtered by event and app
+func (s *Storage) ListNotificationConfigs(event string, appID string) ([]app.NotificationConfig, error) {
+	query := `SELECT id, name, type, enabled, scope, scope_id, webhook_url, slack_webhook_url, discord_webhook_url, events, created_at, updated_at
+		FROM notification_configs WHERE enabled = 1`
+	var args []interface{}
+
+	if appID != "" {
+		query += " AND (scope = 'global' OR scope_id = ?)"
+		args = append(args, appID)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list notification configs: %w", err)
+	}
+	defer rows.Close()
+
+	var configs []app.NotificationConfig
+	for rows.Next() {
+		var n app.NotificationConfig
+		var scopeID, webhookURL, slackURL, discordURL sql.NullString
+		var eventsJSON string
+		if err := rows.Scan(&n.ID, &n.Name, &n.Type, &n.Enabled, &n.Scope, &scopeID, &webhookURL, &slackURL, &discordURL, &eventsJSON, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			continue
+		}
+		n.ScopeID = scopeID.String
+		n.WebhookURL = webhookURL.String
+		n.SlackWebhookURL = slackURL.String
+		n.DiscordWebhook = discordURL.String
+		json.Unmarshal([]byte(eventsJSON), &n.Events)
+
+		// Filter by event if specified
+		if event != "" {
+			matched := false
+			for _, e := range n.Events {
+				if e == event {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		configs = append(configs, n)
+	}
+	return configs, nil
+}
+
+// UpdateNotificationConfig updates a notification config
+func (s *Storage) UpdateNotificationConfig(n *app.NotificationConfig) error {
+	n.UpdatedAt = time.Now()
+	eventsJSON, _ := json.Marshal(n.Events)
+	_, err := s.db.Exec(`
+		UPDATE notification_configs SET name=?, type=?, enabled=?, scope=?, scope_id=?, webhook_url=?, slack_webhook_url=?, discord_webhook_url=?, events=?, updated_at=?
+		WHERE id = ?
+	`, n.Name, n.Type, n.Enabled, n.Scope, n.ScopeID, n.WebhookURL, n.SlackWebhookURL, n.DiscordWebhook, string(eventsJSON), n.UpdatedAt, n.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update notification config: %w", err)
+	}
+	return nil
+}
+
+// DeleteNotificationConfig deletes a notification config
+func (s *Storage) DeleteNotificationConfig(id string) error {
+	_, err := s.db.Exec("DELETE FROM notification_configs WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete notification config: %w", err)
+	}
+	return nil
+}
+
+// --- Deploy Tokens ---
+
+// CreateDeployToken creates a deploy token
+func (s *Storage) CreateDeployToken(t *app.DeployToken) error {
+	scopesJSON, _ := json.Marshal(t.Scopes)
+	_, err := s.db.Exec(`
+		INSERT INTO deploy_tokens (id, name, token_hash, prefix, scopes, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, t.ID, t.Name, t.TokenHash, t.Prefix, string(scopesJSON), t.CreatedAt, t.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("failed to create deploy token: %w", err)
+	}
+	return nil
+}
+
+// GetDeployTokenByHash retrieves a deploy token by its hash
+func (s *Storage) GetDeployTokenByHash(hash string) (*app.DeployToken, error) {
+	var t app.DeployToken
+	var scopesJSON string
+	var lastUsed, expires sql.NullTime
+	err := s.db.QueryRow(`
+		SELECT id, name, token_hash, prefix, scopes, last_used_at, created_at, expires_at
+		FROM deploy_tokens WHERE token_hash = ?
+	`, hash).Scan(&t.ID, &t.Name, &t.TokenHash, &t.Prefix, &scopesJSON, &lastUsed, &t.CreatedAt, &expires)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deploy token: %w", err)
+	}
+	json.Unmarshal([]byte(scopesJSON), &t.Scopes)
+	if lastUsed.Valid {
+		t.LastUsedAt = &lastUsed.Time
+	}
+	if expires.Valid {
+		t.ExpiresAt = &expires.Time
+	}
+	return &t, nil
+}
+
+// ListDeployTokens lists all deploy tokens
+func (s *Storage) ListDeployTokens() ([]app.DeployToken, error) {
+	rows, err := s.db.Query(`
+		SELECT id, name, token_hash, prefix, scopes, last_used_at, created_at, expires_at
+		FROM deploy_tokens ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list deploy tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []app.DeployToken
+	for rows.Next() {
+		var t app.DeployToken
+		var scopesJSON string
+		var lastUsed, expires sql.NullTime
+		if err := rows.Scan(&t.ID, &t.Name, &t.TokenHash, &t.Prefix, &scopesJSON, &lastUsed, &t.CreatedAt, &expires); err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(scopesJSON), &t.Scopes)
+		if lastUsed.Valid {
+			t.LastUsedAt = &lastUsed.Time
+		}
+		if expires.Valid {
+			t.ExpiresAt = &expires.Time
+		}
+		tokens = append(tokens, t)
+	}
+	return tokens, nil
+}
+
+// UpdateDeployTokenLastUsed updates the last used timestamp
+func (s *Storage) UpdateDeployTokenLastUsed(id string) error {
+	_, err := s.db.Exec("UPDATE deploy_tokens SET last_used_at = ? WHERE id = ?", time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update deploy token: %w", err)
+	}
+	return nil
+}
+
+// DeleteDeployToken deletes a deploy token
+func (s *Storage) DeleteDeployToken(id string) error {
+	_, err := s.db.Exec("DELETE FROM deploy_tokens WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete deploy token: %w", err)
 	}
 	return nil
 }

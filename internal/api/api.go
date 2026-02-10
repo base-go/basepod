@@ -223,6 +223,36 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/apps/{id}/webhook/setup", s.requireAuth(s.handleWebhookSetup))
 	s.router.HandleFunc("GET /api/apps/{id}/webhook/deliveries", s.requireAuth(s.handleWebhookDeliveries))
 
+	// Rollback (auth required)
+	s.router.HandleFunc("POST /api/apps/{id}/rollback", s.requireAuth(s.handleRollback))
+
+	// Cron jobs (auth required)
+	s.router.HandleFunc("GET /api/apps/{id}/cron", s.requireAuth(s.handleListCronJobs))
+	s.router.HandleFunc("POST /api/apps/{id}/cron", s.requireAuth(s.handleCreateCronJob))
+	s.router.HandleFunc("PUT /api/apps/{id}/cron/{jobId}", s.requireAuth(s.handleUpdateCronJob))
+	s.router.HandleFunc("DELETE /api/apps/{id}/cron/{jobId}", s.requireAuth(s.handleDeleteCronJob))
+	s.router.HandleFunc("POST /api/apps/{id}/cron/{jobId}/run", s.requireAuth(s.handleRunCronJob))
+	s.router.HandleFunc("GET /api/apps/{id}/cron/{jobId}/executions", s.requireAuth(s.handleListCronExecutions))
+
+	// Activity log (auth required)
+	s.router.HandleFunc("GET /api/activity", s.requireAuth(s.handleListActivity))
+	s.router.HandleFunc("GET /api/apps/{id}/activity", s.requireAuth(s.handleListAppActivity))
+
+	// Notification hooks (auth required)
+	s.router.HandleFunc("GET /api/notifications", s.requireAuth(s.handleListNotifications))
+	s.router.HandleFunc("POST /api/notifications", s.requireAuth(s.handleCreateNotification))
+	s.router.HandleFunc("PUT /api/notifications/{id}", s.requireAuth(s.handleUpdateNotification))
+	s.router.HandleFunc("DELETE /api/notifications/{id}", s.requireAuth(s.handleDeleteNotification))
+	s.router.HandleFunc("POST /api/notifications/{id}/test", s.requireAuth(s.handleTestNotification))
+
+	// Deploy tokens (auth required)
+	s.router.HandleFunc("GET /api/deploy-tokens", s.requireAuth(s.handleListDeployTokens))
+	s.router.HandleFunc("POST /api/deploy-tokens", s.requireAuth(s.handleCreateDeployToken))
+	s.router.HandleFunc("DELETE /api/deploy-tokens/{id}", s.requireAuth(s.handleDeleteDeployToken))
+
+	// Status badge (no auth)
+	s.router.HandleFunc("GET /api/badge/{id}", s.handleStatusBadge)
+
 	// Source deploy endpoint (auth required)
 	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
 
@@ -996,6 +1026,8 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 
+	s.logActivity("user", "start", "app", a.ID, a.Name, "success", "")
+
 	jsonResponse(w, http.StatusOK, a)
 }
 
@@ -1044,6 +1076,8 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 
 	a.Status = app.StatusStopped
 	s.storage.UpdateApp(a)
+
+	s.logActivity("user", "stop", "app", a.ID, a.Name, "success", "")
 
 	jsonResponse(w, http.StatusOK, a)
 }
@@ -1136,6 +1170,8 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	a.ContainerID = containerID
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
+
+	s.logActivity("user", "restart", "app", a.ID, a.Name, "success", "")
 
 	jsonResponse(w, http.StatusOK, a)
 }
@@ -2946,6 +2982,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	// Add deployment record
 	deployRecord := app.DeploymentRecord{
 		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Image:      imageName,
 		CommitHash: deployConfig.GitCommit,
 		CommitMsg:  deployConfig.GitMessage,
 		Branch:     deployConfig.GitBranch,
@@ -2963,6 +3000,15 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.storage.UpdateApp(a)
+
+	// Log activity
+	s.logActivity("system", "deploy", "app", a.ID, a.Name, "success", "")
+
+	// Send notifications
+	s.sendNotifications("deploy_success", a.ID, a.Name, map[string]string{
+		"commit": deployConfig.GitCommit,
+		"branch": deployConfig.GitBranch,
+	})
 
 	// Configure Caddy if domain is set
 	if a.Domain != "" && s.caddy != nil {
@@ -4725,6 +4771,7 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	// Add deployment record
 	deployRecord := app.DeploymentRecord{
 		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Image:      imageName,
 		CommitHash: commitHash,
 		CommitMsg:  commitMsg,
 		Branch:     branch,
@@ -4760,6 +4807,14 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	os.RemoveAll(buildDir)
 
 	s.storage.UpdateWebhookDeliveryStatus(deliveryID, "success", "")
+
+	// Log activity and notify
+	s.logActivity("webhook", "deploy", "app", a.ID, a.Name, "success", "")
+	s.sendNotifications("deploy_success", a.ID, a.Name, map[string]string{
+		"commit": commitHash,
+		"branch": branch,
+	})
+
 	log.Printf("Webhook deploy %s: completed successfully (commit: %s)", a.Name, commitHash)
 }
 
@@ -4797,4 +4852,763 @@ func (s *Server) handleWebhookDeliveries(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"deliveries": deliveries,
 	})
+}
+
+// --- Helper: resolve app by ID or name ---
+func (s *Server) resolveApp(id string) (*app.App, error) {
+	a, err := s.storage.GetApp(id)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		a, err = s.storage.GetAppByName(id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return a, nil
+}
+
+// --- Activity Logging ---
+
+func (s *Server) logActivity(actorType, action, targetType, targetID, targetName, status, details string) {
+	entry := &app.ActivityLog{
+		ID:         uuid.New().String(),
+		ActorType:  actorType,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		TargetName: targetName,
+		Status:     status,
+		Details:    details,
+		CreatedAt:  time.Now(),
+	}
+	if err := s.storage.SaveActivityLog(entry); err != nil {
+		log.Printf("Failed to save activity log: %v", err)
+	}
+}
+
+// --- Notification Dispatch ---
+
+func (s *Server) sendNotifications(event, appID, appName string, details map[string]string) {
+	configs, err := s.storage.ListNotificationConfigs(event, appID)
+	if err != nil || len(configs) == 0 {
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"event":    event,
+		"app_id":   appID,
+		"app_name": appName,
+		"details":  details,
+		"time":     time.Now().UTC().Format(time.RFC3339),
+	})
+
+	for _, cfg := range configs {
+		go s.dispatchNotification(&cfg, payload)
+	}
+}
+
+func (s *Server) dispatchNotification(cfg *app.NotificationConfig, payload []byte) {
+	var targetURL string
+	switch cfg.Type {
+	case "webhook":
+		targetURL = cfg.WebhookURL
+	case "slack":
+		targetURL = cfg.SlackWebhookURL
+	case "discord":
+		targetURL = cfg.DiscordWebhook
+	default:
+		return
+	}
+	if targetURL == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("Notification dispatch failed for %s: %v", cfg.Name, err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// --- Rollback Handler ---
+
+func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	var req struct {
+		DeploymentID string `json:"deployment_id"` // Optional: specific deployment to rollback to
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	// Find the deployment to rollback to
+	if len(a.Deployments) < 2 && req.DeploymentID == "" {
+		errorResponse(w, http.StatusBadRequest, "No previous deployment to rollback to")
+		return
+	}
+
+	var targetDeploy *app.DeploymentRecord
+	if req.DeploymentID != "" {
+		for i := range a.Deployments {
+			if a.Deployments[i].ID == req.DeploymentID {
+				targetDeploy = &a.Deployments[i]
+				break
+			}
+		}
+		if targetDeploy == nil {
+			errorResponse(w, http.StatusNotFound, "Deployment not found")
+			return
+		}
+	} else {
+		// Rollback to previous deployment (index 1)
+		targetDeploy = &a.Deployments[1]
+	}
+
+	if targetDeploy.Image == "" {
+		errorResponse(w, http.StatusBadRequest, "Previous deployment has no image to rollback to")
+		return
+	}
+
+	ctx := r.Context()
+	containerName := "basepod-" + a.Name
+
+	// Stop and remove current container
+	if a.ContainerID != "" {
+		_ = s.podman.StopContainer(ctx, a.ContainerID, 10)
+		_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+	}
+	_ = s.podman.StopContainer(ctx, containerName, 10)
+	_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+	// Build volume mounts
+	volumeMounts := []string{}
+	for _, v := range a.Volumes {
+		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
+	}
+
+	// Create new container from the rollback image
+	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+		Name:     containerName,
+		Image:    targetDeploy.Image,
+		Env:      a.Env,
+		Networks: []string{"basepod"},
+		Volumes:  volumeMounts,
+		Ports: map[string]string{
+			fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+		},
+		Labels: map[string]string{
+			"basepod.app":    a.Name,
+			"basepod.app.id": a.ID,
+		},
+	})
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create container: "+err.Error())
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	if err := s.podman.StartContainer(ctx, containerID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to start container: "+err.Error())
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
+	// Update app
+	a.ContainerID = containerID
+	a.Image = targetDeploy.Image
+	a.Status = app.StatusRunning
+	a.UpdatedAt = time.Now()
+
+	// Add rollback deployment record
+	rollbackRecord := app.DeploymentRecord{
+		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Image:      targetDeploy.Image,
+		CommitHash: targetDeploy.CommitHash,
+		CommitMsg:  "Rollback to " + targetDeploy.ID,
+		Branch:     targetDeploy.Branch,
+		Status:     "success",
+		DeployedAt: time.Now(),
+	}
+	a.Deployments = append([]app.DeploymentRecord{rollbackRecord}, a.Deployments...)
+	if len(a.Deployments) > 10 {
+		a.Deployments = a.Deployments[:10]
+	}
+
+	s.storage.UpdateApp(a)
+
+	s.logActivity("user", "rollback", "app", a.ID, a.Name, "success", "")
+	s.sendNotifications("deploy_success", a.ID, a.Name, map[string]string{
+		"action": "rollback",
+		"image":  targetDeploy.Image,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"message":    "Rollback successful",
+		"deployment": rollbackRecord,
+	})
+}
+
+// --- Cron Job Handlers ---
+
+func (s *Server) handleListCronJobs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	jobs, err := s.storage.ListCronJobs(a.ID)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []app.CronJob{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"jobs": jobs})
+}
+
+func (s *Server) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	var req struct {
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
+		Command  string `json:"command"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Name == "" || req.Schedule == "" || req.Command == "" {
+		errorResponse(w, http.StatusBadRequest, "name, schedule, and command are required")
+		return
+	}
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	now := time.Now()
+	job := &app.CronJob{
+		ID:        uuid.New().String(),
+		AppID:     a.ID,
+		Name:      req.Name,
+		Schedule:  req.Schedule,
+		Command:   req.Command,
+		Enabled:   enabled,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := s.storage.CreateCronJob(job); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "cron_create", "app", a.ID, a.Name, "success", job.Name)
+	jsonResponse(w, http.StatusCreated, job)
+}
+
+func (s *Server) handleUpdateCronJob(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	jobID := r.PathValue("jobId")
+
+	a, err := s.resolveApp(appID)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	job, err := s.storage.GetCronJob(jobID)
+	if err != nil || job == nil || job.AppID != a.ID {
+		errorResponse(w, http.StatusNotFound, "Cron job not found")
+		return
+	}
+
+	var req struct {
+		Name     *string `json:"name"`
+		Schedule *string `json:"schedule"`
+		Command  *string `json:"command"`
+		Enabled  *bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Name != nil {
+		job.Name = *req.Name
+	}
+	if req.Schedule != nil {
+		job.Schedule = *req.Schedule
+	}
+	if req.Command != nil {
+		job.Command = *req.Command
+	}
+	if req.Enabled != nil {
+		job.Enabled = *req.Enabled
+	}
+
+	if err := s.storage.UpdateCronJob(job); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, job)
+}
+
+func (s *Server) handleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	jobID := r.PathValue("jobId")
+
+	a, err := s.resolveApp(appID)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	job, err := s.storage.GetCronJob(jobID)
+	if err != nil || job == nil || job.AppID != a.ID {
+		errorResponse(w, http.StatusNotFound, "Cron job not found")
+		return
+	}
+
+	if err := s.storage.DeleteCronJob(jobID); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "cron_delete", "app", a.ID, a.Name, "success", job.Name)
+	jsonResponse(w, http.StatusOK, map[string]string{"message": "Cron job deleted"})
+}
+
+func (s *Server) handleRunCronJob(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	jobID := r.PathValue("jobId")
+
+	a, err := s.resolveApp(appID)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	job, err := s.storage.GetCronJob(jobID)
+	if err != nil || job == nil || job.AppID != a.ID {
+		errorResponse(w, http.StatusNotFound, "Cron job not found")
+		return
+	}
+
+	if a.ContainerID == "" {
+		errorResponse(w, http.StatusBadRequest, "App has no running container")
+		return
+	}
+
+	// Execute the command in the container
+	ctx := context.Background()
+	execID, err := s.podman.ExecCreateDetached(ctx, a.ContainerID, []string{"/bin/sh", "-c", job.Command})
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to create exec: "+err.Error())
+		return
+	}
+
+	// Record execution
+	cronExec := &app.CronExecution{
+		ID:        uuid.New().String(),
+		CronJobID: job.ID,
+		StartedAt: time.Now(),
+		Status:    "running",
+	}
+	s.storage.CreateCronExecution(cronExec)
+
+	// Start exec and capture output asynchronously
+	go func() {
+		output, cmdErr := s.podman.ExecStart(ctx, execID)
+		now := time.Now()
+		cronExec.EndedAt = &now
+		cronExec.Output = output
+		if cmdErr != nil {
+			cronExec.Status = "failed"
+			cronExec.ExitCode = 1
+		} else {
+			cronExec.Status = "success"
+			cronExec.ExitCode = 0
+		}
+		s.storage.UpdateCronExecution(cronExec)
+
+		// Update job last run info
+		job.LastRun = &now
+		job.LastStatus = cronExec.Status
+		if cronExec.Status == "failed" {
+			job.LastError = output
+		} else {
+			job.LastError = ""
+		}
+		s.storage.UpdateCronJob(job)
+	}()
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"message":      "Cron job started",
+		"execution_id": cronExec.ID,
+	})
+}
+
+func (s *Server) handleListCronExecutions(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	jobID := r.PathValue("jobId")
+
+	a, err := s.resolveApp(appID)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	job, err := s.storage.GetCronJob(jobID)
+	if err != nil || job == nil || job.AppID != a.ID {
+		errorResponse(w, http.StatusNotFound, "Cron job not found")
+		return
+	}
+
+	execs, err := s.storage.ListCronExecutions(jobID, 50)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if execs == nil {
+		execs = []app.CronExecution{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"executions": execs})
+}
+
+// --- Activity Log Handlers ---
+
+func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
+	action := r.URL.Query().Get("action")
+	targetID := r.URL.Query().Get("target_id")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+
+	logs, err := s.storage.ListActivityLogs(targetID, action, limit)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if logs == nil {
+		logs = []app.ActivityLog{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"activities": logs})
+}
+
+func (s *Server) handleListAppActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil || a == nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	logs, err := s.storage.ListActivityLogs(a.ID, "", 50)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if logs == nil {
+		logs = []app.ActivityLog{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"activities": logs})
+}
+
+// --- Notification Handlers ---
+
+func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request) {
+	configs, err := s.storage.ListNotificationConfigs("", "")
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if configs == nil {
+		configs = []app.NotificationConfig{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"notifications": configs})
+}
+
+func (s *Server) handleCreateNotification(w http.ResponseWriter, r *http.Request) {
+	var req app.NotificationConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Name == "" || req.Type == "" {
+		errorResponse(w, http.StatusBadRequest, "name and type are required")
+		return
+	}
+	if len(req.Events) == 0 {
+		errorResponse(w, http.StatusBadRequest, "at least one event is required")
+		return
+	}
+
+	now := time.Now()
+	req.ID = uuid.New().String()
+	req.Enabled = true
+	if req.Scope == "" {
+		req.Scope = "global"
+	}
+	req.CreatedAt = now
+	req.UpdatedAt = now
+
+	if err := s.storage.CreateNotificationConfig(&req); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "notification_create", "config", req.ID, req.Name, "success", "")
+	jsonResponse(w, http.StatusCreated, req)
+}
+
+func (s *Server) handleUpdateNotification(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	existing, err := s.storage.GetNotificationConfig(id)
+	if err != nil || existing == nil {
+		errorResponse(w, http.StatusNotFound, "Notification config not found")
+		return
+	}
+
+	var req app.NotificationConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Update fields
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.Type != "" {
+		existing.Type = req.Type
+	}
+	if req.WebhookURL != "" {
+		existing.WebhookURL = req.WebhookURL
+	}
+	if req.SlackWebhookURL != "" {
+		existing.SlackWebhookURL = req.SlackWebhookURL
+	}
+	if req.DiscordWebhook != "" {
+		existing.DiscordWebhook = req.DiscordWebhook
+	}
+	if len(req.Events) > 0 {
+		existing.Events = req.Events
+	}
+	existing.Enabled = req.Enabled
+
+	if err := s.storage.UpdateNotificationConfig(existing); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, existing)
+}
+
+func (s *Server) handleDeleteNotification(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	existing, err := s.storage.GetNotificationConfig(id)
+	if err != nil || existing == nil {
+		errorResponse(w, http.StatusNotFound, "Notification config not found")
+		return
+	}
+
+	if err := s.storage.DeleteNotificationConfig(id); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "notification_delete", "config", id, existing.Name, "success", "")
+	jsonResponse(w, http.StatusOK, map[string]string{"message": "Notification config deleted"})
+}
+
+func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cfg, err := s.storage.GetNotificationConfig(id)
+	if err != nil || cfg == nil {
+		errorResponse(w, http.StatusNotFound, "Notification config not found")
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"event":    "test",
+		"app_name": "test-app",
+		"details":  map[string]string{"message": "This is a test notification from Basepod"},
+		"time":     time.Now().UTC().Format(time.RFC3339),
+	})
+
+	s.dispatchNotification(cfg, payload)
+	jsonResponse(w, http.StatusOK, map[string]string{"message": "Test notification sent"})
+}
+
+// --- Deploy Token Handlers ---
+
+func (s *Server) handleListDeployTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := s.storage.ListDeployTokens()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if tokens == nil {
+		tokens = []app.DeployToken{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"tokens": tokens})
+}
+
+func (s *Server) handleCreateDeployToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string   `json:"name"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Name == "" {
+		errorResponse(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(req.Scopes) == 0 {
+		req.Scopes = []string{"deploy:*"}
+	}
+
+	// Generate a random token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+	rawToken := hex.EncodeToString(tokenBytes)
+	prefix := rawToken[:8]
+
+	// Hash the token for storage
+	h := sha256.New()
+	h.Write([]byte(rawToken))
+	tokenHash := hex.EncodeToString(h.Sum(nil))
+
+	now := time.Now()
+	token := &app.DeployToken{
+		ID:        uuid.New().String(),
+		Name:      req.Name,
+		TokenHash: tokenHash,
+		Prefix:    prefix,
+		Scopes:    req.Scopes,
+		CreatedAt: now,
+	}
+
+	if err := s.storage.CreateDeployToken(token); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "token_create", "config", token.ID, req.Name, "success", "")
+
+	// Return the raw token only on creation
+	jsonResponse(w, http.StatusCreated, map[string]interface{}{
+		"id":      token.ID,
+		"name":    token.Name,
+		"token":   rawToken,
+		"prefix":  prefix,
+		"scopes":  token.Scopes,
+		"message": "Save this token - it won't be shown again",
+	})
+}
+
+func (s *Server) handleDeleteDeployToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.storage.DeleteDeployToken(id); err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logActivity("user", "token_delete", "config", id, "", "success", "")
+	jsonResponse(w, http.StatusOK, map[string]string{"message": "Deploy token deleted"})
+}
+
+// --- Status Badge ---
+
+func (s *Server) handleStatusBadge(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, _ := s.resolveApp(id)
+
+	status := "unknown"
+	color := "#9e9e9e"
+	if a != nil {
+		status = string(a.Status)
+		switch a.Status {
+		case app.StatusRunning:
+			color = "#4caf50"
+		case app.StatusFailed:
+			color = "#f44336"
+		case app.StatusBuilding, app.StatusDeploying:
+			color = "#2196f3"
+		case app.StatusStopped:
+			color = "#ff9800"
+		}
+	}
+
+	badge := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20">
+  <rect width="60" height="20" fill="#555" rx="3"/>
+  <rect x="60" width="60" height="20" fill="%s" rx="3"/>
+  <rect width="120" height="20" fill="url(#g)" rx="3"/>
+  <g fill="#fff" font-family="Verdana,sans-serif" font-size="11">
+    <text x="6" y="14">basepod</text>
+    <text x="66" y="14">%s</text>
+  </g>
+</svg>`, color, status)
+
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write([]byte(badge))
 }

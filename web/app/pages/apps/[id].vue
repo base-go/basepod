@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse } from '~/types'
+import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse, CronJob, CronExecution, ActivityLog } from '~/types'
 import Convert from 'ansi-to-html'
 
 const route = useRoute()
@@ -24,12 +24,16 @@ const tabs = computed(() => {
     baseTabs.push(
       { label: 'Health', value: 'health', icon: 'i-heroicons-heart' },
       { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
+      { label: 'Cron', value: 'cron', icon: 'i-heroicons-clock' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
     )
   }
 
-  baseTabs.push({ label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' })
+  baseTabs.push(
+    { label: 'Activity', value: 'activity', icon: 'i-heroicons-list-bullet' },
+    { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' },
+  )
   return baseTabs
 })
 
@@ -612,6 +616,130 @@ async function deleteApp() {
     toast.add({ title: 'Failed to delete', description: getErrorMessage(error), color: 'error' })
   }
 }
+
+// --- Rollback ---
+const rollbackLoading = ref<string | null>(null)
+
+async function rollbackTo(deploymentId: string) {
+  rollbackLoading.value = deploymentId
+  try {
+    await $api(`/apps/${appId}/rollback`, {
+      method: 'POST',
+      body: { deployment_id: deploymentId }
+    })
+    toast.add({ title: 'Rollback successful', color: 'success' })
+    await refresh()
+  } catch (error) {
+    toast.add({ title: 'Rollback failed', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    rollbackLoading.value = null
+  }
+}
+
+// --- Cron Jobs ---
+const cronJobs = ref<CronJob[]>([])
+const cronLoading = ref(false)
+const showCronForm = ref(false)
+const cronForm = ref({ name: '', schedule: '', command: '' })
+const cronExecutions = ref<CronExecution[]>([])
+const selectedCronJob = ref<string | null>(null)
+
+async function fetchCronJobs() {
+  cronLoading.value = true
+  try {
+    const data = await $api<{ jobs: CronJob[] }>(`/apps/${appId}/cron`)
+    cronJobs.value = data.jobs || []
+  } catch { /* ignore */ } finally {
+    cronLoading.value = false
+  }
+}
+
+async function createCronJob() {
+  if (!cronForm.value.name || !cronForm.value.schedule || !cronForm.value.command) return
+  try {
+    await $api(`/apps/${appId}/cron`, {
+      method: 'POST',
+      body: cronForm.value
+    })
+    toast.add({ title: 'Cron job created', color: 'success' })
+    cronForm.value = { name: '', schedule: '', command: '' }
+    showCronForm.value = false
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to create cron job', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function deleteCronJob(jobId: string) {
+  try {
+    await $api(`/apps/${appId}/cron/${jobId}`, { method: 'DELETE' })
+    toast.add({ title: 'Cron job deleted', color: 'success' })
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to delete', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function runCronJob(jobId: string) {
+  try {
+    await $api(`/apps/${appId}/cron/${jobId}/run`, { method: 'POST' })
+    toast.add({ title: 'Cron job triggered', color: 'success' })
+    setTimeout(fetchCronJobs, 2000)
+  } catch (error) {
+    toast.add({ title: 'Failed to run', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function toggleCronJob(job: CronJob) {
+  try {
+    await $api(`/apps/${appId}/cron/${job.id}`, {
+      method: 'PUT',
+      body: { enabled: !job.enabled }
+    })
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to toggle', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function fetchCronExecutions(jobId: string) {
+  selectedCronJob.value = jobId
+  try {
+    const data = await $api<{ executions: CronExecution[] }>(`/apps/${appId}/cron/${jobId}/executions`)
+    cronExecutions.value = data.executions || []
+  } catch { /* ignore */ }
+}
+
+// --- Activity Log ---
+const activities = ref<ActivityLog[]>([])
+const activityLoading = ref(false)
+
+async function fetchActivities() {
+  activityLoading.value = true
+  try {
+    const data = await $api<{ activities: ActivityLog[] }>(`/apps/${appId}/activity`)
+    activities.value = data.activities || []
+  } catch { /* ignore */ } finally {
+    activityLoading.value = false
+  }
+}
+
+function getActivityIcon(action: string): string {
+  if (action.includes('deploy')) return 'i-heroicons-rocket-launch'
+  if (action.includes('rollback')) return 'i-heroicons-arrow-uturn-left'
+  if (action.includes('start')) return 'i-heroicons-play'
+  if (action.includes('stop')) return 'i-heroicons-stop'
+  if (action.includes('restart')) return 'i-heroicons-arrow-path'
+  if (action.includes('cron')) return 'i-heroicons-clock'
+  if (action.includes('config')) return 'i-heroicons-cog-6-tooth'
+  return 'i-heroicons-bolt'
+}
+
+// Tab change watchers for new tabs
+watch(activeTab, (tab) => {
+  if (tab === 'cron') fetchCronJobs()
+  if (tab === 'activity') fetchActivities()
+})
 </script>
 
 <template>
@@ -836,9 +964,22 @@ async function deleteApp() {
               </span>
               <span v-else class="text-gray-500 text-sm">No commit info</span>
             </div>
-            <span class="text-sm text-gray-500">
-              {{ new Date(deployment.deployed_at).toLocaleString() }}
-            </span>
+            <div class="flex items-center gap-2">
+              <UButton
+                v-if="index > 0 && deployment.image"
+                size="xs"
+                variant="soft"
+                color="warning"
+                icon="i-heroicons-arrow-uturn-left"
+                :loading="rollbackLoading === deployment.id"
+                @click="rollbackTo(deployment.id)"
+              >
+                Rollback
+              </UButton>
+              <span class="text-sm text-gray-500">
+                {{ new Date(deployment.deployed_at).toLocaleString() }}
+              </span>
+            </div>
           </div>
           <div v-if="deployment.commit_msg" class="text-sm text-gray-600 dark:text-gray-400 truncate">
             {{ deployment.commit_msg }}
@@ -1092,6 +1233,101 @@ async function deleteApp() {
       <AppsAppTerminal v-else :app-id="appId" />
     </div>
 
+    <!-- Cron Jobs Tab -->
+    <div v-if="activeTab === 'cron'" class="space-y-6">
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Scheduled Tasks</h3>
+            <UButton size="sm" icon="i-heroicons-plus" @click="showCronForm = !showCronForm">
+              Add Cron Job
+            </UButton>
+          </div>
+        </template>
+
+        <!-- Add Cron Job Form -->
+        <div v-if="showCronForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+          <UFormField label="Name">
+            <UInput v-model="cronForm.name" placeholder="Database backup" />
+          </UFormField>
+          <UFormField label="Schedule (cron expression)">
+            <UInput v-model="cronForm.schedule" placeholder="0 2 * * *" />
+            <template #hint>
+              <span class="text-xs">Examples: <code>*/5 * * * *</code> (every 5 min), <code>0 2 * * *</code> (daily 2am), <code>0 * * * *</code> (hourly)</span>
+            </template>
+          </UFormField>
+          <UFormField label="Command">
+            <UInput v-model="cronForm.command" placeholder="pg_dump mydb > /backup/latest.sql" />
+          </UFormField>
+          <div class="flex gap-2">
+            <UButton size="sm" @click="createCronJob">Create</UButton>
+            <UButton size="sm" variant="ghost" @click="showCronForm = false">Cancel</UButton>
+          </div>
+        </div>
+
+        <!-- Cron Jobs List -->
+        <div v-if="cronJobs.length === 0 && !showCronForm" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-clock" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>No scheduled tasks</p>
+          <p class="text-sm mt-1">Add cron jobs to run commands on a schedule</p>
+        </div>
+
+        <div v-else class="space-y-3">
+          <div
+            v-for="job in cronJobs"
+            :key="job.id"
+            class="p-4 rounded-lg border border-gray-200 dark:border-gray-700"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <UBadge :color="job.enabled ? 'success' : 'neutral'" size="xs">
+                  {{ job.enabled ? 'Active' : 'Disabled' }}
+                </UBadge>
+                <span class="font-medium">{{ job.name }}</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <UButton size="xs" variant="ghost" icon="i-heroicons-play" @click="runCronJob(job.id)" title="Run now" />
+                <UButton size="xs" variant="ghost" :icon="job.enabled ? 'i-heroicons-pause' : 'i-heroicons-play'" @click="toggleCronJob(job)" :title="job.enabled ? 'Disable' : 'Enable'" />
+                <UButton size="xs" variant="ghost" icon="i-heroicons-eye" @click="fetchCronExecutions(job.id)" title="View history" />
+                <UButton size="xs" variant="ghost" color="error" icon="i-heroicons-trash" @click="deleteCronJob(job.id)" title="Delete" />
+              </div>
+            </div>
+            <div class="text-sm text-gray-500 font-mono">{{ job.schedule }}</div>
+            <div class="text-sm text-gray-600 dark:text-gray-400 mt-1 font-mono truncate">$ {{ job.command }}</div>
+            <div v-if="job.last_run" class="text-xs text-gray-500 mt-2 flex items-center gap-2">
+              Last run: {{ formatTime(job.last_run) }}
+              <UBadge v-if="job.last_status" :color="job.last_status === 'success' ? 'success' : 'error'" size="xs">{{ job.last_status }}</UBadge>
+            </div>
+          </div>
+        </div>
+      </UCard>
+
+      <!-- Cron Execution History -->
+      <UCard v-if="selectedCronJob">
+        <template #header>
+          <h3 class="font-semibold">Execution History</h3>
+        </template>
+        <div v-if="cronExecutions.length === 0" class="text-center py-4 text-gray-500 text-sm">
+          No executions yet
+        </div>
+        <div v-else class="space-y-2">
+          <div
+            v-for="exec in cronExecutions"
+            :key="exec.id"
+            class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+          >
+            <div class="flex items-center justify-between">
+              <UBadge :color="exec.status === 'success' ? 'success' : exec.status === 'running' ? 'warning' : 'error'" size="xs">
+                {{ exec.status }}
+              </UBadge>
+              <span class="text-xs text-gray-500">{{ new Date(exec.started_at).toLocaleString() }}</span>
+            </div>
+            <pre v-if="exec.output" class="text-xs mt-2 p-2 bg-gray-900 text-gray-300 rounded overflow-x-auto max-h-32">{{ exec.output }}</pre>
+          </div>
+        </div>
+      </UCard>
+    </div>
+
     <!-- Volumes Tab -->
     <UCard v-if="activeTab === 'volumes'">
       <template #header>
@@ -1224,6 +1460,43 @@ async function deleteApp() {
     </UCard>
 
     <!-- Settings Tab -->
+    <!-- Activity Tab -->
+    <UCard v-if="activeTab === 'activity'">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Activity Log</h3>
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="activityLoading" @click="fetchActivities">
+            Refresh
+          </UButton>
+        </div>
+      </template>
+
+      <div v-if="activities.length === 0" class="text-center py-8 text-gray-500">
+        <UIcon name="i-heroicons-list-bullet" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>No activity yet</p>
+      </div>
+
+      <div v-else class="space-y-2">
+        <div
+          v-for="entry in activities"
+          :key="entry.id"
+          class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+        >
+          <UIcon :name="getActivityIcon(entry.action)" class="w-5 h-5 mt-0.5 text-gray-400" />
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <UBadge :color="entry.status === 'success' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral'" size="xs">
+                {{ entry.action }}
+              </UBadge>
+              <span class="text-xs text-gray-500">{{ entry.actor_type }}</span>
+            </div>
+            <div v-if="entry.details" class="text-sm text-gray-500 mt-1 truncate">{{ entry.details }}</div>
+            <div class="text-xs text-gray-400 mt-1">{{ new Date(entry.created_at).toLocaleString() }}</div>
+          </div>
+        </div>
+      </div>
+    </UCard>
+
     <div v-if="activeTab === 'settings'" class="space-y-6">
       <!-- Row 1: General + Container (or just General + Aliases for static) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">

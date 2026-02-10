@@ -41,10 +41,12 @@ type App struct {
 // DeploymentRecord represents a single deployment
 type DeploymentRecord struct {
 	ID         string    `json:"id"`
+	Image      string    `json:"image,omitempty"`       // Docker image used for this deploy
 	CommitHash string    `json:"commit_hash,omitempty"` // Git commit hash (short)
 	CommitMsg  string    `json:"commit_msg,omitempty"`  // Git commit message (first line)
 	Branch     string    `json:"branch,omitempty"`      // Git branch
 	Status     string    `json:"status"`                // success, failed, building
+	BuildLog   string    `json:"build_log,omitempty"`   // Build output log
 	DeployedAt time.Time `json:"deployed_at"`
 }
 
@@ -200,6 +202,75 @@ type DeployRequest struct {
 	Dockerfile   string            `json:"dockerfile,omitempty"`
 	BuildContext string            `json:"build_context,omitempty"`
 	BuildArgs    map[string]string `json:"build_args,omitempty"`
+}
+
+// CronJob represents a scheduled task for an app
+type CronJob struct {
+	ID         string     `json:"id"`
+	AppID      string     `json:"app_id"`
+	Name       string     `json:"name"`
+	Schedule   string     `json:"schedule"`            // cron expression: "0 2 * * *"
+	Command    string     `json:"command"`              // shell command to run in container
+	Enabled    bool       `json:"enabled"`
+	LastRun    *time.Time `json:"last_run,omitempty"`
+	LastStatus string     `json:"last_status,omitempty"` // "success", "failed", "running"
+	LastError  string     `json:"last_error,omitempty"`
+	NextRun    *time.Time `json:"next_run,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+// CronExecution records a single cron job run
+type CronExecution struct {
+	ID        string     `json:"id"`
+	CronJobID string     `json:"cron_job_id"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Status    string     `json:"status"` // "success", "failed", "running"
+	Output    string     `json:"output"`
+	ExitCode  int        `json:"exit_code,omitempty"`
+}
+
+// ActivityLog represents an activity/audit log entry
+type ActivityLog struct {
+	ID         string    `json:"id"`
+	ActorType  string    `json:"actor_type"`            // "user", "system", "webhook"
+	Action     string    `json:"action"`                // "deploy", "restart", "config_update", etc.
+	TargetType string    `json:"target_type,omitempty"` // "app", "system", "config"
+	TargetID   string    `json:"target_id,omitempty"`
+	TargetName string    `json:"target_name,omitempty"`
+	Details    string    `json:"details,omitempty"` // JSON metadata
+	Status     string    `json:"status,omitempty"`  // "success", "failed", "in_progress"
+	IPAddress  string    `json:"ip_address,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// NotificationConfig represents a notification hook configuration
+type NotificationConfig struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Type            string   `json:"type"`    // "webhook", "slack", "discord"
+	Enabled         bool     `json:"enabled"`
+	Scope           string   `json:"scope"`              // "global" or app_id
+	ScopeID         string   `json:"scope_id,omitempty"` // app_id if scope="app"
+	WebhookURL      string   `json:"webhook_url,omitempty"`
+	SlackWebhookURL string   `json:"slack_webhook_url,omitempty"`
+	DiscordWebhook  string   `json:"discord_webhook_url,omitempty"`
+	Events          []string `json:"events"` // ["deploy_success", "deploy_failed", "health_check_fail"]
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// DeployToken represents a scoped API key for CI/CD
+type DeployToken struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	TokenHash  string     `json:"-"`                      // Never expose
+	Prefix     string     `json:"prefix"`                 // First 8 chars for identification
+	Scopes     []string   `json:"scopes"`                 // ["deploy:*", "deploy:app-123", "status"]
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
 
 // AppListResponse represents a list of apps
