@@ -39,6 +39,7 @@ import (
 	"github.com/base-go/basepod/internal/web"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"gopkg.in/yaml.v3"
 )
 
 // assignHostPort generates a unique host port based on app ID
@@ -47,6 +48,13 @@ func assignHostPort(appID string) int {
 	h.Write([]byte(appID))
 	// Port range 10000-60000
 	return 10000 + int(h.Sum32()%50000)
+}
+
+// generateRandomString generates a random alphanumeric string of the given length
+func generateRandomString(length int) string {
+	b := make([]byte, length)
+	rand.Read(b)
+	return hex.EncodeToString(b)[:length]
 }
 
 // Server represents the API server
@@ -132,6 +140,7 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	s.setupRoutes()
 
 	go s.runHealthChecker()
+	go s.runMetricsCollector()
 
 	return s
 }
@@ -223,8 +232,9 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/apps/{id}/webhook/setup", s.requireAuth(s.handleWebhookSetup))
 	s.router.HandleFunc("GET /api/apps/{id}/webhook/deliveries", s.requireAuth(s.handleWebhookDeliveries))
 
-	// Rollback (auth required)
+	// Rollback and deployment logs (auth required)
 	s.router.HandleFunc("POST /api/apps/{id}/rollback", s.requireAuth(s.handleRollback))
+	s.router.HandleFunc("GET /api/apps/{id}/deployments/{deployId}/logs", s.requireAuth(s.handleDeploymentLogs))
 
 	// Cron jobs (auth required)
 	s.router.HandleFunc("GET /api/apps/{id}/cron", s.requireAuth(s.handleListCronJobs))
@@ -249,6 +259,13 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/deploy-tokens", s.requireAuth(s.handleListDeployTokens))
 	s.router.HandleFunc("POST /api/deploy-tokens", s.requireAuth(s.handleCreateDeployToken))
 	s.router.HandleFunc("DELETE /api/deploy-tokens/{id}", s.requireAuth(s.handleDeleteDeployToken))
+
+	// App metrics (auth required)
+	s.router.HandleFunc("GET /api/apps/{id}/metrics", s.requireAuth(s.handleAppMetrics))
+
+	// Database provisioning (auth required)
+	s.router.HandleFunc("POST /api/apps/{id}/link/{dbId}", s.requireAuth(s.handleLinkDatabase))
+	s.router.HandleFunc("GET /api/apps/{id}/connection-info", s.requireAuth(s.handleConnectionInfo))
 
 	// Status badge (no auth)
 	s.router.HandleFunc("GET /api/badge/{id}", s.handleStatusBadge)
@@ -1155,6 +1172,8 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory * 1024 * 1024,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Failed to create container: "+err.Error())
@@ -1265,6 +1284,8 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory * 1024 * 1024,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		a.Status = app.StatusFailed
@@ -2304,6 +2325,8 @@ func (s *Server) deployPlaceholder(a *app.App) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		a.Status = app.StatusFailed
@@ -2418,6 +2441,41 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// No domain for database apps
 		domain = ""
+
+		// Auto-generate secure credentials for database templates
+		autoPassword := generateRandomString(24)
+		autoUser := "basepod"
+		autoDB := name
+
+		switch tmpl.ID {
+		case "postgres", "postgresql":
+			if env["POSTGRES_PASSWORD"] == "" || env["POSTGRES_PASSWORD"] == "changeme" {
+				env["POSTGRES_PASSWORD"] = autoPassword
+			}
+			if env["POSTGRES_USER"] == "" {
+				env["POSTGRES_USER"] = autoUser
+			}
+			if env["POSTGRES_DB"] == "" {
+				env["POSTGRES_DB"] = autoDB
+			}
+		case "mysql", "mariadb":
+			if env["MYSQL_ROOT_PASSWORD"] == "" || env["MYSQL_ROOT_PASSWORD"] == "changeme" {
+				env["MYSQL_ROOT_PASSWORD"] = autoPassword
+			}
+			if env["MYSQL_USER"] == "" {
+				env["MYSQL_USER"] = autoUser
+			}
+			if env["MYSQL_PASSWORD"] == "" {
+				env["MYSQL_PASSWORD"] = autoPassword
+			}
+			if env["MYSQL_DATABASE"] == "" || env["MYSQL_DATABASE"] == "app" {
+				env["MYSQL_DATABASE"] = autoDB
+			}
+		case "redis":
+			if env["REDIS_PASSWORD"] == "" {
+				env["REDIS_PASSWORD"] = autoPassword
+			}
+		}
 	}
 
 	// Convert template volumes to app volumes
@@ -2509,6 +2567,8 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 			"basepod.app.id":   a.ID,
 			"basepod.template": tmpl.ID,
 		},
+		Memory: a.Resources.Memory,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		a.Status = app.StatusFailed
@@ -2655,9 +2715,11 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var buildLog strings.Builder
 	writeLine := func(msg string) {
 		fmt.Fprintf(w, "%s\n", msg)
 		flusher.Flush()
+		buildLog.WriteString(msg + "\n")
 	}
 
 	writeLine("Received source deploy request for: " + deployConfig.Name)
@@ -2797,6 +2859,60 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	writeLine("Source extracted")
 
+	// Read .basepod config file if it exists
+	basepodConfigPath := sourceDir + "/basepod.yaml"
+	if _, err := os.Stat(basepodConfigPath); err == nil {
+		writeLine("Found basepod.yaml config file")
+		configData, err := os.ReadFile(basepodConfigPath)
+		if err == nil {
+			var repoConfig struct {
+				Name       string            `yaml:"name" json:"name"`
+				Type       string            `yaml:"type" json:"type"`
+				Port       int               `yaml:"port" json:"port"`
+				Dockerfile string            `yaml:"dockerfile" json:"dockerfile"`
+				Context    string            `yaml:"context" json:"context"`
+				Public     string            `yaml:"public" json:"public"`
+				Env        map[string]string  `yaml:"env" json:"env"`
+				BuildArgs  map[string]string  `yaml:"build_args" json:"build_args"`
+			}
+			// Try YAML first, then JSON
+			if err := yaml.Unmarshal(configData, &repoConfig); err != nil {
+				_ = json.Unmarshal(configData, &repoConfig)
+			}
+			if repoConfig.Port > 0 && deployConfig.Port == 0 {
+				deployConfig.Port = repoConfig.Port
+				writeLine(fmt.Sprintf("  port: %d", repoConfig.Port))
+			}
+			if repoConfig.Dockerfile != "" && deployConfig.Build.Dockerfile == "" {
+				deployConfig.Build.Dockerfile = repoConfig.Dockerfile
+				writeLine(fmt.Sprintf("  dockerfile: %s", repoConfig.Dockerfile))
+			}
+			if repoConfig.Context != "" && deployConfig.Build.Context == "" {
+				deployConfig.Build.Context = repoConfig.Context
+				writeLine(fmt.Sprintf("  context: %s", repoConfig.Context))
+			}
+			if repoConfig.Public != "" && deployConfig.Public == "" {
+				deployConfig.Public = repoConfig.Public
+				writeLine(fmt.Sprintf("  public: %s", repoConfig.Public))
+			}
+			if repoConfig.Type != "" && deployConfig.Type == "" {
+				deployConfig.Type = repoConfig.Type
+				writeLine(fmt.Sprintf("  type: %s", repoConfig.Type))
+			}
+			// Merge env vars (repo config as defaults, CLI overrides)
+			if len(repoConfig.Env) > 0 {
+				if deployConfig.Env == nil {
+					deployConfig.Env = make(map[string]string)
+				}
+				for k, v := range repoConfig.Env {
+					if _, exists := deployConfig.Env[k]; !exists {
+						deployConfig.Env[k] = v
+					}
+				}
+			}
+		}
+	}
+
 	// Handle static site deployment
 	if deployConfig.Type == "static" || a.Type == app.AppTypeStatic {
 		writeLine("Deploying static site...")
@@ -2845,6 +2961,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			CommitMsg:  deployConfig.GitMessage,
 			Branch:     deployConfig.GitBranch,
 			Status:     "success",
+			BuildLog:   buildLog.String(),
 			DeployedAt: time.Now(),
 		}
 		a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
@@ -2880,11 +2997,19 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	dockerfilePath := sourceDir + "/" + dockerfile
 
-	// Check if Dockerfile exists
+	// Check if Dockerfile exists, auto-generate if not
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
-		writeLine("ERROR: Dockerfile not found at " + dockerfilePath)
-		writeLine("Please create a Dockerfile in your project")
-		return
+		writeLine("No Dockerfile found, auto-detecting stack...")
+		generated := generateDockerfile(sourceDir, deployConfig.Port)
+		if generated == "" {
+			writeLine("ERROR: Could not detect project type. Please create a Dockerfile.")
+			return
+		}
+		if err := os.WriteFile(dockerfilePath, []byte(generated), 0644); err != nil {
+			writeLine("ERROR: Failed to write generated Dockerfile: " + err.Error())
+			return
+		}
+		writeLine("Auto-generated Dockerfile for detected stack")
 	}
 
 	// Build image using Podman
@@ -2956,6 +3081,8 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory * 1024 * 1024, // MB to bytes
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		writeLine("ERROR: Failed to create container: " + err.Error())
@@ -2987,6 +3114,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		CommitMsg:  deployConfig.GitMessage,
 		Branch:     deployConfig.GitBranch,
 		Status:     "success",
+		BuildLog:   buildLog.String(),
 		DeployedAt: time.Now(),
 	}
 	a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
@@ -3038,6 +3166,104 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	if a.Domain != "" {
 		writeLine("URL: https://" + a.Domain)
 	}
+}
+
+// generateDockerfile auto-generates a Dockerfile based on detected project stack
+func generateDockerfile(sourceDir string, port int) string {
+	if port == 0 {
+		port = 8080
+	}
+
+	// Node.js (package.json)
+	if _, err := os.Stat(sourceDir + "/package.json"); err == nil {
+		// Check for package-lock.json vs yarn.lock
+		installCmd := "npm install"
+		lockCopy := "COPY package*.json ./"
+		if _, err := os.Stat(sourceDir + "/yarn.lock"); err == nil {
+			installCmd = "yarn install --frozen-lockfile"
+			lockCopy = "COPY package.json yarn.lock ./"
+		} else if _, err := os.Stat(sourceDir + "/pnpm-lock.yaml"); err == nil {
+			installCmd = "corepack enable && pnpm install --frozen-lockfile"
+			lockCopy = "COPY package.json pnpm-lock.yaml ./"
+		}
+		return fmt.Sprintf(`FROM node:20-alpine
+WORKDIR /app
+%s
+RUN %s
+COPY . .
+RUN npm run build 2>/dev/null || true
+EXPOSE %d
+CMD ["npm", "start"]
+`, lockCopy, installCmd, port)
+	}
+
+	// Go (go.mod)
+	if _, err := os.Stat(sourceDir + "/go.mod"); err == nil {
+		return fmt.Sprintf(`FROM golang:1.23-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /app/server .
+
+FROM alpine:3.19
+WORKDIR /app
+COPY --from=builder /app/server .
+EXPOSE %d
+CMD ["./server"]
+`, port)
+	}
+
+	// Python (requirements.txt or pyproject.toml)
+	if _, err := os.Stat(sourceDir + "/requirements.txt"); err == nil {
+		return fmt.Sprintf(`FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE %d
+CMD ["python", "app.py"]
+`, port)
+	}
+	if _, err := os.Stat(sourceDir + "/pyproject.toml"); err == nil {
+		return fmt.Sprintf(`FROM python:3.12-slim
+WORKDIR /app
+COPY pyproject.toml .
+RUN pip install --no-cache-dir .
+COPY . .
+EXPOSE %d
+CMD ["python", "-m", "app"]
+`, port)
+	}
+
+	// Ruby (Gemfile)
+	if _, err := os.Stat(sourceDir + "/Gemfile"); err == nil {
+		return fmt.Sprintf(`FROM ruby:3.3-slim
+WORKDIR /app
+COPY Gemfile Gemfile.lock ./
+RUN bundle install
+COPY . .
+EXPOSE %d
+CMD ["ruby", "app.rb"]
+`, port)
+	}
+
+	// Rust (Cargo.toml)
+	if _, err := os.Stat(sourceDir + "/Cargo.toml"); err == nil {
+		return fmt.Sprintf(`FROM rust:1.77-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/target/release/* /app/
+EXPOSE %d
+CMD ["./app"]
+`, port)
+	}
+
+	return ""
 }
 
 // execCommand executes a command and returns output
@@ -3377,6 +3603,8 @@ func (s *Server) restartAppForHealth(a *app.App) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		log.Printf("Health check restart failed for %s: %v", a.Name, err)
@@ -4638,6 +4866,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 // deployFromGit clones a git repo and builds+deploys the app
 func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, deliveryID string) {
 	ctx := context.Background()
+	var buildLog strings.Builder
 
 	log.Printf("Webhook deploy %s: branch=%s commit=%s msg=%s", a.Name, branch, commitHash, commitMsg)
 
@@ -4659,11 +4888,31 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 
 	cloneCmd := fmt.Sprintf("git clone --depth 1 --branch %s %s %s", branch, gitURL, sourceDir)
 	output, err := execCommand(ctx, "sh", "-c", cloneCmd)
+	buildLog.WriteString("$ " + cloneCmd + "\n" + output + "\n")
 	if err != nil {
 		errMsg := fmt.Sprintf("Git clone failed: %v\n%s", err, output)
 		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
 		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
 		return
+	}
+
+	// Read .basepod config if present
+	basepodCfgPath := sourceDir + "/basepod.yaml"
+	if cfgData, err := os.ReadFile(basepodCfgPath); err == nil {
+		var repoCfg struct {
+			Dockerfile string `yaml:"dockerfile" json:"dockerfile"`
+			Port       int    `yaml:"port" json:"port"`
+		}
+		if err := yaml.Unmarshal(cfgData, &repoCfg); err != nil {
+			_ = json.Unmarshal(cfgData, &repoCfg)
+		}
+		if repoCfg.Dockerfile != "" && a.Deployment.Dockerfile == "" {
+			a.Deployment.Dockerfile = repoCfg.Dockerfile
+		}
+		if repoCfg.Port > 0 && a.Ports.ContainerPort == 0 {
+			a.Ports.ContainerPort = repoCfg.Port
+		}
+		log.Printf("Webhook deploy %s: found basepod.yaml config", a.Name)
 	}
 
 	// Check for Dockerfile
@@ -4673,10 +4922,24 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	}
 	dockerfilePath := sourceDir + "/" + dockerfile
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
-		errMsg := "Dockerfile not found at " + dockerfilePath
-		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
-		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
-		return
+		log.Printf("Webhook deploy %s: no Dockerfile found, auto-detecting stack", a.Name)
+		port := a.Ports.ContainerPort
+		if port == 0 {
+			port = 8080
+		}
+		generated := generateDockerfile(sourceDir, port)
+		if generated == "" {
+			errMsg := "No Dockerfile found and could not auto-detect project type"
+			log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+			s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+			return
+		}
+		if err := os.WriteFile(dockerfilePath, []byte(generated), 0644); err != nil {
+			errMsg := fmt.Sprintf("Failed to write generated Dockerfile: %v", err)
+			s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+			return
+		}
+		buildLog.WriteString("Auto-generated Dockerfile for detected stack\n")
 	}
 
 	// Build image
@@ -4698,6 +4961,7 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 
 	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -f %s .", sourceDir, podmanPath, imageName, dockerfile)
 	output, err = execCommand(ctx, "sh", "-c", buildCmd)
+	buildLog.WriteString("$ " + buildCmd + "\n" + output + "\n")
 	if err != nil {
 		errMsg := fmt.Sprintf("Build failed: %v\n%s", err, output)
 		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
@@ -4742,6 +5006,8 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory * 1024 * 1024,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to create container: %v", err)
@@ -4776,6 +5042,7 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 		CommitMsg:  commitMsg,
 		Branch:     branch,
 		Status:     "success",
+		BuildLog:   buildLog.String(),
 		DeployedAt: time.Now(),
 	}
 	a.Deployments = append([]app.DeploymentRecord{deployRecord}, a.Deployments...)
@@ -4942,6 +5209,33 @@ func (s *Server) dispatchNotification(cfg *app.NotificationConfig, payload []byt
 	resp.Body.Close()
 }
 
+// --- Deployment Logs Handler ---
+
+func (s *Server) handleDeploymentLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	deployID := r.PathValue("deployId")
+
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	for _, d := range a.Deployments {
+		if d.ID == deployID {
+			jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"deployment_id": d.ID,
+				"status":        d.Status,
+				"build_log":     d.BuildLog,
+				"deployed_at":   d.DeployedAt,
+			})
+			return
+		}
+	}
+
+	errorResponse(w, http.StatusNotFound, "Deployment not found")
+}
+
 // --- Rollback Handler ---
 
 func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
@@ -5021,6 +5315,8 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			"basepod.app":    a.Name,
 			"basepod.app.id": a.ID,
 		},
+		Memory: a.Resources.Memory,
+		CPUs:   a.Resources.CPUs,
 	})
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "Failed to create container: "+err.Error())
@@ -5611,4 +5907,232 @@ func (s *Server) handleStatusBadge(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(badge))
+}
+
+// --- Metrics ---
+
+func (s *Server) handleAppMetrics(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	// Parse period: 1h, 24h, 7d (default 1h)
+	period := r.URL.Query().Get("period")
+	var since time.Time
+	switch period {
+	case "24h":
+		since = time.Now().Add(-24 * time.Hour)
+	case "7d":
+		since = time.Now().Add(-7 * 24 * time.Hour)
+	default:
+		since = time.Now().Add(-1 * time.Hour)
+	}
+
+	metrics, err := s.storage.ListAppMetrics(a.ID, since, 500)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to fetch metrics")
+		return
+	}
+
+	// Also get current live stats if container is running
+	var current *podman.ContainerStatsResult
+	if a.ContainerID != "" && a.Status == app.StatusRunning {
+		current, _ = s.podman.ContainerStats(r.Context(), a.ContainerID)
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"app_id":  a.ID,
+		"period":  period,
+		"metrics": metrics,
+		"current": current,
+	})
+}
+
+// runMetricsCollector periodically collects container stats for all running apps
+func (s *Server) runMetricsCollector() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	// Clean old metrics on startup
+	s.storage.CleanOldMetrics(time.Now().Add(-7 * 24 * time.Hour))
+
+	for {
+		select {
+		case <-ticker.C:
+			s.collectMetrics()
+		case <-s.healthStop:
+			return
+		}
+	}
+}
+
+func (s *Server) collectMetrics() {
+	apps, _ := s.storage.ListApps()
+	ctx := context.Background()
+
+	for _, a := range apps {
+		if a.ContainerID == "" || a.Status != app.StatusRunning {
+			continue
+		}
+
+		stats, err := s.podman.ContainerStats(ctx, a.ContainerID)
+		if err != nil {
+			continue
+		}
+
+		metric := &app.AppMetric{
+			AppID:      a.ID,
+			CPUPercent: stats.CPUPercent,
+			MemUsage:   stats.MemUsage,
+			MemLimit:   stats.MemLimit,
+			NetInput:   stats.NetInput,
+			NetOutput:  stats.NetOutput,
+			RecordedAt: time.Now(),
+		}
+		s.storage.SaveAppMetric(metric)
+	}
+
+	// Clean metrics older than 7 days periodically
+	s.storage.CleanOldMetrics(time.Now().Add(-7 * 24 * time.Hour))
+}
+
+// --- Database Provisioning ---
+
+// handleLinkDatabase links a database app to another app by injecting connection env vars
+func (s *Server) handleLinkDatabase(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	dbID := r.PathValue("dbId")
+
+	a, err := s.resolveApp(appID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	dbApp, err := s.resolveApp(dbID)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "Database app not found")
+		return
+	}
+
+	// Generate connection string based on database type
+	connStr := ""
+	dbHost := fmt.Sprintf("basepod-%s", dbApp.Name)
+	dbPort := dbApp.Ports.ContainerPort
+
+	if dbApp.Env != nil {
+		switch {
+		case dbApp.Env["POSTGRES_PASSWORD"] != "":
+			user := dbApp.Env["POSTGRES_USER"]
+			if user == "" {
+				user = "postgres"
+			}
+			db := dbApp.Env["POSTGRES_DB"]
+			if db == "" {
+				db = user
+			}
+			connStr = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=disable", user, dbApp.Env["POSTGRES_PASSWORD"], dbHost, dbPort, db)
+		case dbApp.Env["MYSQL_ROOT_PASSWORD"] != "":
+			user := dbApp.Env["MYSQL_USER"]
+			pass := dbApp.Env["MYSQL_PASSWORD"]
+			if user == "" {
+				user = "root"
+				pass = dbApp.Env["MYSQL_ROOT_PASSWORD"]
+			}
+			db := dbApp.Env["MYSQL_DATABASE"]
+			if db == "" {
+				db = user
+			}
+			connStr = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", user, pass, dbHost, dbPort, db)
+		case dbApp.Env["REDIS_PASSWORD"] != "":
+			connStr = fmt.Sprintf("redis://:%s@%s:%d", dbApp.Env["REDIS_PASSWORD"], dbHost, dbPort)
+		default:
+			connStr = fmt.Sprintf("%s:%d", dbHost, dbPort)
+		}
+	}
+
+	if connStr == "" {
+		errorResponse(w, http.StatusBadRequest, "Could not generate connection string for this database")
+		return
+	}
+
+	// Inject DATABASE_URL into the app's env
+	if a.Env == nil {
+		a.Env = make(map[string]string)
+	}
+	a.Env["DATABASE_URL"] = connStr
+	a.UpdatedAt = time.Now()
+
+	if err := s.storage.UpdateApp(a); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to update app: "+err.Error())
+		return
+	}
+
+	s.logActivity("user", "link_database", "app", a.ID, a.Name, "success", fmt.Sprintf("linked to %s", dbApp.Name))
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"database_url": connStr,
+		"linked_db":    dbApp.Name,
+		"message":      "DATABASE_URL has been set. Restart the app for changes to take effect.",
+	})
+}
+
+// handleConnectionInfo returns connection details for a database app
+func (s *Server) handleConnectionInfo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := s.resolveApp(id)
+	if err != nil {
+		errorResponse(w, http.StatusNotFound, "App not found")
+		return
+	}
+
+	info := map[string]interface{}{
+		"host":           fmt.Sprintf("basepod-%s", a.Name),
+		"port":           a.Ports.ContainerPort,
+		"internal_host":  fmt.Sprintf("basepod-%s:%d", a.Name, a.Ports.ContainerPort),
+	}
+
+	if a.Env != nil {
+		switch {
+		case a.Env["POSTGRES_PASSWORD"] != "":
+			user := a.Env["POSTGRES_USER"]
+			if user == "" {
+				user = "postgres"
+			}
+			db := a.Env["POSTGRES_DB"]
+			if db == "" {
+				db = user
+			}
+			info["type"] = "postgresql"
+			info["user"] = user
+			info["password"] = a.Env["POSTGRES_PASSWORD"]
+			info["database"] = db
+			info["connection_url"] = fmt.Sprintf("postgresql://%s:%s@basepod-%s:%d/%s?sslmode=disable", user, a.Env["POSTGRES_PASSWORD"], a.Name, a.Ports.ContainerPort, db)
+		case a.Env["MYSQL_ROOT_PASSWORD"] != "":
+			user := a.Env["MYSQL_USER"]
+			pass := a.Env["MYSQL_PASSWORD"]
+			if user == "" {
+				user = "root"
+				pass = a.Env["MYSQL_ROOT_PASSWORD"]
+			}
+			db := a.Env["MYSQL_DATABASE"]
+			if db == "" {
+				db = user
+			}
+			info["type"] = "mysql"
+			info["user"] = user
+			info["password"] = pass
+			info["database"] = db
+			info["connection_url"] = fmt.Sprintf("mysql://%s:%s@basepod-%s:%d/%s", user, pass, a.Name, a.Ports.ContainerPort, db)
+		case a.Env["REDIS_PASSWORD"] != "":
+			info["type"] = "redis"
+			info["password"] = a.Env["REDIS_PASSWORD"]
+			info["connection_url"] = fmt.Sprintf("redis://:%s@basepod-%s:%d", a.Env["REDIS_PASSWORD"], a.Name, a.Ports.ContainerPort)
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, info)
 }

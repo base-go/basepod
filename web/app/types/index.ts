@@ -270,3 +270,28 @@ export interface DeployToken {
   created_at: string
   expires_at?: string
 }
+
+// App Metrics
+export interface AppMetric {
+  id: number
+  app_id: string
+  cpu_percent: number
+  mem_usage: number
+  mem_limit: number
+  net_input: number
+  net_output: number
+  recorded_at: string
+}
+
+export interface AppMetricsResponse {
+  app_id: string
+  period: string
+  metrics: AppMetric[]
+  current?: {
+    cpu_percent: number
+    mem_usage: number
+    mem_limit: number
+    net_input: number
+    net_output: number
+  }
+}

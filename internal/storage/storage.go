@@ -211,6 +211,19 @@ func (s *Storage) migrate() error {
 			expires_at DATETIME
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_token_hash ON deploy_tokens(token_hash)`,
+		// App metrics table
+		`CREATE TABLE IF NOT EXISTS app_metrics (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			app_id TEXT NOT NULL,
+			cpu_percent REAL NOT NULL DEFAULT 0,
+			mem_usage INTEGER NOT NULL DEFAULT 0,
+			mem_limit INTEGER NOT NULL DEFAULT 0,
+			net_input INTEGER NOT NULL DEFAULT 0,
+			net_output INTEGER NOT NULL DEFAULT 0,
+			recorded_at DATETIME NOT NULL,
+			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_metrics_app_time ON app_metrics(app_id, recorded_at)`,
 	}
 
 	for _, migration := range migrations {
@@ -1061,6 +1074,47 @@ func (s *Storage) DeleteDeployToken(id string) error {
 		return fmt.Errorf("failed to delete deploy token: %w", err)
 	}
 	return nil
+}
+
+// --- App Metrics ---
+
+// SaveAppMetric stores a metric data point
+func (s *Storage) SaveAppMetric(m *app.AppMetric) error {
+	_, err := s.db.Exec(
+		`INSERT INTO app_metrics (app_id, cpu_percent, mem_usage, mem_limit, net_input, net_output, recorded_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.AppID, m.CPUPercent, m.MemUsage, m.MemLimit, m.NetInput, m.NetOutput, m.RecordedAt,
+	)
+	return err
+}
+
+// ListAppMetrics retrieves metrics for an app within a time range
+func (s *Storage) ListAppMetrics(appID string, since time.Time, limit int) ([]app.AppMetric, error) {
+	rows, err := s.db.Query(
+		`SELECT id, app_id, cpu_percent, mem_usage, mem_limit, net_input, net_output, recorded_at
+		 FROM app_metrics WHERE app_id = ? AND recorded_at > ? ORDER BY recorded_at ASC LIMIT ?`,
+		appID, since, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var metrics []app.AppMetric
+	for rows.Next() {
+		var m app.AppMetric
+		if err := rows.Scan(&m.ID, &m.AppID, &m.CPUPercent, &m.MemUsage, &m.MemLimit, &m.NetInput, &m.NetOutput, &m.RecordedAt); err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, m)
+	}
+	return metrics, nil
+}
+
+// CleanOldMetrics removes metrics older than the specified duration
+func (s *Storage) CleanOldMetrics(before time.Time) error {
+	_, err := s.db.Exec("DELETE FROM app_metrics WHERE recorded_at < ?", before)
+	return err
 }
 
 // ListWebhookDeliveries retrieves recent webhook deliveries for an app

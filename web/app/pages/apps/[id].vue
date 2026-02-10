@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse, CronJob, CronExecution, ActivityLog } from '~/types'
+import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse, CronJob, CronExecution, ActivityLog, AppMetric, AppMetricsResponse } from '~/types'
 import Convert from 'ansi-to-html'
 
 const route = useRoute()
@@ -23,6 +23,7 @@ const tabs = computed(() => {
   if (app.value?.type !== 'static') {
     baseTabs.push(
       { label: 'Health', value: 'health', icon: 'i-heroicons-heart' },
+      { label: 'Metrics', value: 'metrics', icon: 'i-heroicons-chart-bar' },
       { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
       { label: 'Cron', value: 'cron', icon: 'i-heroicons-clock' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
@@ -735,10 +736,65 @@ function getActivityIcon(action: string): string {
   return 'i-heroicons-bolt'
 }
 
+// Metrics
+const metricsData = ref<AppMetric[]>([])
+const metricsCurrent = ref<AppMetricsResponse['current'] | null>(null)
+const metricsLoading = ref(false)
+const metricsPeriod = ref('1h')
+
+async function fetchMetrics() {
+  metricsLoading.value = true
+  try {
+    const data = await $api<AppMetricsResponse>(`/apps/${appId}/metrics?period=${metricsPeriod.value}`)
+    metricsData.value = data.metrics || []
+    metricsCurrent.value = data.current || null
+  } catch { /* ignore */ } finally {
+    metricsLoading.value = false
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+// Build log viewer
+const buildLogContent = ref('')
+const buildLogLoading = ref(false)
+const showBuildLog = ref(false)
+
+async function viewBuildLog(deploymentId: string) {
+  buildLogLoading.value = true
+  showBuildLog.value = true
+  try {
+    const data = await $api<{ build_log: string }>(`/apps/${appId}/deployments/${deploymentId}/logs`)
+    buildLogContent.value = data.build_log || 'No build log available'
+  } catch {
+    buildLogContent.value = 'Failed to fetch build log'
+  } finally {
+    buildLogLoading.value = false
+  }
+}
+
+// Connection info for database apps
+const connectionInfo = ref<Record<string, any> | null>(null)
+
+async function fetchConnectionInfo() {
+  try {
+    const data = await $api<Record<string, any>>(`/apps/${appId}/connection-info`)
+    connectionInfo.value = data
+  } catch { /* ignore */ }
+}
+
 // Tab change watchers for new tabs
 watch(activeTab, (tab) => {
   if (tab === 'cron') fetchCronJobs()
   if (tab === 'activity') fetchActivities()
+  if (tab === 'metrics') fetchMetrics()
+  if (tab === 'settings') fetchConnectionInfo()
 })
 </script>
 
@@ -965,6 +1021,14 @@ watch(activeTab, (tab) => {
               <span v-else class="text-gray-500 text-sm">No commit info</span>
             </div>
             <div class="flex items-center gap-2">
+              <UButton
+                size="xs"
+                variant="ghost"
+                icon="i-heroicons-document-text"
+                @click="viewBuildLog(deployment.id)"
+              >
+                Logs
+              </UButton>
               <UButton
                 v-if="index > 0 && deployment.image"
                 size="xs"
@@ -1233,6 +1297,78 @@ watch(activeTab, (tab) => {
       <AppsAppTerminal v-else :app-id="appId" />
     </div>
 
+    <!-- Metrics Tab -->
+    <div v-if="activeTab === 'metrics'" class="space-y-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-semibold">Resource Usage</h3>
+        <div class="flex gap-2">
+          <UButton v-for="p in ['1h', '24h', '7d']" :key="p" :variant="metricsPeriod === p ? 'solid' : 'outline'" size="xs" @click="metricsPeriod = p; fetchMetrics()">{{ p }}</UButton>
+          <UButton icon="i-heroicons-arrow-path" size="xs" variant="ghost" @click="fetchMetrics()" :loading="metricsLoading" />
+        </div>
+      </div>
+
+      <!-- Current Stats -->
+      <div v-if="metricsCurrent" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">CPU</div>
+            <div class="text-2xl font-bold">{{ metricsCurrent.cpu_percent.toFixed(1) }}%</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Memory</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.mem_usage) }}</div>
+            <div class="text-xs text-gray-400" v-if="metricsCurrent.mem_limit">/ {{ formatBytes(metricsCurrent.mem_limit) }}</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Net In</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.net_input) }}</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Net Out</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.net_output) }}</div>
+          </div>
+        </UCard>
+      </div>
+
+      <!-- Metrics History -->
+      <UCard>
+        <template #header>
+          <h4 class="font-medium">History ({{ metricsData.length }} data points)</h4>
+        </template>
+        <div v-if="metricsData.length === 0" class="text-center text-gray-500 py-8">
+          No metrics data yet. Stats are collected every 30 seconds.
+        </div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-gray-500">
+                <th class="pb-2">Time</th>
+                <th class="pb-2">CPU %</th>
+                <th class="pb-2">Memory</th>
+                <th class="pb-2">Net In</th>
+                <th class="pb-2">Net Out</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in metricsData.slice(-20)" :key="m.id" class="border-t border-gray-800">
+                <td class="py-1">{{ new Date(m.recorded_at).toLocaleTimeString() }}</td>
+                <td class="py-1">{{ m.cpu_percent.toFixed(1) }}%</td>
+                <td class="py-1">{{ formatBytes(m.mem_usage) }}</td>
+                <td class="py-1">{{ formatBytes(m.net_input) }}</td>
+                <td class="py-1">{{ formatBytes(m.net_output) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </UCard>
+    </div>
+
     <!-- Cron Jobs Tab -->
     <div v-if="activeTab === 'cron'" class="space-y-6">
       <UCard>
@@ -1498,6 +1634,40 @@ watch(activeTab, (tab) => {
     </UCard>
 
     <div v-if="activeTab === 'settings'" class="space-y-6">
+      <!-- Connection Info (for database apps) -->
+      <UCard v-if="connectionInfo && connectionInfo.type">
+        <template #header>
+          <h3 class="font-semibold flex items-center gap-2">
+            <UIcon name="i-lucide-database" class="w-5 h-5" />
+            Connection Info ({{ connectionInfo.type }})
+          </h3>
+        </template>
+        <div class="space-y-3">
+          <div v-if="connectionInfo.connection_url" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Connection URL</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm flex-1 truncate">{{ connectionInfo.connection_url }}</code>
+            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.connection_url)" />
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Internal Host</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.internal_host }}</code>
+          </div>
+          <div v-if="connectionInfo.user" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">User</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.user }}</code>
+          </div>
+          <div v-if="connectionInfo.password" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Password</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.password }}</code>
+            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.password)" />
+          </div>
+          <div v-if="connectionInfo.database" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Database</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.database }}</code>
+          </div>
+        </div>
+      </UCard>
+
       <!-- Row 1: General + Container (or just General + Aliases for static) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- General Settings -->
@@ -1850,6 +2020,20 @@ watch(activeTab, (tab) => {
               Restart Now
             </UButton>
           </div>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- Build Log Modal -->
+    <UModal v-model:open="showBuildLog">
+      <template #content>
+        <div class="p-6 max-h-[80vh] overflow-auto">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Build Log</h3>
+            <UButton icon="i-heroicons-x-mark" variant="ghost" size="xs" @click="showBuildLog = false" />
+          </div>
+          <div v-if="buildLogLoading" class="text-center py-8">Loading...</div>
+          <pre v-else class="bg-gray-900 text-green-400 p-4 rounded text-xs font-mono whitespace-pre-wrap max-h-[60vh] overflow-auto">{{ buildLogContent }}</pre>
         </div>
       </template>
     </UModal>

@@ -123,6 +123,12 @@ func main() {
 	// Deploy tokens
 	case "token", "tokens":
 		cmdTokens(args)
+	// Metrics
+	case "metrics":
+		cmdMetrics(args)
+	// Database
+	case "db":
+		cmdDB(args)
 	// Health check commands
 	case "health":
 		cmdHealth(args)
@@ -190,6 +196,9 @@ App Commands:
   cron rm <name> <id>     Delete a cron job
   cron run <name> <id>    Run a cron job now
   activity [name]         Show activity log
+  metrics <name>          Show app resource metrics
+  db link <app> <db>      Link database to app (inject DATABASE_URL)
+  db info <name>          Show database connection info
 
 Notification & CI/CD Commands:
   notify list             List notification hooks
@@ -4412,6 +4421,170 @@ func cmdTokens(args []string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown token subcommand: %s\n", subcmd)
+		os.Exit(1)
+	}
+}
+
+func cmdMetrics(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: bp metrics <app> [--period 1h|24h|7d]")
+		os.Exit(1)
+	}
+
+	appName := args[0]
+	period := "1h"
+	for i := 1; i < len(args)-1; i++ {
+		if args[i] == "--period" {
+			period = args[i+1]
+		}
+	}
+
+	resp, err := apiRequest("GET", fmt.Sprintf("/api/apps/%s/metrics?period=%s", appName, period), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+		os.Exit(1)
+	}
+
+	var result struct {
+		Current *struct {
+			CPUPercent float64 `json:"cpu_percent"`
+			MemUsage   int64   `json:"mem_usage"`
+			MemLimit   int64   `json:"mem_limit"`
+			NetInput   int64   `json:"net_input"`
+			NetOutput  int64   `json:"net_output"`
+		} `json:"current"`
+		Metrics []struct {
+			CPUPercent float64 `json:"cpu_percent"`
+			MemUsage   int64   `json:"mem_usage"`
+			RecordedAt string  `json:"recorded_at"`
+		} `json:"metrics"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result.Current != nil {
+		fmt.Printf("Current Stats for %s:\n", appName)
+		fmt.Printf("  CPU:        %.1f%%\n", result.Current.CPUPercent)
+		fmt.Printf("  Memory:     %s / %s\n", formatBytesHuman(result.Current.MemUsage), formatBytesHuman(result.Current.MemLimit))
+		fmt.Printf("  Net In:     %s\n", formatBytesHuman(result.Current.NetInput))
+		fmt.Printf("  Net Out:    %s\n", formatBytesHuman(result.Current.NetOutput))
+	} else {
+		fmt.Printf("No live stats available for %s (not running?)\n", appName)
+	}
+
+	if len(result.Metrics) > 0 {
+		fmt.Printf("\nHistory (%s, %d points):\n", period, len(result.Metrics))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "TIME\tCPU\tMEMORY\n")
+		// Show last 10
+		start := 0
+		if len(result.Metrics) > 10 {
+			start = len(result.Metrics) - 10
+		}
+		for _, m := range result.Metrics[start:] {
+			fmt.Fprintf(w, "%s\t%.1f%%\t%s\n", m.RecordedAt, m.CPUPercent, formatBytesHuman(m.MemUsage))
+		}
+		w.Flush()
+	}
+}
+
+func formatBytesHuman(b int64) string {
+	if b == 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func cmdDB(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: bp db <command> [args]")
+		fmt.Fprintln(os.Stderr, "  link <app> <db>  Link database to app")
+		fmt.Fprintln(os.Stderr, "  info <name>      Show connection info")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "link":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp db link <app> <db>")
+			os.Exit(1)
+		}
+		resp, err := apiRequest("POST", fmt.Sprintf("/api/apps/%s/link/%s", args[1], args[2]), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		var result struct {
+			DatabaseURL string `json:"database_url"`
+			LinkedDB    string `json:"linked_db"`
+			Message     string `json:"message"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+		fmt.Printf("Linked to: %s\n", result.LinkedDB)
+		fmt.Printf("DATABASE_URL: %s\n", result.DatabaseURL)
+		fmt.Printf("\n%s\n", result.Message)
+
+	case "info":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: bp db info <name>")
+			os.Exit(1)
+		}
+		resp, err := apiRequest("GET", fmt.Sprintf("/api/apps/%s/connection-info", args[1]), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Failed: %s\n", string(respBody))
+			os.Exit(1)
+		}
+		var info map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&info)
+
+		fmt.Printf("Connection Info for %s:\n", args[1])
+		if t, ok := info["type"]; ok {
+			fmt.Printf("  Type:     %v\n", t)
+		}
+		if h, ok := info["internal_host"]; ok {
+			fmt.Printf("  Host:     %v\n", h)
+		}
+		if u, ok := info["user"]; ok {
+			fmt.Printf("  User:     %v\n", u)
+		}
+		if p, ok := info["password"]; ok {
+			fmt.Printf("  Password: %v\n", p)
+		}
+		if d, ok := info["database"]; ok {
+			fmt.Printf("  Database: %v\n", d)
+		}
+		if url, ok := info["connection_url"]; ok {
+			fmt.Printf("  URL:      %v\n", url)
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown db subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
 }

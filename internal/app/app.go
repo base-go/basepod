@@ -273,6 +273,18 @@ type DeployToken struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
 
+// AppMetric represents a point-in-time resource usage metric for an app
+type AppMetric struct {
+	ID         int64     `json:"id"`
+	AppID      string    `json:"app_id"`
+	CPUPercent float64   `json:"cpu_percent"`
+	MemUsage   int64     `json:"mem_usage"`
+	MemLimit   int64     `json:"mem_limit"`
+	NetInput   int64     `json:"net_input"`
+	NetOutput  int64     `json:"net_output"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 // AppListResponse represents a list of apps
 type AppListResponse struct {
 	Apps  []App `json:"apps"`

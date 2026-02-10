@@ -51,10 +51,22 @@ type Client interface {
 	ExecStart(ctx context.Context, execID string) (string, error)
 	ExecResize(ctx context.Context, execID string, height, width int) error
 
+	// Stats
+	ContainerStats(ctx context.Context, id string) (*ContainerStatsResult, error)
+
 	// Access underlying HTTP client (for raw hijack)
 	GetHTTPClient() *http.Client
 	GetBaseURL() string
 	GetSocketPath() string
+}
+
+// ContainerStatsResult holds resource usage stats for a container
+type ContainerStatsResult struct {
+	CPUPercent float64 `json:"cpu_percent"`
+	MemUsage   int64   `json:"mem_usage"`   // bytes
+	MemLimit   int64   `json:"mem_limit"`   // bytes
+	NetInput   int64   `json:"net_input"`   // bytes
+	NetOutput  int64   `json:"net_output"`  // bytes
 }
 
 // CreateContainerOpts holds options for creating a container
@@ -359,12 +371,22 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		spec["networks"] = networksMap
 	}
 
-	if opts.Memory > 0 {
-		spec["resource_limits"] = map[string]interface{}{
-			"memory": map[string]interface{}{
+	if opts.Memory > 0 || opts.CPUs > 0 {
+		resourceLimits := map[string]interface{}{}
+		if opts.Memory > 0 {
+			resourceLimits["memory"] = map[string]interface{}{
 				"limit": opts.Memory,
-			},
+			}
 		}
+		if opts.CPUs > 0 {
+			// Convert CPUs to CPU period/quota: 0.5 CPUs = 50000 quota / 100000 period
+			cpuQuota := int64(opts.CPUs * 100000)
+			resourceLimits["cpu"] = map[string]interface{}{
+				"quota":  cpuQuota,
+				"period": 100000,
+			}
+		}
+		spec["resource_limits"] = resourceLimits
 	}
 
 	body, err := json.Marshal(spec)
@@ -819,6 +841,59 @@ func (c *client) ExecResize(ctx context.Context, execID string, height, width in
 	}
 
 	return nil
+}
+
+// ContainerStats returns resource usage stats for a container
+func (c *client) ContainerStats(ctx context.Context, id string) (*ContainerStatsResult, error) {
+	resp, err := c.request(ctx, "GET", fmt.Sprintf("/containers/%s/stats?stream=false", id), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container stats: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get stats (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var rawStats struct {
+		Stats []struct {
+			CPU        float64 `json:"cpu_percent"`
+			MemUsage   int64   `json:"mem_usage"`
+			MemLimit   int64   `json:"mem_limit"`
+			NetInput   int64   `json:"net_input"`
+			NetOutput  int64   `json:"net_output"`
+		} `json:"stats"`
+		CPUPercent float64 `json:"cpu_percent"`
+		MemUsage   int64   `json:"mem_usage"`
+		MemLimit   int64   `json:"mem_limit"`
+		NetInput   int64   `json:"net_input"`
+		NetOutput  int64   `json:"net_output"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rawStats); err != nil {
+		return nil, fmt.Errorf("failed to decode stats: %w", err)
+	}
+
+	result := &ContainerStatsResult{
+		CPUPercent: rawStats.CPUPercent,
+		MemUsage:   rawStats.MemUsage,
+		MemLimit:   rawStats.MemLimit,
+		NetInput:   rawStats.NetInput,
+		NetOutput:  rawStats.NetOutput,
+	}
+
+	// Podman sometimes returns stats in a stats array
+	if len(rawStats.Stats) > 0 {
+		s := rawStats.Stats[0]
+		result.CPUPercent = s.CPU
+		result.MemUsage = s.MemUsage
+		result.MemLimit = s.MemLimit
+		result.NetInput = s.NetInput
+		result.NetOutput = s.NetOutput
+	}
+
+	return result, nil
 }
 
 // GetHTTPClient returns the underlying HTTP client
