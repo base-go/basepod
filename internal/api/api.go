@@ -1935,6 +1935,35 @@ func (s *Server) handleDeleteStorageCategory(w http.ResponseWriter, r *http.Requ
 		}
 		targetDir = paths.Logs
 		label = "Logs"
+	case "podman":
+		// Prune build cache via podman commands
+		label = "Build Cache & Layers"
+		sizeBefore := int64(0)
+		podmanDir := filepath.Join(home, ".local", "share", "containers")
+		sizeBefore = diskutil.DirSize(podmanDir)
+
+		// Run podman system prune to clean up
+		cmds := [][]string{
+			{"podman", "system", "prune", "-af"},
+			{"podman", "builder", "prune", "-af"},
+		}
+		for _, args := range cmds {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Run() // best-effort
+		}
+
+		sizeAfter := diskutil.DirSize(podmanDir)
+		freed := sizeBefore - sizeAfter
+		if freed < 0 {
+			freed = 0
+		}
+
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"message":           label + " cleared",
+			"cleared":           freed,
+			"cleared_formatted": diskutil.FormatBytes(freed),
+		})
+		return
 	default:
 		errorResponse(w, http.StatusBadRequest, "category not clearable: "+id)
 		return

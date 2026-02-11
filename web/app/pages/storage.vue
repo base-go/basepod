@@ -39,17 +39,28 @@ definePageMeta({
 const toast = useToast()
 const refreshing = ref(false)
 
-// --- Fetch system storage overview ---
-const { data: systemStorage, refresh: refreshSystemStorage } = await useApiFetch<SystemStorageResponse>('/system/storage')
+// --- Fetch system storage overview (no cache, always fresh) ---
+const { data: systemStorage, refresh: refreshSystemStorage } = await useApiFetch<SystemStorageResponse>('/system/storage', {
+  getCachedData: () => undefined
+} as object)
 
 async function refreshStorage() {
   refreshing.value = true
   try {
     await refreshSystemStorage()
+    // Also refresh any open drill-down data
+    if (podmanExpanded.value) await loadPodmanImages()
+    if (volumesExpanded.value) await loadVolumes()
+    if (llmExpanded.value) await loadLLMItems()
   } finally {
     refreshing.value = false
   }
 }
+
+// Always fetch fresh data on navigation to this page
+onMounted(() => {
+  refreshSystemStorage()
+})
 
 // --- Volumes drill-down state ---
 interface VolumeInfo {
@@ -65,17 +76,21 @@ const volumesExpanded = ref(false)
 const volumesList = ref<VolumeInfo[]>([])
 const volumesLoading = ref(false)
 
+async function loadVolumes() {
+  volumesLoading.value = true
+  try {
+    volumesList.value = await $api<VolumeInfo[]>('/system/volumes')
+  } catch {
+    volumesList.value = []
+  } finally {
+    volumesLoading.value = false
+  }
+}
+
 async function toggleVolumes() {
   volumesExpanded.value = !volumesExpanded.value
-  if (volumesExpanded.value && volumesList.value.length === 0) {
-    volumesLoading.value = true
-    try {
-      volumesList.value = await $api<VolumeInfo[]>('/system/volumes')
-    } catch {
-      volumesList.value = []
-    } finally {
-      volumesLoading.value = false
-    }
+  if (volumesExpanded.value) {
+    await loadVolumes()
   }
 }
 
@@ -135,17 +150,21 @@ function formatImageDate(created: number): string {
 
 const pruningImages = ref(false)
 
+async function loadPodmanImages() {
+  podmanLoading.value = true
+  try {
+    podmanImages.value = await $api<ContainerImage[]>('/container-images')
+  } catch {
+    podmanImages.value = []
+  } finally {
+    podmanLoading.value = false
+  }
+}
+
 async function togglePodman() {
   podmanExpanded.value = !podmanExpanded.value
   if (podmanExpanded.value) {
-    podmanLoading.value = true
-    try {
-      podmanImages.value = await $api<ContainerImage[]>('/container-images')
-    } catch {
-      podmanImages.value = []
-    } finally {
-      podmanLoading.value = false
-    }
+    await loadPodmanImages()
   }
 }
 
@@ -196,17 +215,21 @@ const llmItems = ref<LLMStorageItem[]>([])
 const llmLoading = ref(false)
 const deletingLLMItem = ref<string | null>(null)
 
+async function loadLLMItems() {
+  llmLoading.value = true
+  try {
+    llmItems.value = await $api<LLMStorageItem[]>('/system/storage/llm')
+  } catch {
+    llmItems.value = []
+  } finally {
+    llmLoading.value = false
+  }
+}
+
 async function toggleLLM() {
   llmExpanded.value = !llmExpanded.value
   if (llmExpanded.value) {
-    llmLoading.value = true
-    try {
-      llmItems.value = await $api<LLMStorageItem[]>('/system/storage/llm')
-    } catch {
-      llmItems.value = []
-    } finally {
-      llmLoading.value = false
-    }
+    await loadLLMItems()
   }
 }
 
@@ -236,19 +259,19 @@ const detailModalCategory = ref('')
 
 function toggleCategory(catId: string) {
   detailModalCategory.value = catId
-  // images and podman share the same data
+  // Always reload fresh data when opening modal
   if (catId === 'images' || catId === 'podman') {
     detailModalTitle.value = catId === 'images' ? 'Container Images' : 'Podman Storage'
-    if (podmanImages.value.length === 0) togglePodman()
-    else { podmanExpanded.value = true }
+    podmanExpanded.value = true
+    loadPodmanImages()
   } else if (catId === 'volumes') {
     detailModalTitle.value = 'Container Volumes'
-    if (volumesList.value.length === 0) toggleVolumes()
-    else { volumesExpanded.value = true }
+    volumesExpanded.value = true
+    loadVolumes()
   } else if (catId === 'llm') {
     detailModalTitle.value = 'LLM Model Storage'
-    if (llmItems.value.length === 0) toggleLLM()
-    else { llmExpanded.value = true }
+    llmExpanded.value = true
+    loadLLMItems()
   }
   detailModalOpen.value = true
 }
