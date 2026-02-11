@@ -87,8 +87,9 @@ const columns: TableColumn<App>[] = [
   { accessorKey: 'status', header: 'Status' },
   { accessorKey: 'domain', header: 'Domain' },
   { accessorKey: 'image', header: 'Image' },
-  { accessorKey: 'expose_external', header: 'External Access' },
+  { accessorKey: 'port', header: 'Port' },
   { accessorKey: 'volumes', header: 'Volumes' },
+  { accessorKey: 'created_at', header: 'Created' },
   { id: 'actions', header: '' }
 ]
 </script>
@@ -174,22 +175,17 @@ const columns: TableColumn<App>[] = [
           <span v-else class="text-gray-400">-</span>
         </template>
 
-        <template #expose_external-cell="{ row }">
-          <div class="flex items-center gap-1">
-            <UIcon
-              v-if="row.original.ports?.expose_external"
-              name="i-heroicons-check-circle"
-              class="w-5 h-5 text-green-500"
-            />
-            <UIcon
-              v-else
-              name="i-heroicons-x-circle"
-              class="w-5 h-5 text-gray-400"
-            />
-            <span v-if="row.original.ports?.expose_external && row.original.ports?.host_port" class="text-xs text-gray-500">
-              :{{ row.original.ports.host_port }}
-            </span>
-          </div>
+        <template #port-cell="{ row }">
+          <span v-if="row.original.ports?.container_port" class="text-sm font-mono text-gray-500">
+            :{{ row.original.ports.container_port }}
+          </span>
+          <span v-else class="text-gray-400">-</span>
+        </template>
+
+        <template #created_at-cell="{ row }">
+          <span class="text-sm text-gray-500 whitespace-nowrap">
+            {{ new Date(row.original.created_at).toLocaleDateString() }}
+          </span>
         </template>
 
         <template #actions-cell="{ row }">

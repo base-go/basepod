@@ -114,7 +114,7 @@ async function deleteModel(modelId: string) {
     await $api(`/mlx/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' })
     toast.add({ title: 'Model deleted', color: 'success' })
     closeModelModal()
-    refresh()
+    await refreshModels()
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
     toast.add({ title: 'Failed to delete model', description: err.data?.error, color: 'error' })

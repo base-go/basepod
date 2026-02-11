@@ -173,6 +173,9 @@ Project Commands:
   init                    Initialize basepod.yaml config
   run [path]              Run app locally with Podman
   deploy [path]           Deploy app (local, image, or git)
+    --env <name>          Load basepod.<name>.yaml overlay
+    --staging             Shorthand for --env staging
+    --production          Shorthand for --env production
 
 App Commands:
   apps                    List all apps
@@ -251,6 +254,8 @@ Examples:
   bp run -d                        # Run in background (detached)
   bp run -p 8080                   # Run on custom port
   bp deploy                        # Deploy from local source
+  bp deploy --staging              # Deploy with basepod.staging.yaml
+  bp deploy --env preview          # Deploy with basepod.preview.yaml
   bp deploy --image nginx:latest   # Deploy Docker image
   bp template deploy postgres
   bp env myapp                    # Show env vars
@@ -723,8 +728,14 @@ type ServiceBuild struct {
 	Command    string `yaml:"command,omitempty"`    // Pre-build command
 }
 
-// loadAppConfig loads basepod.yaml from the specified directory
+// loadAppConfig loads basepod.yaml from the specified directory.
+// If env is non-empty, it also loads basepod.{env}.yaml and merges it
+// on top of the base config (env-specific values override base values).
 func loadAppConfig(dir string) (*AppConfig, error) {
+	return loadAppConfigWithEnv(dir, "")
+}
+
+func loadAppConfigWithEnv(dir string, env string) (*AppConfig, error) {
 	configPath := filepath.Join(dir, "basepod.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -734,6 +745,72 @@ func loadAppConfig(dir string) (*AppConfig, error) {
 	var cfg AppConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// If env is specified, overlay environment-specific config
+	if env != "" {
+		envPath := filepath.Join(dir, fmt.Sprintf("basepod.%s.yaml", env))
+		envData, err := os.ReadFile(envPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("environment config not found: %s", envPath)
+			}
+			return nil, err
+		}
+
+		var envCfg AppConfig
+		if err := yaml.Unmarshal(envData, &envCfg); err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", envPath, err)
+		}
+
+		// Merge: env-specific values override base values
+		if envCfg.Name != "" {
+			cfg.Name = envCfg.Name
+		}
+		if envCfg.Type != "" {
+			cfg.Type = envCfg.Type
+		}
+		if envCfg.Server != "" {
+			cfg.Server = envCfg.Server
+		}
+		if envCfg.Domain != "" {
+			cfg.Domain = envCfg.Domain
+		}
+		if envCfg.Port != 0 {
+			cfg.Port = envCfg.Port
+		}
+		if envCfg.Public != "" {
+			cfg.Public = envCfg.Public
+		}
+		if envCfg.Build.Dockerfile != "" {
+			cfg.Build.Dockerfile = envCfg.Build.Dockerfile
+		}
+		if envCfg.Build.Context != "" {
+			cfg.Build.Context = envCfg.Build.Context
+		}
+		if envCfg.Build.Command != "" {
+			cfg.Build.Command = envCfg.Build.Command
+		}
+		// Merge env vars (env-specific overrides base)
+		if len(envCfg.Env) > 0 {
+			if cfg.Env == nil {
+				cfg.Env = make(map[string]string)
+			}
+			for k, v := range envCfg.Env {
+				cfg.Env[k] = v
+			}
+		}
+		if len(envCfg.Volumes) > 0 {
+			cfg.Volumes = envCfg.Volumes
+		}
+		if len(envCfg.Processes) > 0 {
+			cfg.Processes = envCfg.Processes
+		}
+		if len(envCfg.Services) > 0 {
+			cfg.Services = envCfg.Services
+		}
+
+		fmt.Printf("Loaded config: basepod.yaml + basepod.%s.yaml\n", env)
 	}
 
 	return &cfg, nil
@@ -1185,6 +1262,7 @@ func cmdRun(args []string) {
 	var dir string
 	var port int
 	var detach bool
+	var env string
 
 	// Parse flags
 	positionalArgs := []string{}
@@ -1197,8 +1275,19 @@ func cmdRun(args []string) {
 			}
 		case "--detach", "-d":
 			detach = true
+		case "--env", "-e":
+			if i+1 < len(args) {
+				env = args[i+1]
+				i++
+			}
+		case "--staging":
+			env = "staging"
+		case "--production", "--prod":
+			env = "production"
 		default:
-			if !strings.HasPrefix(args[i], "-") {
+			if strings.HasPrefix(args[i], "--env=") {
+				env = strings.TrimPrefix(args[i], "--env=")
+			} else if !strings.HasPrefix(args[i], "-") {
 				positionalArgs = append(positionalArgs, args[i])
 			}
 		}
@@ -1210,13 +1299,13 @@ func cmdRun(args []string) {
 		dir = "."
 	}
 
-	// Load app config
-	appCfg, err := loadAppConfig(dir)
+	// Load app config (with optional environment overlay)
+	appCfg, err := loadAppConfigWithEnv(dir, env)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "No basepod.yaml found. Run 'bp init' first.")
 		} else {
-			fmt.Fprintf(os.Stderr, "Failed to load basepod.yaml: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		}
 		os.Exit(1)
 	}
@@ -1870,7 +1959,7 @@ stderr_logfile_maxbytes=0
 }
 
 func cmdDeploy(args []string) {
-	var image, gitURL, branch, dir string
+	var image, gitURL, branch, dir, env string
 	var force bool
 
 	// Parse flags first
@@ -1894,8 +1983,20 @@ func cmdDeploy(args []string) {
 			}
 		case "--force", "-f":
 			force = true
+		case "--env", "-e":
+			if i+1 < len(args) {
+				env = args[i+1]
+				i++
+			}
+		case "--staging":
+			env = "staging"
+		case "--production", "--prod":
+			env = "production"
 		default:
-			if !strings.HasPrefix(args[i], "-") {
+			// Support --env=value syntax
+			if strings.HasPrefix(args[i], "--env=") {
+				env = strings.TrimPrefix(args[i], "--env=")
+			} else if !strings.HasPrefix(args[i], "-") {
 				positionalArgs = append(positionalArgs, args[i])
 			}
 		}
@@ -1918,19 +2019,19 @@ func cmdDeploy(args []string) {
 		} else {
 			dir = "."
 		}
-		deployLocalSource(dir, force)
+		deployLocalSource(dir, force, env)
 	}
 }
 
 // deployLocalSource deploys from local source code (like old bp push)
-func deployLocalSource(dir string, force bool) {
-	// Load app config
-	appCfg, err := loadAppConfig(dir)
+func deployLocalSource(dir string, force bool, env string) {
+	// Load app config (with optional environment overlay)
+	appCfg, err := loadAppConfigWithEnv(dir, env)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "No basepod.yaml found. Run 'bp init' first.")
 		} else {
-			fmt.Fprintf(os.Stderr, "Failed to load basepod.yaml: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		}
 		os.Exit(1)
 	}

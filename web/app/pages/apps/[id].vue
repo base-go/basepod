@@ -22,17 +22,20 @@ const tabs = computed(() => {
   // Only show container-specific tabs for non-static apps
   if (app.value?.type !== 'static') {
     baseTabs.push(
-      { label: 'Health', value: 'health', icon: 'i-heroicons-heart' },
+      { label: 'Health & Activity', value: 'health', icon: 'i-heroicons-heart' },
       { label: 'Metrics', value: 'metrics', icon: 'i-heroicons-chart-bar' },
       { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
       { label: 'Cron', value: 'cron', icon: 'i-heroicons-clock' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
     )
+  } else {
+    baseTabs.push(
+      { label: 'Activity', value: 'activity', icon: 'i-heroicons-list-bullet' },
+    )
   }
 
   baseTabs.push(
-    { label: 'Activity', value: 'activity', icon: 'i-heroicons-list-bullet' },
     { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' },
   )
   return baseTabs
@@ -793,6 +796,7 @@ async function fetchConnectionInfo() {
 watch(activeTab, (tab) => {
   if (tab === 'cron') fetchCronJobs()
   if (tab === 'activity') fetchActivities()
+  if (tab === 'health') fetchActivities() // merged health+activity tab
   if (tab === 'metrics') fetchMetrics()
   if (tab === 'settings') fetchConnectionInfo()
 })
@@ -921,51 +925,35 @@ watch(activeTab, (tab) => {
             <dt class="text-gray-500">Last Deployed</dt>
             <dd>{{ new Date(app.updated_at).toLocaleString() }}</dd>
           </div>
-        </dl>
-      </UCard>
-
-      <!-- Connection Info - only for container apps -->
-      <UCard v-if="app.type !== 'static'">
-        <template #header>
-          <h3 class="font-semibold">Connection Info</h3>
-        </template>
-
-        <dl class="space-y-3">
-          <div v-if="app.internal_host" class="flex justify-between items-center">
-            <dt class="text-gray-500">Internal Host</dt>
-            <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.internal_host }}:{{ app.ports?.container_port || 8080 }}</dd>
-          </div>
-          <div v-if="app.ports?.expose_external && app.external_host" class="flex justify-between items-center">
-            <dt class="text-gray-500">External Host</dt>
-            <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.external_host }}</dd>
-          </div>
-          <div v-if="app.ports?.expose_external && app.ports?.host_port" class="flex justify-between items-center">
-            <dt class="text-gray-500">Host Port</dt>
-            <dd class="font-mono text-sm">{{ app.ports.host_port }}</dd>
-          </div>
-
-          <!-- Database Credentials -->
-          <template v-if="dbCredentials">
-            <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
-              <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">{{ dbCredentials.type }} Credentials</div>
+          <!-- Connection info inline -->
+          <template v-if="app.type !== 'static'">
+            <div v-if="app.internal_host" class="flex justify-between items-center border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+              <dt class="text-gray-500">Internal Host</dt>
+              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.internal_host }}:{{ app.ports?.container_port || 8080 }}</dd>
             </div>
-            <div v-if="dbCredentials.username" class="flex justify-between items-center">
-              <dt class="text-gray-500">Username</dt>
-              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.username }}</dd>
+            <div v-if="app.ports?.expose_external && app.external_host" class="flex justify-between items-center">
+              <dt class="text-gray-500">External Host</dt>
+              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.external_host }}</dd>
             </div>
-            <div v-if="dbCredentials.password" class="flex justify-between items-center">
-              <dt class="text-gray-500">Password</dt>
-              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.password }}</dd>
-            </div>
-            <div v-if="dbCredentials.database" class="flex justify-between items-center">
-              <dt class="text-gray-500">Database</dt>
-              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.database }}</dd>
-            </div>
+            <!-- Database Credentials -->
+            <template v-if="dbCredentials">
+              <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">{{ dbCredentials.type }} Credentials</div>
+              </div>
+              <div v-if="dbCredentials.username" class="flex justify-between items-center">
+                <dt class="text-gray-500">Username</dt>
+                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.username }}</dd>
+              </div>
+              <div v-if="dbCredentials.password" class="flex justify-between items-center">
+                <dt class="text-gray-500">Password</dt>
+                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.password }}</dd>
+              </div>
+              <div v-if="dbCredentials.database" class="flex justify-between items-center">
+                <dt class="text-gray-500">Database</dt>
+                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.database }}</dd>
+              </div>
+            </template>
           </template>
-
-          <div v-if="!app.internal_host && !app.external_host && !dbCredentials" class="text-gray-500 text-sm">
-            Connection info not available
-          </div>
         </dl>
       </UCard>
 
@@ -1030,7 +1018,7 @@ watch(activeTab, (tab) => {
                 Logs
               </UButton>
               <UButton
-                v-if="index > 0 && deployment.image"
+                v-if="index > 0"
                 size="xs"
                 variant="soft"
                 color="warning"
@@ -1051,6 +1039,81 @@ watch(activeTab, (tab) => {
           <div v-if="deployment.branch" class="text-xs text-gray-500 mt-1">
             <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
             {{ deployment.branch }}
+          </div>
+        </div>
+      </div>
+    </UCard>
+
+    <!-- Webhook (Auto-Deploy) in Deployments tab -->
+    <UCard v-if="activeTab === 'deployments'" class="mt-6">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Webhook (Auto-Deploy)</h3>
+          <template v-if="app?.deployment?.webhook_secret">
+            <div class="flex gap-2">
+              <UButton variant="outline" size="xs" @click="regenerateSecret" :loading="webhookSetupLoading">
+                Regenerate Secret
+              </UButton>
+              <UButton color="error" variant="outline" size="xs" @click="disableWebhook" :loading="webhookSetupLoading">
+                Disable
+              </UButton>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- Webhook not configured -->
+      <div v-if="!app?.deployment?.webhook_secret" class="space-y-4">
+        <p class="text-sm text-gray-500">
+          Enable webhooks to automatically deploy when you push to GitHub.
+        </p>
+        <UFormField label="Git Repository URL" hint="HTTPS clone URL">
+          <UInput v-model="webhookGitUrl" placeholder="https://github.com/user/repo.git" />
+        </UFormField>
+        <UButton :loading="webhookSetupLoading" @click="setupWebhook">
+          Enable Webhook
+        </UButton>
+      </div>
+
+      <!-- Webhook configured -->
+      <div v-else class="space-y-4">
+        <div class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+          <div class="flex items-start gap-2">
+            <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+            <span class="text-sm text-green-700 dark:text-green-300">Webhook is active. Push to <code class="font-mono bg-green-100 dark:bg-green-800 px-1 rounded">{{ app.deployment?.branch || 'main' }}</code> to auto-deploy.</span>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+            <div class="flex gap-2">
+              <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
+              <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook`)" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Secret</label>
+            <div class="flex gap-2">
+              <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
+              <UButton variant="outline" size="sm" :icon="showWebhookSecret ? 'i-heroicons-eye-slash' : 'i-heroicons-eye'" @click="showWebhookSecret = !showWebhookSecret" />
+              <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.deployment?.webhook_secret || '')" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Git URL</label>
+            <code class="block px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
+          </div>
+        </div>
+
+        <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+          <div class="flex items-start gap-2">
+            <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+            <div class="text-blue-700 dark:text-blue-300">
+              <strong>GitHub Setup:</strong> Go to your repository Settings &rarr; Webhooks &rarr; Add webhook. Paste the URL and secret above. Set content type to <code class="font-mono bg-blue-100 dark:bg-blue-800 px-1 rounded">application/json</code>.
+            </div>
           </div>
         </div>
       </div>
@@ -1284,6 +1347,42 @@ watch(activeTab, (tab) => {
               <USwitch v-model="healthForm.auto_restart" />
             </div>
           </template>
+        </div>
+      </UCard>
+
+      <!-- Activity Log (merged into Health tab) -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Activity Log</h3>
+            <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="activityLoading" @click="fetchActivities">
+              Refresh
+            </UButton>
+          </div>
+        </template>
+
+        <div v-if="activities.length === 0" class="text-center py-6 text-gray-500">
+          <p class="text-sm">No activity recorded yet</p>
+        </div>
+
+        <div v-else class="space-y-2">
+          <div
+            v-for="entry in activities"
+            :key="entry.id"
+            class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+          >
+            <UIcon :name="getActivityIcon(entry.action)" class="w-5 h-5 mt-0.5 text-gray-400" />
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <UBadge :color="entry.status === 'success' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral'" size="xs">
+                  {{ entry.action }}
+                </UBadge>
+                <span class="text-xs text-gray-500">{{ entry.actor_type }}</span>
+              </div>
+              <div v-if="entry.details" class="text-sm text-gray-500 mt-1 truncate">{{ entry.details }}</div>
+              <div class="text-xs text-gray-400 mt-1">{{ new Date(entry.created_at).toLocaleString() }}</div>
+            </div>
+          </div>
         </div>
       </UCard>
     </div>
@@ -1634,40 +1733,6 @@ watch(activeTab, (tab) => {
     </UCard>
 
     <div v-if="activeTab === 'settings'" class="space-y-6">
-      <!-- Connection Info (for database apps) -->
-      <UCard v-if="connectionInfo && connectionInfo.type">
-        <template #header>
-          <h3 class="font-semibold flex items-center gap-2">
-            <UIcon name="i-lucide-database" class="w-5 h-5" />
-            Connection Info ({{ connectionInfo.type }})
-          </h3>
-        </template>
-        <div class="space-y-3">
-          <div v-if="connectionInfo.connection_url" class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 w-28">Connection URL</span>
-            <code class="bg-gray-800 px-2 py-1 rounded text-sm flex-1 truncate">{{ connectionInfo.connection_url }}</code>
-            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.connection_url)" />
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 w-28">Internal Host</span>
-            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.internal_host }}</code>
-          </div>
-          <div v-if="connectionInfo.user" class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 w-28">User</span>
-            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.user }}</code>
-          </div>
-          <div v-if="connectionInfo.password" class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 w-28">Password</span>
-            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.password }}</code>
-            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.password)" />
-          </div>
-          <div v-if="connectionInfo.database" class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 w-28">Database</span>
-            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.database }}</code>
-          </div>
-        </div>
-      </UCard>
-
       <!-- Row 1: General + Container (or just General + Aliases for static) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- General Settings -->
@@ -1887,81 +1952,6 @@ watch(activeTab, (tab) => {
           Save All Changes
         </UButton>
       </div>
-
-      <!-- Webhook Setup -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">Webhook (Auto-Deploy)</h3>
-            <template v-if="app?.deployment?.webhook_secret">
-              <div class="flex gap-2">
-                <UButton variant="outline" size="xs" @click="regenerateSecret" :loading="webhookSetupLoading">
-                  Regenerate Secret
-                </UButton>
-                <UButton color="error" variant="outline" size="xs" @click="disableWebhook" :loading="webhookSetupLoading">
-                  Disable
-                </UButton>
-              </div>
-            </template>
-          </div>
-        </template>
-
-        <!-- Webhook not configured -->
-        <div v-if="!app?.deployment?.webhook_secret" class="space-y-4">
-          <p class="text-sm text-gray-500">
-            Enable webhooks to automatically deploy when you push to GitHub.
-          </p>
-          <UFormField label="Git Repository URL" hint="HTTPS clone URL">
-            <UInput v-model="webhookGitUrl" placeholder="https://github.com/user/repo.git" />
-          </UFormField>
-          <UButton :loading="webhookSetupLoading" @click="setupWebhook">
-            Enable Webhook
-          </UButton>
-        </div>
-
-        <!-- Webhook configured -->
-        <div v-else class="space-y-4">
-          <div class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-            <div class="flex items-start gap-2">
-              <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
-              <span class="text-sm text-green-700 dark:text-green-300">Webhook is active. Push to <code class="font-mono bg-green-100 dark:bg-green-800 px-1 rounded">{{ app.deployment?.branch || 'main' }}</code> to auto-deploy.</span>
-            </div>
-          </div>
-
-          <div class="space-y-3">
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
-              <div class="flex gap-2">
-                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
-                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook`)" />
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Secret</label>
-              <div class="flex gap-2">
-                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
-                <UButton variant="outline" size="sm" :icon="showWebhookSecret ? 'i-heroicons-eye-slash' : 'i-heroicons-eye'" @click="showWebhookSecret = !showWebhookSecret" />
-                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.deployment?.webhook_secret || '')" />
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Git URL</label>
-              <code class="block px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
-            </div>
-          </div>
-
-          <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
-            <div class="flex items-start gap-2">
-              <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-              <div class="text-blue-700 dark:text-blue-300">
-                <strong>GitHub Setup:</strong> Go to your repository Settings &rarr; Webhooks &rarr; Add webhook. Paste the URL and secret above. Set content type to <code class="font-mono bg-blue-100 dark:bg-blue-800 px-1 rounded">application/json</code>.
-              </div>
-            </div>
-          </div>
-        </div>
-      </UCard>
 
       <!-- Danger Zone -->
       <UCard class="border-red-200 dark:border-red-800">
