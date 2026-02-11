@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { App } from '~/types'
+import type { App, HealthCheckConfig, AppHealthStatus, WebhookDelivery, WebhookSetupResponse, CronJob, CronExecution, ActivityLog, AppMetric, AppMetricsResponse } from '~/types'
 import Convert from 'ansi-to-html'
 
 const route = useRoute()
@@ -22,13 +22,19 @@ const tabs = computed(() => {
   // Only show container-specific tabs for non-static apps
   if (app.value?.type !== 'static') {
     baseTabs.push(
+      { label: 'Health', value: 'health', icon: 'i-heroicons-heart' },
+      { label: 'Metrics', value: 'metrics', icon: 'i-heroicons-chart-bar' },
       { label: 'Terminal', value: 'terminal', icon: 'i-heroicons-command-line' },
+      { label: 'Cron', value: 'cron', icon: 'i-heroicons-clock' },
       { label: 'Volumes', value: 'volumes', icon: 'i-lucide-hard-drive' },
       { label: 'Environment', value: 'env', icon: 'i-heroicons-key' },
     )
   }
 
-  baseTabs.push({ label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' })
+  baseTabs.push(
+    { label: 'Activity', value: 'activity', icon: 'i-heroicons-list-bullet' },
+    { label: 'Settings', value: 'settings', icon: 'i-heroicons-cog-6-tooth' },
+  )
   return baseTabs
 })
 
@@ -367,6 +373,235 @@ async function saveSettings() {
   }
 }
 
+// Health check management
+const healthStatus = ref<AppHealthStatus | null>(null)
+const healthLoading = ref(false)
+const healthCheckEnabled = ref(false)
+const healthForm = ref<HealthCheckConfig>({
+  endpoint: '/health',
+  interval: 30,
+  timeout: 5,
+  max_failures: 3,
+  auto_restart: true,
+})
+const savingHealth = ref(false)
+const healthInitialized = ref(false)
+let healthInterval: ReturnType<typeof setInterval> | null = null
+
+// Initialize health config when app data loads
+watch(() => app.value, (appData) => {
+  if (appData && !healthInitialized.value) {
+    healthCheckEnabled.value = !!appData.health_check
+    if (appData.health_check) {
+      healthForm.value = { ...appData.health_check }
+    }
+    if (appData.health) {
+      healthStatus.value = appData.health
+    }
+    healthInitialized.value = true
+  }
+}, { immediate: true })
+
+// Auto-refresh health status when tab is active
+watch(activeTab, (tab) => {
+  if (tab === 'health') {
+    fetchHealthStatus()
+    healthInterval = setInterval(fetchHealthStatus, 10000)
+  } else {
+    if (healthInterval) {
+      clearInterval(healthInterval)
+      healthInterval = null
+    }
+  }
+})
+
+onUnmounted(() => {
+  if (healthInterval) {
+    clearInterval(healthInterval)
+  }
+})
+
+async function fetchHealthStatus() {
+  if (!app.value) return
+  healthLoading.value = true
+  try {
+    healthStatus.value = await $api<AppHealthStatus>(`/apps/${appId}/health`)
+  } catch {
+    // Health endpoint may not be available yet
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function triggerHealthCheck() {
+  healthLoading.value = true
+  try {
+    healthStatus.value = await $api<AppHealthStatus>(`/apps/${appId}/health/check`, { method: 'POST' })
+    toast.add({ title: 'Health check triggered', color: 'success' })
+  } catch (error) {
+    toast.add({ title: 'Health check failed', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+async function saveHealthConfig() {
+  savingHealth.value = true
+  try {
+    const healthCheck = healthCheckEnabled.value ? healthForm.value : {
+      endpoint: '',
+      interval: 0,
+      timeout: 0,
+      max_failures: 0,
+      auto_restart: false,
+    }
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: { health_check: healthCheckEnabled.value ? healthCheck : null }
+    })
+    toast.add({ title: 'Health check configuration saved', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to save', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    savingHealth.value = false
+  }
+}
+
+function getHealthColor(status?: string): "success" | "error" | "neutral" {
+  if (status === 'healthy') return 'success'
+  if (status === 'unhealthy') return 'error'
+  return 'neutral'
+}
+
+function formatTime(ts?: string): string {
+  if (!ts || ts === '0001-01-01T00:00:00Z') return 'Never'
+  return new Date(ts).toLocaleString()
+}
+
+// Webhook management
+const webhookGitUrl = ref('')
+const webhookSetupLoading = ref(false)
+const webhookDeliveries = ref<WebhookDelivery[]>([])
+const webhookDeliveriesLoading = ref(false)
+const showWebhookSecret = ref(false)
+const webhookInitialized = ref(false)
+let webhookInterval: ReturnType<typeof setInterval> | null = null
+
+// Initialize webhook form when app data loads
+watch(() => app.value, (appData) => {
+  if (appData && !webhookInitialized.value) {
+    webhookGitUrl.value = appData.deployment?.git_url || ''
+    webhookInitialized.value = true
+  }
+}, { immediate: true })
+
+// Auto-refresh webhook deliveries when deployments tab is active
+watch(activeTab, (tab) => {
+  if (tab === 'deployments') {
+    fetchWebhookDeliveries()
+    webhookInterval = setInterval(fetchWebhookDeliveries, 10000)
+  } else {
+    if (webhookInterval) {
+      clearInterval(webhookInterval)
+      webhookInterval = null
+    }
+  }
+})
+
+onUnmounted(() => {
+  if (webhookInterval) {
+    clearInterval(webhookInterval)
+  }
+})
+
+async function setupWebhook() {
+  if (!webhookGitUrl.value.trim()) {
+    toast.add({ title: 'Git URL is required', color: 'error' })
+    return
+  }
+  webhookSetupLoading.value = true
+  try {
+    const result = await $api<WebhookSetupResponse>(`/apps/${appId}/webhook/setup`, {
+      method: 'POST',
+      body: { git_url: webhookGitUrl.value.trim() }
+    })
+    toast.add({ title: 'Webhook enabled', description: 'Copy the URL and secret to your GitHub repository settings.', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to setup webhook', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function disableWebhook() {
+  webhookSetupLoading.value = true
+  try {
+    await $api(`/apps/${appId}`, {
+      method: 'PUT',
+      body: {
+        deployment: {
+          ...app.value?.deployment,
+          git_url: '',
+          webhook_secret: '',
+          auto_deploy: false,
+        }
+      }
+    })
+    webhookGitUrl.value = ''
+    showWebhookSecret.value = false
+    toast.add({ title: 'Webhook disabled', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to disable webhook', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function regenerateSecret() {
+  if (!app.value?.deployment?.git_url) return
+  webhookSetupLoading.value = true
+  try {
+    await $api<WebhookSetupResponse>(`/apps/${appId}/webhook/setup`, {
+      method: 'POST',
+      body: { git_url: app.value.deployment.git_url }
+    })
+    toast.add({ title: 'Secret regenerated', description: 'Update the secret in your GitHub repository settings.', color: 'success' })
+    refresh()
+  } catch (error) {
+    toast.add({ title: 'Failed to regenerate secret', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    webhookSetupLoading.value = false
+  }
+}
+
+async function fetchWebhookDeliveries() {
+  if (!app.value) return
+  webhookDeliveriesLoading.value = true
+  try {
+    const data = await $api<{ deliveries: WebhookDelivery[] }>(`/apps/${appId}/webhook/deliveries`)
+    webhookDeliveries.value = data.deliveries || []
+  } catch {
+    // Webhook deliveries endpoint may not have any data yet
+  } finally {
+    webhookDeliveriesLoading.value = false
+  }
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text)
+  toast.add({ title: 'Copied to clipboard', color: 'success' })
+}
+
+function getDeliveryStatusColor(status: string): "success" | "error" | "warning" | "neutral" {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'error'
+  if (status === 'deploying') return 'warning'
+  return 'neutral'
+}
+
 // Restart reminder modal (shown when external access setting changes)
 const showRestartModal = ref(false)
 
@@ -382,6 +617,185 @@ async function deleteApp() {
     toast.add({ title: 'Failed to delete', description: getErrorMessage(error), color: 'error' })
   }
 }
+
+// --- Rollback ---
+const rollbackLoading = ref<string | null>(null)
+
+async function rollbackTo(deploymentId: string) {
+  rollbackLoading.value = deploymentId
+  try {
+    await $api(`/apps/${appId}/rollback`, {
+      method: 'POST',
+      body: { deployment_id: deploymentId }
+    })
+    toast.add({ title: 'Rollback successful', color: 'success' })
+    await refresh()
+  } catch (error) {
+    toast.add({ title: 'Rollback failed', description: getErrorMessage(error), color: 'error' })
+  } finally {
+    rollbackLoading.value = null
+  }
+}
+
+// --- Cron Jobs ---
+const cronJobs = ref<CronJob[]>([])
+const cronLoading = ref(false)
+const showCronForm = ref(false)
+const cronForm = ref({ name: '', schedule: '', command: '' })
+const cronExecutions = ref<CronExecution[]>([])
+const selectedCronJob = ref<string | null>(null)
+
+async function fetchCronJobs() {
+  cronLoading.value = true
+  try {
+    const data = await $api<{ jobs: CronJob[] }>(`/apps/${appId}/cron`)
+    cronJobs.value = data.jobs || []
+  } catch { /* ignore */ } finally {
+    cronLoading.value = false
+  }
+}
+
+async function createCronJob() {
+  if (!cronForm.value.name || !cronForm.value.schedule || !cronForm.value.command) return
+  try {
+    await $api(`/apps/${appId}/cron`, {
+      method: 'POST',
+      body: cronForm.value
+    })
+    toast.add({ title: 'Cron job created', color: 'success' })
+    cronForm.value = { name: '', schedule: '', command: '' }
+    showCronForm.value = false
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to create cron job', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function deleteCronJob(jobId: string) {
+  try {
+    await $api(`/apps/${appId}/cron/${jobId}`, { method: 'DELETE' })
+    toast.add({ title: 'Cron job deleted', color: 'success' })
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to delete', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function runCronJob(jobId: string) {
+  try {
+    await $api(`/apps/${appId}/cron/${jobId}/run`, { method: 'POST' })
+    toast.add({ title: 'Cron job triggered', color: 'success' })
+    setTimeout(fetchCronJobs, 2000)
+  } catch (error) {
+    toast.add({ title: 'Failed to run', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function toggleCronJob(job: CronJob) {
+  try {
+    await $api(`/apps/${appId}/cron/${job.id}`, {
+      method: 'PUT',
+      body: { enabled: !job.enabled }
+    })
+    await fetchCronJobs()
+  } catch (error) {
+    toast.add({ title: 'Failed to toggle', description: getErrorMessage(error), color: 'error' })
+  }
+}
+
+async function fetchCronExecutions(jobId: string) {
+  selectedCronJob.value = jobId
+  try {
+    const data = await $api<{ executions: CronExecution[] }>(`/apps/${appId}/cron/${jobId}/executions`)
+    cronExecutions.value = data.executions || []
+  } catch { /* ignore */ }
+}
+
+// --- Activity Log ---
+const activities = ref<ActivityLog[]>([])
+const activityLoading = ref(false)
+
+async function fetchActivities() {
+  activityLoading.value = true
+  try {
+    const data = await $api<{ activities: ActivityLog[] }>(`/apps/${appId}/activity`)
+    activities.value = data.activities || []
+  } catch { /* ignore */ } finally {
+    activityLoading.value = false
+  }
+}
+
+function getActivityIcon(action: string): string {
+  if (action.includes('deploy')) return 'i-heroicons-rocket-launch'
+  if (action.includes('rollback')) return 'i-heroicons-arrow-uturn-left'
+  if (action.includes('start')) return 'i-heroicons-play'
+  if (action.includes('stop')) return 'i-heroicons-stop'
+  if (action.includes('restart')) return 'i-heroicons-arrow-path'
+  if (action.includes('cron')) return 'i-heroicons-clock'
+  if (action.includes('config')) return 'i-heroicons-cog-6-tooth'
+  return 'i-heroicons-bolt'
+}
+
+// Metrics
+const metricsData = ref<AppMetric[]>([])
+const metricsCurrent = ref<AppMetricsResponse['current'] | null>(null)
+const metricsLoading = ref(false)
+const metricsPeriod = ref('1h')
+
+async function fetchMetrics() {
+  metricsLoading.value = true
+  try {
+    const data = await $api<AppMetricsResponse>(`/apps/${appId}/metrics?period=${metricsPeriod.value}`)
+    metricsData.value = data.metrics || []
+    metricsCurrent.value = data.current || null
+  } catch { /* ignore */ } finally {
+    metricsLoading.value = false
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+// Build log viewer
+const buildLogContent = ref('')
+const buildLogLoading = ref(false)
+const showBuildLog = ref(false)
+
+async function viewBuildLog(deploymentId: string) {
+  buildLogLoading.value = true
+  showBuildLog.value = true
+  try {
+    const data = await $api<{ build_log: string }>(`/apps/${appId}/deployments/${deploymentId}/logs`)
+    buildLogContent.value = data.build_log || 'No build log available'
+  } catch {
+    buildLogContent.value = 'Failed to fetch build log'
+  } finally {
+    buildLogLoading.value = false
+  }
+}
+
+// Connection info for database apps
+const connectionInfo = ref<Record<string, any> | null>(null)
+
+async function fetchConnectionInfo() {
+  try {
+    const data = await $api<Record<string, any>>(`/apps/${appId}/connection-info`)
+    connectionInfo.value = data
+  } catch { /* ignore */ }
+}
+
+// Tab change watchers for new tabs
+watch(activeTab, (tab) => {
+  if (tab === 'cron') fetchCronJobs()
+  if (tab === 'activity') fetchActivities()
+  if (tab === 'metrics') fetchMetrics()
+  if (tab === 'settings') fetchConnectionInfo()
+})
 </script>
 
 <template>
@@ -606,9 +1020,30 @@ async function deleteApp() {
               </span>
               <span v-else class="text-gray-500 text-sm">No commit info</span>
             </div>
-            <span class="text-sm text-gray-500">
-              {{ new Date(deployment.deployed_at).toLocaleString() }}
-            </span>
+            <div class="flex items-center gap-2">
+              <UButton
+                size="xs"
+                variant="ghost"
+                icon="i-heroicons-document-text"
+                @click="viewBuildLog(deployment.id)"
+              >
+                Logs
+              </UButton>
+              <UButton
+                v-if="index > 0 && deployment.image"
+                size="xs"
+                variant="soft"
+                color="warning"
+                icon="i-heroicons-arrow-uturn-left"
+                :loading="rollbackLoading === deployment.id"
+                @click="rollbackTo(deployment.id)"
+              >
+                Rollback
+              </UButton>
+              <span class="text-sm text-gray-500">
+                {{ new Date(deployment.deployed_at).toLocaleString() }}
+              </span>
+            </div>
           </div>
           <div v-if="deployment.commit_msg" class="text-sm text-gray-600 dark:text-gray-400 truncate">
             {{ deployment.commit_msg }}
@@ -616,6 +1051,53 @@ async function deleteApp() {
           <div v-if="deployment.branch" class="text-xs text-gray-500 mt-1">
             <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
             {{ deployment.branch }}
+          </div>
+        </div>
+      </div>
+    </UCard>
+
+    <!-- Webhook Deliveries (in Deployments tab) -->
+    <UCard v-if="activeTab === 'deployments' && app?.deployment?.webhook_secret" class="mt-6">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Webhook Deliveries</h3>
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="webhookDeliveriesLoading" @click="fetchWebhookDeliveries">
+            Refresh
+          </UButton>
+        </div>
+      </template>
+
+      <div v-if="webhookDeliveries.length === 0" class="text-center py-6 text-gray-500">
+        <UIcon name="i-heroicons-inbox" class="w-10 h-10 mx-auto mb-2 opacity-50" />
+        <p class="text-sm">No webhook deliveries yet</p>
+        <p class="text-xs mt-1">Push to your repository to trigger a deployment</p>
+      </div>
+
+      <div v-else class="space-y-2">
+        <div
+          v-for="delivery in webhookDeliveries"
+          :key="delivery.id"
+          class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <UBadge :color="getDeliveryStatusColor(delivery.status)" size="xs">
+                {{ delivery.status }}
+              </UBadge>
+              <span class="text-sm font-medium">{{ delivery.event }}</span>
+              <span v-if="delivery.commit" class="font-mono text-xs text-gray-500">{{ delivery.commit }}</span>
+            </div>
+            <span class="text-xs text-gray-500">{{ new Date(delivery.created_at).toLocaleString() }}</span>
+          </div>
+          <div v-if="delivery.message" class="text-sm text-gray-600 dark:text-gray-400 mt-1 truncate">
+            {{ delivery.message }}
+          </div>
+          <div v-if="delivery.branch" class="text-xs text-gray-500 mt-1">
+            <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
+            {{ delivery.branch }}
+          </div>
+          <div v-if="delivery.error" class="text-xs text-red-500 mt-1 truncate">
+            {{ delivery.error }}
           </div>
         </div>
       </div>
@@ -687,6 +1169,125 @@ async function deleteApp() {
       </template>
     </UCard>
 
+    <!-- Health Tab -->
+    <div v-if="activeTab === 'health'" class="space-y-6">
+      <!-- Health Status -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Health Status</h3>
+            <UButton
+              variant="outline"
+              size="sm"
+              icon="i-heroicons-arrow-path"
+              :loading="healthLoading"
+              :disabled="!app.health_check"
+              @click="triggerHealthCheck"
+            >
+              Check Now
+            </UButton>
+          </div>
+        </template>
+
+        <div v-if="!app.health_check" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-heart" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>Health checks are not enabled</p>
+          <p class="text-sm mt-1">Enable health checks below to monitor this app</p>
+        </div>
+
+        <div v-else-if="healthStatus" class="space-y-4">
+          <div class="flex items-center gap-3">
+            <UBadge :color="getHealthColor(healthStatus.status)" size="lg">
+              {{ healthStatus.status }}
+            </UBadge>
+            <span class="text-sm text-gray-500">
+              Last checked: {{ formatTime(healthStatus.last_check) }}
+            </span>
+          </div>
+
+          <dl class="grid grid-cols-2 gap-4">
+            <div>
+              <dt class="text-sm text-gray-500">Last Success</dt>
+              <dd class="font-medium">{{ formatTime(healthStatus.last_success) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Consecutive Failures</dt>
+              <dd class="font-medium">{{ healthStatus.consecutive_failures }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Total Checks</dt>
+              <dd class="font-medium">{{ healthStatus.total_checks }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm text-gray-500">Total Failures</dt>
+              <dd class="font-medium">{{ healthStatus.total_failures }}</dd>
+            </div>
+          </dl>
+
+          <div v-if="healthStatus.last_error" class="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-exclamation-triangle" class="w-5 h-5 text-red-500 shrink-0" />
+              <span class="text-sm text-red-600 dark:text-red-400">{{ healthStatus.last_error }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="text-center py-4 text-gray-500">
+          <p class="text-sm">No health data yet. Waiting for first check...</p>
+        </div>
+      </UCard>
+
+      <!-- Health Check Configuration -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Configuration</h3>
+            <UButton :loading="savingHealth" @click="saveHealthConfig">
+              Save
+            </UButton>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div>
+              <div class="font-medium text-sm">Enable Health Checks</div>
+              <div class="text-xs text-gray-500">Periodically check if your app is responding</div>
+            </div>
+            <USwitch v-model="healthCheckEnabled" />
+          </div>
+
+          <template v-if="healthCheckEnabled">
+            <UFormField label="Health Endpoint" hint="HTTP path to check">
+              <UInput v-model="healthForm.endpoint" placeholder="/health" />
+            </UFormField>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <UFormField label="Check Interval (seconds)" hint="Time between checks">
+                <UInput v-model.number="healthForm.interval" type="number" min="5" placeholder="30" />
+              </UFormField>
+
+              <UFormField label="Timeout (seconds)" hint="Max wait per check">
+                <UInput v-model.number="healthForm.timeout" type="number" min="1" placeholder="5" />
+              </UFormField>
+
+              <UFormField label="Max Failures" hint="Before auto-restart">
+                <UInput v-model.number="healthForm.max_failures" type="number" min="1" placeholder="3" />
+              </UFormField>
+            </div>
+
+            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+              <div>
+                <div class="font-medium text-sm">Auto-Restart on Failure</div>
+                <div class="text-xs text-gray-500">Automatically restart the app after consecutive failures</div>
+              </div>
+              <USwitch v-model="healthForm.auto_restart" />
+            </div>
+          </template>
+        </div>
+      </UCard>
+    </div>
+
     <!-- Terminal Tab -->
     <div v-if="activeTab === 'terminal'">
       <div v-if="app.status !== 'running'" class="text-center py-12">
@@ -694,6 +1295,173 @@ async function deleteApp() {
         <p class="text-gray-500">App must be running to use terminal</p>
       </div>
       <AppsAppTerminal v-else :app-id="appId" />
+    </div>
+
+    <!-- Metrics Tab -->
+    <div v-if="activeTab === 'metrics'" class="space-y-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-semibold">Resource Usage</h3>
+        <div class="flex gap-2">
+          <UButton v-for="p in ['1h', '24h', '7d']" :key="p" :variant="metricsPeriod === p ? 'solid' : 'outline'" size="xs" @click="metricsPeriod = p; fetchMetrics()">{{ p }}</UButton>
+          <UButton icon="i-heroicons-arrow-path" size="xs" variant="ghost" @click="fetchMetrics()" :loading="metricsLoading" />
+        </div>
+      </div>
+
+      <!-- Current Stats -->
+      <div v-if="metricsCurrent" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">CPU</div>
+            <div class="text-2xl font-bold">{{ metricsCurrent.cpu_percent.toFixed(1) }}%</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Memory</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.mem_usage) }}</div>
+            <div class="text-xs text-gray-400" v-if="metricsCurrent.mem_limit">/ {{ formatBytes(metricsCurrent.mem_limit) }}</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Net In</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.net_input) }}</div>
+          </div>
+        </UCard>
+        <UCard>
+          <div class="text-center">
+            <div class="text-sm text-gray-500">Net Out</div>
+            <div class="text-2xl font-bold">{{ formatBytes(metricsCurrent.net_output) }}</div>
+          </div>
+        </UCard>
+      </div>
+
+      <!-- Metrics History -->
+      <UCard>
+        <template #header>
+          <h4 class="font-medium">History ({{ metricsData.length }} data points)</h4>
+        </template>
+        <div v-if="metricsData.length === 0" class="text-center text-gray-500 py-8">
+          No metrics data yet. Stats are collected every 30 seconds.
+        </div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-gray-500">
+                <th class="pb-2">Time</th>
+                <th class="pb-2">CPU %</th>
+                <th class="pb-2">Memory</th>
+                <th class="pb-2">Net In</th>
+                <th class="pb-2">Net Out</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in metricsData.slice(-20)" :key="m.id" class="border-t border-gray-800">
+                <td class="py-1">{{ new Date(m.recorded_at).toLocaleTimeString() }}</td>
+                <td class="py-1">{{ m.cpu_percent.toFixed(1) }}%</td>
+                <td class="py-1">{{ formatBytes(m.mem_usage) }}</td>
+                <td class="py-1">{{ formatBytes(m.net_input) }}</td>
+                <td class="py-1">{{ formatBytes(m.net_output) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </UCard>
+    </div>
+
+    <!-- Cron Jobs Tab -->
+    <div v-if="activeTab === 'cron'" class="space-y-6">
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Scheduled Tasks</h3>
+            <UButton size="sm" icon="i-heroicons-plus" @click="showCronForm = !showCronForm">
+              Add Cron Job
+            </UButton>
+          </div>
+        </template>
+
+        <!-- Add Cron Job Form -->
+        <div v-if="showCronForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+          <UFormField label="Name">
+            <UInput v-model="cronForm.name" placeholder="Database backup" />
+          </UFormField>
+          <UFormField label="Schedule (cron expression)">
+            <UInput v-model="cronForm.schedule" placeholder="0 2 * * *" />
+            <template #hint>
+              <span class="text-xs">Examples: <code>*/5 * * * *</code> (every 5 min), <code>0 2 * * *</code> (daily 2am), <code>0 * * * *</code> (hourly)</span>
+            </template>
+          </UFormField>
+          <UFormField label="Command">
+            <UInput v-model="cronForm.command" placeholder="pg_dump mydb > /backup/latest.sql" />
+          </UFormField>
+          <div class="flex gap-2">
+            <UButton size="sm" @click="createCronJob">Create</UButton>
+            <UButton size="sm" variant="ghost" @click="showCronForm = false">Cancel</UButton>
+          </div>
+        </div>
+
+        <!-- Cron Jobs List -->
+        <div v-if="cronJobs.length === 0 && !showCronForm" class="text-center py-8 text-gray-500">
+          <UIcon name="i-heroicons-clock" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+          <p>No scheduled tasks</p>
+          <p class="text-sm mt-1">Add cron jobs to run commands on a schedule</p>
+        </div>
+
+        <div v-else class="space-y-3">
+          <div
+            v-for="job in cronJobs"
+            :key="job.id"
+            class="p-4 rounded-lg border border-gray-200 dark:border-gray-700"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <UBadge :color="job.enabled ? 'success' : 'neutral'" size="xs">
+                  {{ job.enabled ? 'Active' : 'Disabled' }}
+                </UBadge>
+                <span class="font-medium">{{ job.name }}</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <UButton size="xs" variant="ghost" icon="i-heroicons-play" @click="runCronJob(job.id)" title="Run now" />
+                <UButton size="xs" variant="ghost" :icon="job.enabled ? 'i-heroicons-pause' : 'i-heroicons-play'" @click="toggleCronJob(job)" :title="job.enabled ? 'Disable' : 'Enable'" />
+                <UButton size="xs" variant="ghost" icon="i-heroicons-eye" @click="fetchCronExecutions(job.id)" title="View history" />
+                <UButton size="xs" variant="ghost" color="error" icon="i-heroicons-trash" @click="deleteCronJob(job.id)" title="Delete" />
+              </div>
+            </div>
+            <div class="text-sm text-gray-500 font-mono">{{ job.schedule }}</div>
+            <div class="text-sm text-gray-600 dark:text-gray-400 mt-1 font-mono truncate">$ {{ job.command }}</div>
+            <div v-if="job.last_run" class="text-xs text-gray-500 mt-2 flex items-center gap-2">
+              Last run: {{ formatTime(job.last_run) }}
+              <UBadge v-if="job.last_status" :color="job.last_status === 'success' ? 'success' : 'error'" size="xs">{{ job.last_status }}</UBadge>
+            </div>
+          </div>
+        </div>
+      </UCard>
+
+      <!-- Cron Execution History -->
+      <UCard v-if="selectedCronJob">
+        <template #header>
+          <h3 class="font-semibold">Execution History</h3>
+        </template>
+        <div v-if="cronExecutions.length === 0" class="text-center py-4 text-gray-500 text-sm">
+          No executions yet
+        </div>
+        <div v-else class="space-y-2">
+          <div
+            v-for="exec in cronExecutions"
+            :key="exec.id"
+            class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+          >
+            <div class="flex items-center justify-between">
+              <UBadge :color="exec.status === 'success' ? 'success' : exec.status === 'running' ? 'warning' : 'error'" size="xs">
+                {{ exec.status }}
+              </UBadge>
+              <span class="text-xs text-gray-500">{{ new Date(exec.started_at).toLocaleString() }}</span>
+            </div>
+            <pre v-if="exec.output" class="text-xs mt-2 p-2 bg-gray-900 text-gray-300 rounded overflow-x-auto max-h-32">{{ exec.output }}</pre>
+          </div>
+        </div>
+      </UCard>
     </div>
 
     <!-- Volumes Tab -->
@@ -828,7 +1596,78 @@ async function deleteApp() {
     </UCard>
 
     <!-- Settings Tab -->
+    <!-- Activity Tab -->
+    <UCard v-if="activeTab === 'activity'">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <h3 class="font-semibold">Activity Log</h3>
+          <UButton variant="ghost" size="sm" icon="i-heroicons-arrow-path" :loading="activityLoading" @click="fetchActivities">
+            Refresh
+          </UButton>
+        </div>
+      </template>
+
+      <div v-if="activities.length === 0" class="text-center py-8 text-gray-500">
+        <UIcon name="i-heroicons-list-bullet" class="w-12 h-12 mx-auto mb-2 opacity-50" />
+        <p>No activity yet</p>
+      </div>
+
+      <div v-else class="space-y-2">
+        <div
+          v-for="entry in activities"
+          :key="entry.id"
+          class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+        >
+          <UIcon :name="getActivityIcon(entry.action)" class="w-5 h-5 mt-0.5 text-gray-400" />
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <UBadge :color="entry.status === 'success' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral'" size="xs">
+                {{ entry.action }}
+              </UBadge>
+              <span class="text-xs text-gray-500">{{ entry.actor_type }}</span>
+            </div>
+            <div v-if="entry.details" class="text-sm text-gray-500 mt-1 truncate">{{ entry.details }}</div>
+            <div class="text-xs text-gray-400 mt-1">{{ new Date(entry.created_at).toLocaleString() }}</div>
+          </div>
+        </div>
+      </div>
+    </UCard>
+
     <div v-if="activeTab === 'settings'" class="space-y-6">
+      <!-- Connection Info (for database apps) -->
+      <UCard v-if="connectionInfo && connectionInfo.type">
+        <template #header>
+          <h3 class="font-semibold flex items-center gap-2">
+            <UIcon name="i-lucide-database" class="w-5 h-5" />
+            Connection Info ({{ connectionInfo.type }})
+          </h3>
+        </template>
+        <div class="space-y-3">
+          <div v-if="connectionInfo.connection_url" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Connection URL</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm flex-1 truncate">{{ connectionInfo.connection_url }}</code>
+            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.connection_url)" />
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Internal Host</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.internal_host }}</code>
+          </div>
+          <div v-if="connectionInfo.user" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">User</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.user }}</code>
+          </div>
+          <div v-if="connectionInfo.password" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Password</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.password }}</code>
+            <UButton size="xs" variant="ghost" icon="i-heroicons-clipboard" @click="navigator.clipboard.writeText(connectionInfo.password)" />
+          </div>
+          <div v-if="connectionInfo.database" class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 w-28">Database</span>
+            <code class="bg-gray-800 px-2 py-1 rounded text-sm">{{ connectionInfo.database }}</code>
+          </div>
+        </div>
+      </UCard>
+
       <!-- Row 1: General + Container (or just General + Aliases for static) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- General Settings -->
@@ -1049,6 +1888,81 @@ async function deleteApp() {
         </UButton>
       </div>
 
+      <!-- Webhook Setup -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Webhook (Auto-Deploy)</h3>
+            <template v-if="app?.deployment?.webhook_secret">
+              <div class="flex gap-2">
+                <UButton variant="outline" size="xs" @click="regenerateSecret" :loading="webhookSetupLoading">
+                  Regenerate Secret
+                </UButton>
+                <UButton color="error" variant="outline" size="xs" @click="disableWebhook" :loading="webhookSetupLoading">
+                  Disable
+                </UButton>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Webhook not configured -->
+        <div v-if="!app?.deployment?.webhook_secret" class="space-y-4">
+          <p class="text-sm text-gray-500">
+            Enable webhooks to automatically deploy when you push to GitHub.
+          </p>
+          <UFormField label="Git Repository URL" hint="HTTPS clone URL">
+            <UInput v-model="webhookGitUrl" placeholder="https://github.com/user/repo.git" />
+          </UFormField>
+          <UButton :loading="webhookSetupLoading" @click="setupWebhook">
+            Enable Webhook
+          </UButton>
+        </div>
+
+        <!-- Webhook configured -->
+        <div v-else class="space-y-4">
+          <div class="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+              <span class="text-sm text-green-700 dark:text-green-300">Webhook is active. Push to <code class="font-mono bg-green-100 dark:bg-green-800 px-1 rounded">{{ app.deployment?.branch || 'main' }}</code> to auto-deploy.</span>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+              <div class="flex gap-2">
+                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
+                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook`)" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Secret</label>
+              <div class="flex gap-2">
+                <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
+                <UButton variant="outline" size="sm" :icon="showWebhookSecret ? 'i-heroicons-eye-slash' : 'i-heroicons-eye'" @click="showWebhookSecret = !showWebhookSecret" />
+                <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.deployment?.webhook_secret || '')" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Git URL</label>
+              <code class="block px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
+            </div>
+          </div>
+
+          <div class="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+            <div class="flex items-start gap-2">
+              <UIcon name="i-heroicons-information-circle" class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+              <div class="text-blue-700 dark:text-blue-300">
+                <strong>GitHub Setup:</strong> Go to your repository Settings &rarr; Webhooks &rarr; Add webhook. Paste the URL and secret above. Set content type to <code class="font-mono bg-blue-100 dark:bg-blue-800 px-1 rounded">application/json</code>.
+              </div>
+            </div>
+          </div>
+        </div>
+      </UCard>
+
       <!-- Danger Zone -->
       <UCard class="border-red-200 dark:border-red-800">
         <template #header>
@@ -1106,6 +2020,20 @@ async function deleteApp() {
               Restart Now
             </UButton>
           </div>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- Build Log Modal -->
+    <UModal v-model:open="showBuildLog">
+      <template #content>
+        <div class="p-6 max-h-[80vh] overflow-auto">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Build Log</h3>
+            <UButton icon="i-heroicons-x-mark" variant="ghost" size="xs" @click="showBuildLog = false" />
+          </div>
+          <div v-if="buildLogLoading" class="text-center py-8">Loading...</div>
+          <pre v-else class="bg-gray-900 text-green-400 p-4 rounded text-xs font-mono whitespace-pre-wrap max-h-[60vh] overflow-auto">{{ buildLogContent }}</pre>
         </div>
       </template>
     </UModal>

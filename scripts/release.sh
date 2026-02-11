@@ -101,9 +101,11 @@ podman run --rm --platform linux/arm64 -v "$PWD:/app" -w /app golang:$GO_VERSION
 # Build basepod (server) - macOS
 echo "Building basepod darwin-arm64..."
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o basepod-darwin-arm64 ./cmd/basepod
+codesign -s - basepod-darwin-arm64
 
 echo "Building basepod darwin-amd64..."
 CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o basepod-darwin-amd64 ./cmd/basepod
+codesign -s - basepod-darwin-amd64
 
 # Build bp (CLI client) - all platforms (no CGO needed for client)
 echo "Building bp CLI linux-arm64..."
@@ -114,9 +116,11 @@ GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o bp-linux-amd64 ./cmd/bp
 
 echo "Building bp CLI darwin-arm64..."
 GOOS=darwin GOARCH=arm64 go build -ldflags='-s -w' -o bp-darwin-arm64 ./cmd/bp
+codesign -s - bp-darwin-arm64
 
 echo "Building bp CLI darwin-amd64..."
 GOOS=darwin GOARCH=amd64 go build -ldflags='-s -w' -o bp-darwin-amd64 ./cmd/bp
+codesign -s - bp-darwin-amd64
 
 # Commit version bump
 git add -A
