@@ -7,16 +7,22 @@ definePageMeta({
 
 const activities = ref<ActivityLog[]>([])
 const loading = ref(false)
-const limit = ref(50)
+const page = ref(1)
+const perPage = 30
+const total = ref(0)
 const actionFilter = ref('')
+
+const totalPages = computed(() => Math.ceil(total.value / perPage))
 
 async function loadActivities() {
   loading.value = true
   try {
-    let url = `/activity?limit=${limit.value}`
+    const offset = (page.value - 1) * perPage
+    let url = `/activity?limit=${perPage}&offset=${offset}`
     if (actionFilter.value) url += `&action=${actionFilter.value}`
-    const data = await $api<{ activities: ActivityLog[] }>(url)
+    const data = await $api<{ activities: ActivityLog[], total: number }>(url)
     activities.value = data.activities || []
+    total.value = data.total || 0
   } catch {
     activities.value = []
   } finally {
@@ -24,8 +30,14 @@ async function loadActivities() {
   }
 }
 
-function showMore() {
-  limit.value += 50
+function goToPage(p: number) {
+  if (p < 1 || p > totalPages.value) return
+  page.value = p
+  loadActivities()
+}
+
+function onFilterChange() {
+  page.value = 1
   loadActivities()
 }
 
@@ -75,7 +87,10 @@ onMounted(() => {
     <div class="flex items-center justify-between mb-6">
       <div>
         <h2 class="text-xl font-semibold">Activity Log</h2>
-        <p class="text-gray-500 dark:text-gray-400">All actions across your Basepod instance</p>
+        <p class="text-gray-500 dark:text-gray-400">
+          All actions across your Basepod instance
+          <span v-if="total > 0" class="ml-1">({{ total }} total)</span>
+        </p>
       </div>
       <div class="flex items-center gap-2">
         <USelect
@@ -88,7 +103,7 @@ onMounted(() => {
             { label: 'User Actions', value: 'login' }
           ]"
           size="sm"
-          @update:model-value="loadActivities()"
+          @update:model-value="onFilterChange()"
         />
         <UButton icon="i-heroicons-arrow-path" variant="ghost" size="sm" :loading="loading" @click="loadActivities()" />
       </div>
@@ -128,8 +143,38 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="activities.length >= limit" class="pt-4 text-center">
-        <UButton variant="ghost" size="sm" @click="showMore">Show More</UButton>
+      <!-- Pagination -->
+      <div v-if="totalPages > 1" class="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-gray-800 mt-2">
+        <p class="text-sm text-gray-500">
+          Showing {{ (page - 1) * perPage + 1 }}–{{ Math.min(page * perPage, total) }} of {{ total }}
+        </p>
+        <div class="flex items-center gap-1">
+          <UButton
+            icon="i-heroicons-chevron-left"
+            variant="ghost"
+            size="xs"
+            :disabled="page <= 1"
+            @click="goToPage(page - 1)"
+          />
+          <template v-for="p in totalPages" :key="p">
+            <UButton
+              v-if="p === 1 || p === totalPages || (p >= page - 1 && p <= page + 1)"
+              size="xs"
+              :variant="p === page ? 'solid' : 'ghost'"
+              @click="goToPage(p)"
+            >
+              {{ p }}
+            </UButton>
+            <span v-else-if="p === page - 2 || p === page + 2" class="text-gray-400 px-1">...</span>
+          </template>
+          <UButton
+            icon="i-heroicons-chevron-right"
+            variant="ghost"
+            size="xs"
+            :disabled="page >= totalPages"
+            @click="goToPage(page + 1)"
+          />
+        </div>
       </div>
     </UCard>
   </div>

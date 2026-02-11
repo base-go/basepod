@@ -846,6 +846,10 @@ func (s *Storage) SaveActivityLog(l *app.ActivityLog) error {
 
 // ListActivityLogs retrieves activity logs with optional filters
 func (s *Storage) ListActivityLogs(targetID string, action string, limit int) ([]app.ActivityLog, error) {
+	return s.ListActivityLogsPaginated(targetID, action, limit, 0)
+}
+
+func (s *Storage) ListActivityLogsPaginated(targetID string, action string, limit int, offset int) ([]app.ActivityLog, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -861,8 +865,8 @@ func (s *Storage) ListActivityLogs(targetID string, action string, limit int) ([
 		query += " AND action = ?"
 		args = append(args, action)
 	}
-	query += " ORDER BY created_at DESC LIMIT ?"
-	args = append(args, limit)
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -886,6 +890,24 @@ func (s *Storage) ListActivityLogs(targetID string, action string, limit int) ([
 		logs = append(logs, l)
 	}
 	return logs, nil
+}
+
+func (s *Storage) CountActivityLogs(targetID string, action string) (int, error) {
+	query := "SELECT COUNT(*) FROM activity_log WHERE 1=1"
+	var args []interface{}
+
+	if targetID != "" {
+		query += " AND target_id = ?"
+		args = append(args, targetID)
+	}
+	if action != "" {
+		query += " AND action = ?"
+		args = append(args, action)
+	}
+
+	var count int
+	err := s.db.QueryRow(query, args...).Scan(&count)
+	return count, err
 }
 
 // --- Notification Configs ---

@@ -37,9 +37,19 @@ definePageMeta({
 })
 
 const toast = useToast()
+const refreshing = ref(false)
 
 // --- Fetch system storage overview ---
 const { data: systemStorage, refresh: refreshSystemStorage } = await useApiFetch<SystemStorageResponse>('/system/storage')
+
+async function refreshStorage() {
+  refreshing.value = true
+  try {
+    await refreshSystemStorage()
+  } finally {
+    refreshing.value = false
+  }
+}
 
 // --- Volumes drill-down state ---
 interface VolumeInfo {
@@ -79,7 +89,7 @@ interface ContainerImage {
   Id: string
   RepoTags: string[]
   Size: number
-  Created: string
+  Created: number
 }
 
 const podmanExpanded = ref(false)
@@ -110,9 +120,10 @@ function getShortId(id: string): string {
   return id.replace('sha256:', '').substring(0, 12)
 }
 
-function formatImageDate(dateStr: string): string {
-  if (!dateStr) return ''
-  const d = new Date(dateStr)
+function formatImageDate(created: number): string {
+  if (!created) return ''
+  // Podman returns Unix seconds — convert to milliseconds
+  const d = new Date(created * 1000)
   const now = new Date()
   const diff = now.getTime() - d.getTime()
   const days = Math.floor(diff / 86400000)
@@ -342,7 +353,7 @@ const availablePct = computed(() => {
 })
 
 // Clearable categories
-const clearableCategories = ['huggingface', 'logs']
+const clearableCategories = ['huggingface', 'logs', 'podman']
 const clearingCategory = ref<string | null>(null)
 
 async function clearCategory(catId: string) {
@@ -367,11 +378,16 @@ async function clearCategory(catId: string) {
 <template>
   <div>
     <!-- Header -->
-    <div class="mb-6">
-      <h2 class="text-xl font-semibold">Storage</h2>
-      <p class="text-gray-500 dark:text-gray-400">
-        Disk usage overview
-      </p>
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">Storage</h2>
+        <p class="text-gray-500 dark:text-gray-400">
+          Disk usage overview
+        </p>
+      </div>
+      <UButton icon="i-heroicons-arrow-path" variant="ghost" size="sm" :loading="refreshing" @click="refreshStorage">
+        Refresh
+      </UButton>
     </div>
 
     <!-- Section 1: Disk Overview Bar -->
@@ -430,7 +446,7 @@ async function clearCategory(catId: string) {
           :class="[
             borderColorMap[cat.color] || 'border-l-gray-400',
             isCategoryExpanded(cat.id) ? 'ring-2 ring-primary-500/30' : '',
-            expandableCategories.includes(cat.id) ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50' : ''
+            expandableCategories.includes(cat.id) ? 'cursor-pointer hover:bg-(--ui-bg-muted)' : ''
           ]"
           @click="expandableCategories.includes(cat.id) ? toggleCategory(cat.id) : undefined"
         >

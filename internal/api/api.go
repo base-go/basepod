@@ -1694,16 +1694,20 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	})
 	basepodTotal += hfSize
 
-	// Podman Storage
+	// Podman Build Cache (overlay layers, intermediate builds, etc.)
 	podmanDir := filepath.Join(home, ".local", "share", "containers")
-	podmanStorageSize := diskutil.DirSize(podmanDir)
-	podmanCount := imagesCount // images stored in podman storage
+	podmanDirSize := diskutil.DirSize(podmanDir)
+	// Build cache = total podman dir - reported image sizes (already counted above)
+	podmanCacheSize := podmanDirSize - imagesSize
+	if podmanCacheSize < 0 {
+		podmanCacheSize = 0
+	}
 	categories = append(categories, StorageCategory{
-		ID: "podman", Name: "Podman Storage",
-		Size: podmanStorageSize, Formatted: diskutil.FormatBytes(podmanStorageSize),
-		Count: podmanCount, Icon: "i-heroicons-cube", Color: "indigo",
+		ID: "podman", Name: "Build Cache & Layers",
+		Size: podmanCacheSize, Formatted: diskutil.FormatBytes(podmanCacheSize),
+		Count: 0, Icon: "i-heroicons-archive-box", Color: "indigo",
 	})
-	basepodTotal += podmanStorageSize
+	basepodTotal += podmanCacheSize
 
 	// Other/System usage = disk used - basepod total
 	otherSize := int64(du.Used) - basepodTotal
@@ -1953,6 +1957,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check if there are team members (multi-user mode)
+	userCount, _ := s.storage.CountUsers()
+
 	cfg := map[string]interface{}{
 		"domain": map[string]interface{}{
 			"root":     s.config.Domain.Root,
@@ -1962,6 +1969,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"ai": map[string]interface{}{
 			"huggingface_token": maskedToken,
 		},
+		"multi_user": userCount > 0,
 	}
 	jsonResponse(w, http.StatusOK, cfg)
 }
@@ -5775,12 +5783,17 @@ func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 	action := r.URL.Query().Get("action")
 	targetID := r.URL.Query().Get("target_id")
 	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
 	limit := 50
 	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
 		limit = l
 	}
+	offset := 0
+	if o, err := strconv.Atoi(offsetStr); err == nil && o > 0 {
+		offset = o
+	}
 
-	logs, err := s.storage.ListActivityLogs(targetID, action, limit)
+	logs, err := s.storage.ListActivityLogsPaginated(targetID, action, limit, offset)
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -5789,7 +5802,14 @@ func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 		logs = []app.ActivityLog{}
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{"activities": logs})
+	total, _ := s.storage.CountActivityLogs(targetID, action)
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"activities": logs,
+		"total":      total,
+		"limit":      limit,
+		"offset":     offset,
+	})
 }
 
 func (s *Server) handleListAppActivity(w http.ResponseWriter, r *http.Request) {
@@ -6348,10 +6368,18 @@ func (s *Server) handleInviteUser(w http.ResponseWriter, r *http.Request) {
 
 	s.logActivity("user", "invite_user", "user", user.ID, req.Email, "success", fmt.Sprintf("role: %s", req.Role))
 
+	// Build full invite URL using request host
+	scheme := "https"
+	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+		scheme = "http"
+	}
+	host := r.Host
+	inviteURL := fmt.Sprintf("%s://%s/setup?invite=%s", scheme, host, inviteToken)
+
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{
 		"user":         user,
 		"invite_token": inviteToken,
-		"invite_url":   fmt.Sprintf("/setup?invite=%s", inviteToken),
+		"invite_url":   inviteURL,
 	})
 }
 

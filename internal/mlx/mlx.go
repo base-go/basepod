@@ -762,7 +762,7 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// DeleteModel removes a downloaded model
+// DeleteModel removes a downloaded model and its cached files
 func (s *Service) DeleteModel(modelID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -777,7 +777,19 @@ func (s *Service) DeleteModel(modelID string) error {
 	delete(downloaded, modelID)
 	s.saveDownloadedModels(downloaded)
 
-	// Note: Actual model files are in HuggingFace cache, we just track metadata
+	// Remove actual model files from HuggingFace cache
+	// HF stores models in dirs like: models--org--model-name
+	cacheModelDir := "models--" + strings.ReplaceAll(modelID, "/", "--")
+	cachePaths := []string{
+		filepath.Join(s.baseDir, "cache", cacheModelDir),
+		filepath.Join(s.baseDir, "cache", "hub", cacheModelDir),
+	}
+	for _, p := range cachePaths {
+		if _, err := os.Stat(p); err == nil {
+			os.RemoveAll(p)
+		}
+	}
+
 	return nil
 }
 
