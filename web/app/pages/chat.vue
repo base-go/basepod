@@ -89,6 +89,10 @@ async function saveMessageToDb(role: string, content: string) {
   }
 }
 
+// Mode: 'chat' or 'assistant'
+const mode = ref<'chat' | 'assistant'>('chat')
+const assistantMessages = ref<ChatMessage[]>([])
+
 // Model selector state
 const showModelSelector = ref(false)
 const switchingModel = ref(false)
@@ -127,6 +131,13 @@ const isVisionModel = computed(() => currentModel.value?.category === 'vision')
 const hasWhisperModel = computed(() =>
   mlxData.value?.models?.some(m => m.category === 'speech' && m.downloaded)
 )
+
+// Active messages list based on mode
+const activeMessages = computed(() =>
+  mode.value === 'assistant' ? assistantMessages.value : messages.value
+)
+
+const hasActiveMessages = computed(() => activeMessages.value.length > 0)
 
 // Auto-scroll to bottom
 function scrollToBottom() {
@@ -478,8 +489,60 @@ async function sendMessage(deepAnalysis = false) {
   }
 }
 
+// Send message in assistant mode
+async function sendAssistantMessage() {
+  if (!input.value.trim() || loading.value) return
+
+  const userMessage = input.value.trim()
+  assistantMessages.value.push({ role: 'user', content: userMessage })
+  input.value = ''
+  loading.value = true
+  loadingStatus.value = 'Thinking...'
+  scrollToBottom()
+
+  try {
+    const result = await $api<{
+      response: string
+      action?: { function: string; parameters: Record<string, unknown>; success: boolean }
+    }>('/ai/ask', {
+      method: 'POST',
+      body: { message: userMessage }
+    })
+
+    let content = result.response
+    if (result.action) {
+      const badge = result.action.success ? `[${result.action.function}]` : `[${result.action.function} FAILED]`
+      content = `${badge} ${content}`
+    }
+
+    assistantMessages.value.push({ role: 'assistant', content })
+    scrollToBottom()
+  } catch (error: any) {
+    const errorMsg = error?.data?.error || error?.message || 'Failed to get response'
+    toast.add({ title: 'Error', description: errorMsg, color: 'error' })
+    assistantMessages.value.pop() // Remove failed user message
+  } finally {
+    loading.value = false
+    loadingStatus.value = ''
+  }
+}
+
+// Handle send based on mode
+function handleSend() {
+  if (mode.value === 'assistant') {
+    sendAssistantMessage()
+  } else {
+    sendMessage()
+  }
+}
+
 // Clear chat
 async function clearChat() {
+  if (mode.value === 'assistant') {
+    assistantMessages.value = []
+    return
+  }
+
   messages.value = []
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
   uploadedImages.value = []
@@ -619,22 +682,39 @@ async function manualRefresh() {
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <UBadge v-if="isVisionModel" color="secondary" variant="soft" size="sm">
+        <!-- Mode Toggle -->
+        <div class="flex items-center bg-(--ui-bg-muted) rounded-lg p-0.5">
+          <button
+            :class="[
+              'px-3 py-1 text-xs font-medium rounded-md transition-colors',
+              mode === 'chat' ? 'bg-white dark:bg-gray-800 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            ]"
+            @click="mode = 'chat'"
+          >Chat</button>
+          <button
+            :class="[
+              'px-3 py-1 text-xs font-medium rounded-md transition-colors',
+              mode === 'assistant' ? 'bg-white dark:bg-gray-800 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            ]"
+            @click="mode = 'assistant'"
+          >Assistant</button>
+        </div>
+        <UBadge v-if="isVisionModel && mode === 'chat'" color="secondary" variant="soft" size="sm">
           <UIcon name="i-heroicons-eye" class="w-3 h-3 mr-1" />
           Vision
         </UBadge>
         <UButton variant="ghost" color="neutral" size="sm" :loading="refreshing" @click="manualRefresh">
           <UIcon name="i-heroicons-arrow-path" class="w-4 h-4" />
         </UButton>
-        <UButton v-if="messages.length" variant="ghost" color="neutral" size="sm" @click="clearChat">
+        <UButton v-if="hasActiveMessages" variant="ghost" color="neutral" size="sm" @click="clearChat">
           <UIcon name="i-heroicons-trash" class="w-4 h-4 mr-1" />
           Clear
         </UButton>
       </div>
     </div>
 
-    <!-- Not running state -->
-    <div v-if="!mlxData?.running" class="flex-1 flex items-center justify-center">
+    <!-- Not running state (only for chat mode) -->
+    <div v-if="!mlxData?.running && mode === 'chat'" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <UIcon name="i-heroicons-cpu-chip" class="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
         <h3 class="text-lg font-medium mb-2">No Model Running</h3>
@@ -645,24 +725,37 @@ async function manualRefresh() {
       </div>
     </div>
 
-    <!-- Chat interface -->
-    <template v-else>
+    <!-- Chat / Assistant interface -->
+    <template v-else-if="mlxData?.running || mode === 'assistant'">
       <!-- Messages -->
       <div ref="messagesContainer" class="flex-1 overflow-y-auto py-4 space-y-4">
-        <div v-if="!messages.length" class="h-full flex items-center justify-center text-gray-400">
+        <div v-if="!activeMessages.length" class="h-full flex items-center justify-center text-gray-400">
           <div class="text-center">
-            <UIcon name="i-heroicons-chat-bubble-left-right" class="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p class="text-lg">Start a conversation</p>
-            <p class="text-sm mt-1">Send a message to chat with {{ modelName }}</p>
-            <p v-if="isVisionModel" class="text-xs mt-2 text-purple-500">
-              <UIcon name="i-heroicons-photo" class="w-4 h-4 inline" />
-              This model supports image input
-            </p>
+            <UIcon :name="mode === 'assistant' ? 'i-heroicons-sparkles' : 'i-heroicons-chat-bubble-left-right'" class="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <template v-if="mode === 'assistant'">
+              <p class="text-lg">AI Assistant</p>
+              <p class="text-sm mt-1">Ask me to manage your apps, check status, or view logs</p>
+              <div class="mt-3 flex flex-wrap gap-2 justify-center">
+                <button v-for="hint in ['list my apps', 'storage info', 'system info']" :key="hint"
+                  class="px-3 py-1 text-xs bg-(--ui-bg-muted) rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  @click="input = hint; sendAssistantMessage()">
+                  {{ hint }}
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <p class="text-lg">Start a conversation</p>
+              <p class="text-sm mt-1">Send a message to chat with {{ modelName }}</p>
+              <p v-if="isVisionModel" class="text-xs mt-2 text-purple-500">
+                <UIcon name="i-heroicons-photo" class="w-4 h-4 inline" />
+                This model supports image input
+              </p>
+            </template>
           </div>
         </div>
 
         <div
-          v-for="(msg, idx) in messages"
+          v-for="(msg, idx) in activeMessages"
           :key="idx"
           :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
         >
@@ -719,8 +812,8 @@ async function manualRefresh() {
 
       <!-- Input area -->
       <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
-        <!-- Image upload area (only for vision models) -->
-        <div v-if="isVisionModel" class="mb-3">
+        <!-- Image upload area (only for vision models in chat mode) -->
+        <div v-if="isVisionModel && mode === 'chat'" class="mb-3">
           <!-- Image Previews -->
           <div v-if="uploadedImages.length" class="flex flex-wrap gap-2 mb-2">
             <div v-for="(img, idx) in uploadedImages" :key="idx"
@@ -753,55 +846,57 @@ async function manualRefresh() {
         </div>
 
         <!-- Input form -->
-        <form @submit.prevent="() => sendMessage()" class="flex gap-2 items-end">
-          <!-- Voice input button -->
-          <div v-if="hasWhisperModel">
-            <UButton
-              v-if="isRecording"
-              icon="i-heroicons-stop"
-              color="error"
-              variant="soft"
-              @click="stopRecording"
-            />
-            <UButton
-              v-else-if="transcribing"
-              icon="i-heroicons-arrow-path"
-              variant="ghost"
-              color="neutral"
-              loading
-            />
-            <UButton
-              v-else
-              icon="i-heroicons-microphone"
-              variant="ghost"
-              color="neutral"
-              :disabled="loading"
-              @click="startRecording"
-            />
-          </div>
-          <UTooltip v-else-if="!hasWhisperModel" text="Download a Whisper model for voice input">
-            <UButton
-              icon="i-heroicons-microphone"
-              variant="ghost"
-              color="neutral"
-              disabled
-            />
-          </UTooltip>
+        <form @submit.prevent="handleSend" class="flex gap-2 items-end">
+          <!-- Voice input button (chat mode only) -->
+          <template v-if="mode === 'chat'">
+            <div v-if="hasWhisperModel">
+              <UButton
+                v-if="isRecording"
+                icon="i-heroicons-stop"
+                color="error"
+                variant="soft"
+                @click="stopRecording"
+              />
+              <UButton
+                v-else-if="transcribing"
+                icon="i-heroicons-arrow-path"
+                variant="ghost"
+                color="neutral"
+                loading
+              />
+              <UButton
+                v-else
+                icon="i-heroicons-microphone"
+                variant="ghost"
+                color="neutral"
+                :disabled="loading"
+                @click="startRecording"
+              />
+            </div>
+            <UTooltip v-else-if="!hasWhisperModel" text="Download a Whisper model for voice input">
+              <UButton
+                icon="i-heroicons-microphone"
+                variant="ghost"
+                color="neutral"
+                disabled
+              />
+            </UTooltip>
+          </template>
 
           <UTextarea
             v-model="input"
-            :placeholder="isVisionModel ? 'Describe the image or ask a question...' : 'Type a message...'"
+            :placeholder="mode === 'assistant' ? 'Ask me anything... (e.g. list apps, stop myapp)' : isVisionModel ? 'Describe the image or ask a question...' : 'Type a message...'"
             class="flex-1"
             :rows="1"
             autoresize
             :maxrows="5"
             :disabled="loading"
-            @keydown.enter.exact.prevent="sendMessage"
+            @keydown.enter.exact.prevent="handleSend"
           />
 
-          <!-- Image upload button (only for vision models) -->
+          <!-- Image upload button (only for vision models in chat mode) -->
           <UButton
-            v-if="isVisionModel"
+            v-if="isVisionModel && mode === 'chat'"
             icon="i-heroicons-photo"
             variant="ghost"
             color="neutral"
@@ -810,12 +905,17 @@ async function manualRefresh() {
           />
 
           <UButton type="submit" size="lg" :loading="loading"
-            :disabled="!input.trim() && !uploadedImages.length">
+            :disabled="!input.trim() && (mode === 'assistant' || !uploadedImages.length)">
             <UIcon name="i-heroicons-paper-airplane" class="w-5 h-5" />
           </UButton>
         </form>
         <p class="text-xs text-gray-400 mt-2 text-center">
-          {{ modelName }} may produce inaccurate information
+          <template v-if="mode === 'assistant'">
+            AI Assistant powered by FunctionGemma
+          </template>
+          <template v-else>
+            {{ modelName }} may produce inaccurate information
+          </template>
         </p>
       </div>
     </template>

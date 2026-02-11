@@ -129,9 +129,11 @@ func main() {
 	// Database
 	case "db":
 		cmdDB(args)
-	// AI analyze
+	// AI commands
 	case "analyze":
 		cmdAnalyze(args)
+	case "ai":
+		cmdAI(args)
 	// Health check commands
 	case "health":
 		cmdHealth(args)
@@ -207,6 +209,7 @@ App Commands:
   db info <name>          Show database connection info
 
 AI Commands:
+  ai                      Interactive AI assistant
   analyze <repo-url>      Analyze repo and suggest deploy config
 
 Notification & CI/CD Commands:
@@ -3528,7 +3531,82 @@ func cmdChat(args []string) {
 			}
 		}
 		resp.Body.Close()
-		fmt.Println("\n")
+		fmt.Print("\n\n")
+	}
+}
+
+// ==================== AI Assistant ====================
+
+func cmdAI(args []string) {
+	fmt.Println("Basepod AI Assistant (powered by FunctionGemma)")
+	fmt.Println("Type your request, or /help for commands, /exit to quit.")
+	fmt.Println()
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+
+		switch input {
+		case "/exit", "/quit":
+			fmt.Println("Goodbye!")
+			return
+		case "/help":
+			fmt.Println(`Commands:
+  /help     Show this help
+  /exit     Exit the assistant
+
+You can ask things like:
+  list my apps
+  stop demo-omnius
+  show logs for myapp
+  how much storage am I using?
+  create an app called mysite from nginx
+  deploy omnius-api
+  system info`)
+			continue
+		}
+
+		resp, err := apiRequest("POST", "/api/ai/ask", map[string]string{"message": input})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			continue
+		}
+
+		var result struct {
+			Response string `json:"response"`
+			Action   *struct {
+				Function   string                 `json:"function"`
+				Parameters map[string]interface{} `json:"parameters"`
+				Success    bool                   `json:"success"`
+			} `json:"action,omitempty"`
+			Error string `json:"error,omitempty"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+
+		if result.Error != "" {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", result.Error)
+			continue
+		}
+
+		if result.Action != nil {
+			if result.Action.Success {
+				fmt.Printf("[%s] ", result.Action.Function)
+			} else {
+				fmt.Printf("[%s FAILED] ", result.Action.Function)
+			}
+		}
+		fmt.Println(result.Response)
+		fmt.Println()
 	}
 }
 

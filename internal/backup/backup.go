@@ -39,7 +39,7 @@ type Contents struct {
 
 // Options for creating a backup
 type Options struct {
-	OutputDir      string // Where to save backup (default: ~/.basepod/backups)
+	OutputDir      string // Where to save backup (default: /usr/local/basepod/backups)
 	IncludeVolumes bool   // Include container volumes (default: true)
 	IncludeBuilds  bool   // Include build sources (default: false)
 }

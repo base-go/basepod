@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/base-go/basepod/internal/ai"
 	"github.com/base-go/basepod/internal/app"
 	"github.com/base-go/basepod/internal/auth"
 	"github.com/base-go/basepod/internal/backup"
@@ -69,6 +70,7 @@ type Server struct {
 	staticFS       http.Handler
 	staticDir      string // Path to static files on disk (preferred over embedded)
 	version        string
+	assistant      *ai.Assistant
 	healthStates   map[string]*app.HealthStatus
 	healthStatesMu sync.RWMutex
 	healthStop     chan struct{}
@@ -90,14 +92,15 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	paths, _ := config.GetPaths()
 
 	s := &Server{
-		storage: store,
-		podman:  pm,
-		caddy:   caddyClient,
-		config:  cfg,
-		auth:    auth.NewManager(cfg.Auth.PasswordHash),
-		backup:  backup.NewService(paths, pm),
-		router:  http.NewServeMux(),
-		version: version,
+		storage:   store,
+		podman:    pm,
+		caddy:     caddyClient,
+		config:    cfg,
+		auth:      auth.NewManager(cfg.Auth.PasswordHash),
+		backup:    backup.NewService(paths, pm),
+		assistant: ai.New(store, pm),
+		router:    http.NewServeMux(),
+		version:   version,
 	}
 
 	// Setup static file serving - prefer disk over embedded
@@ -283,6 +286,9 @@ func (s *Server) setupRoutes() {
 
 	// AI Deploy Assistant (auth required)
 	s.router.HandleFunc("POST /api/ai/analyze", s.requireAuth(s.handleAIAnalyze))
+
+	// AI Assistant (auth required)
+	s.router.HandleFunc("POST /api/ai/ask", s.requireAuth(s.handleAIAsk))
 
 	// Status badge (no auth)
 	s.router.HandleFunc("GET /api/badge/{id}", s.handleStatusBadge)
@@ -6879,6 +6885,39 @@ func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 		if aiAnalysis != "" {
 			result["ai_analysis"] = aiAnalysis
 		}
+	}
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// handleAIAsk handles natural language requests via the AI assistant.
+func (s *Server) handleAIAsk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Message == "" {
+		errorResponse(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	// Build caller from session for access control
+	var caller *ai.Caller
+	token := s.getSessionToken(r)
+	if session := s.auth.GetSession(token); session != nil {
+		caller = &ai.Caller{
+			UserID:   session.UserID,
+			UserRole: session.UserRole,
+		}
+	}
+
+	result, err := s.assistant.Ask(req.Message, caller)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	jsonResponse(w, http.StatusOK, result)

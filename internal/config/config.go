@@ -1,5 +1,5 @@
 // Package config provides configuration management for basepod.
-// All paths are relative to ~/.basepod for rootless operation.
+// All paths are relative to /usr/local/basepod (or BASEPOD_HOME).
 package config
 
 import (
@@ -98,33 +98,27 @@ type DatabaseConfig struct {
 
 // Paths holds all the directory paths used by basepod
 type Paths struct {
-	Base   string // ~/.basepod
-	Bin    string // ~/.basepod/bin
-	Config string // ~/.basepod/config
-	Data   string // ~/.basepod/data
-	Apps   string // ~/.basepod/data/apps
-	Certs  string // ~/.basepod/data/certs
-	Logs   string // ~/.basepod/logs
-	Caddy  string // ~/.basepod/caddy
-	Tmp    string // ~/.basepod/tmp
+	Base   string // /usr/local/basepod
+	Bin    string // /usr/local/basepod/bin
+	Config string // /usr/local/basepod/config
+	Data   string // /usr/local/basepod/data
+	Apps   string // /usr/local/basepod/data/apps
+	Certs  string // /usr/local/basepod/data/certs
+	Logs   string // /usr/local/basepod/logs
+	Caddy  string // /usr/local/basepod/caddy
+	Tmp    string // /usr/local/basepod/tmp
 }
 
 // GetBaseDir returns the base directory for basepod
-// Priority: BASEPOD_HOME env var > ~/.basepod
-// Server installs set BASEPOD_HOME=/usr/local/basepod
-// Local/dev installs use ~/.basepod (hidden in home dir)
+// Priority: BASEPOD_HOME env var > /usr/local/basepod
 func GetBaseDir() (string, error) {
 	// Check for explicit base directory via environment variable
 	if baseDir := os.Getenv("BASEPOD_HOME"); baseDir != "" {
 		return baseDir, nil
 	}
 
-	// Default to ~/.basepod
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(home, ".basepod"), nil
+	// Default to /usr/local/basepod
+	return "/usr/local/basepod", nil
 }
 
 // GetPaths returns all paths used by basepod

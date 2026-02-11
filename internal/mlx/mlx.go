@@ -444,7 +444,7 @@ func (s *Service) PullModel(modelID string, progress func(string)) error {
 			return nil
 		}
 		if status == "failed" || status == "cancelled" {
-			return fmt.Errorf(msg)
+			return fmt.Errorf("%s", msg)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -918,6 +918,114 @@ func (s *Service) stopServer() error {
 	s.pid = 0
 	s.activeModel = ""
 	return nil
+}
+
+// --- Assistant (secondary) model support ---
+
+var (
+	assistantProcess *exec.Cmd
+	assistantPID     int
+	assistantModel   string
+	assistantMu      sync.Mutex
+)
+
+// RunOnPort starts a model on a specific port (used for the AI assistant).
+// This runs independently of the primary chat model.
+func (s *Service) RunOnPort(modelID string, port int) error {
+	assistantMu.Lock()
+	defer assistantMu.Unlock()
+
+	// Check if already running this model on this port
+	if assistantPID != 0 && assistantModel == modelID {
+		proc, err := os.FindProcess(assistantPID)
+		if err == nil && proc.Signal(syscall.Signal(0)) == nil {
+			return nil // Already running
+		}
+	}
+
+	// Stop existing assistant if running
+	stopAssistantProcess()
+
+	// Check if model is downloaded
+	downloaded := s.getDownloadedModels()
+	if _, ok := downloaded[modelID]; !ok {
+		return fmt.Errorf("model not downloaded: %s", modelID)
+	}
+
+	venvPath := filepath.Join(s.baseDir, "venv")
+	pythonPath := filepath.Join(venvPath, "bin", "python")
+
+	cmd := exec.Command(pythonPath, "-m", "mlx_lm.server",
+		"--model", modelID,
+		"--port", fmt.Sprintf("%d", port),
+		"--host", "127.0.0.1",
+	)
+	cmd.Env = append(os.Environ(),
+		"HF_HOME="+filepath.Join(s.baseDir, "cache"),
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	logFile := filepath.Join(s.baseDir, "assistant.log")
+	logFd, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	cmd.Stdout = logFd
+	cmd.Stderr = logFd
+
+	if err := cmd.Start(); err != nil {
+		logFd.Close()
+		return fmt.Errorf("failed to start assistant MLX server: %w", err)
+	}
+
+	assistantProcess = cmd
+	assistantPID = cmd.Process.Pid
+	assistantModel = modelID
+
+	go func() {
+		cmd.Wait()
+		logFd.Close()
+	}()
+
+	// Wait for server to be ready (up to 30s)
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)
+	for i := 0; i < 30; i++ {
+		time.Sleep(time.Second)
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("assistant MLX server failed to start within 30s")
+}
+
+// StopAssistant stops the assistant MLX process.
+func (s *Service) StopAssistant() error {
+	assistantMu.Lock()
+	defer assistantMu.Unlock()
+	stopAssistantProcess()
+	return nil
+}
+
+func stopAssistantProcess() {
+	if assistantProcess != nil && assistantProcess.Process != nil {
+		assistantProcess.Process.Signal(syscall.SIGTERM)
+
+		done := make(chan error, 1)
+		go func() { done <- assistantProcess.Wait() }()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			assistantProcess.Process.Kill()
+		}
+	}
+
+	assistantProcess = nil
+	assistantPID = 0
+	assistantModel = ""
 }
 
 // GetLogs returns recent server logs
