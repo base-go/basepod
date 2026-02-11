@@ -764,6 +764,11 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
+// Pagination limits
+const deploymentsLimit = ref(10)
+const activitiesLimit = ref(20)
+const webhookDeliveriesLimit = ref(10)
+
 // Build log viewer
 const buildLogContent = ref('')
 const buildLogLoading = ref(false)
@@ -1068,7 +1073,7 @@ onMounted(() => {
 
       <div v-else class="space-y-3">
         <div
-          v-for="(deployment, index) in app.deployments"
+          v-for="(deployment, index) in app.deployments.slice(0, deploymentsLimit)"
           :key="deployment.id"
           class="p-4 rounded-lg border"
           :class="index === 0 ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700'"
@@ -1113,6 +1118,12 @@ onMounted(() => {
             <UIcon name="i-heroicons-code-bracket" class="w-3 h-3 inline" />
             {{ deployment.branch }}
           </div>
+        </div>
+
+        <div v-if="app.deployments.length > deploymentsLimit" class="text-center pt-2">
+          <UButton variant="ghost" size="sm" @click="deploymentsLimit += 10">
+            Show More ({{ app.deployments.length - deploymentsLimit }} remaining)
+          </UButton>
         </div>
       </div>
     </UCard>
@@ -1211,7 +1222,7 @@ onMounted(() => {
 
       <div v-else class="space-y-2">
         <div
-          v-for="delivery in webhookDeliveries"
+          v-for="delivery in webhookDeliveries.slice(0, webhookDeliveriesLimit)"
           :key="delivery.id"
           class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
         >
@@ -1236,6 +1247,12 @@ onMounted(() => {
             {{ delivery.error }}
           </div>
         </div>
+
+        <div v-if="webhookDeliveries.length > webhookDeliveriesLimit" class="text-center pt-2">
+          <UButton variant="ghost" size="sm" @click="webhookDeliveriesLimit += 10">
+            Show More ({{ webhookDeliveries.length - webhookDeliveriesLimit }} remaining)
+          </UButton>
+        </div>
       </div>
     </UCard>
 
@@ -1256,7 +1273,7 @@ onMounted(() => {
           <UIcon name="i-heroicons-arrow-path" class="w-8 h-8 mx-auto mb-2 animate-spin opacity-50" />
           <p>Loading access logs...</p>
         </div>
-        <div v-else-if="accessLogs.length" class="overflow-x-auto">
+        <div v-else-if="accessLogs.length" class="overflow-x-auto overflow-y-auto" style="max-height: calc(100vh - 320px);">
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-gray-200 dark:border-gray-700">
@@ -1390,7 +1407,7 @@ onMounted(() => {
 
         <div v-else class="space-y-2">
           <div
-            v-for="entry in activities"
+            v-for="entry in activities.slice(0, activitiesLimit)"
             :key="entry.id"
             class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
           >
@@ -1405,6 +1422,11 @@ onMounted(() => {
               <div v-if="entry.details" class="text-sm text-gray-500 mt-1 truncate">{{ entry.details }}</div>
               <div class="text-xs text-gray-400 mt-1">{{ new Date(entry.created_at).toLocaleString() }}</div>
             </div>
+          </div>
+          <div v-if="activities.length > activitiesLimit" class="text-center pt-2">
+            <UButton variant="ghost" size="sm" @click="activitiesLimit += 20">
+              Show More ({{ activities.length - activitiesLimit }} remaining)
+            </UButton>
           </div>
         </div>
       </UCard>
