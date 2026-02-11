@@ -105,6 +105,12 @@ const maxImages = 4
 const analysisMode = ref<'quick' | 'deep'>('quick')
 const lastImageMessageIndex = ref<number | null>(null) // Track last image message for "analyze deeper"
 
+// Assistant setup state
+const ASSISTANT_MODEL_ID = 'mlx-community/functiongemma-270m-it-4bit'
+const settingUpAssistant = ref(false)
+const assistantSetupProgress = ref(0)
+const assistantSetupStatus = ref('')
+
 // Voice input state
 const isRecording = ref(false)
 const transcribing = ref(false)
@@ -138,6 +144,10 @@ const activeMessages = computed(() =>
 )
 
 const hasActiveMessages = computed(() => activeMessages.value.length > 0)
+
+const isAssistantModelReady = computed(() =>
+  mlxData.value?.models?.some(m => m.id === ASSISTANT_MODEL_ID && m.downloaded) ?? false
+)
 
 // Auto-scroll to bottom
 function scrollToBottom() {
@@ -519,8 +529,14 @@ async function sendAssistantMessage() {
     scrollToBottom()
   } catch (error: any) {
     const errorMsg = error?.data?.error || error?.message || 'Failed to get response'
-    toast.add({ title: 'Error', description: errorMsg, color: 'error' })
     assistantMessages.value.pop() // Remove failed user message
+    // If model not downloaded, trigger setup instead of showing error
+    if (errorMsg.includes('not downloaded') || errorMsg.includes('not available')) {
+      await refreshStatus()
+      toast.add({ title: 'Assistant not ready', description: 'Click "Setup Assistant" to get started', color: 'warning' })
+    } else {
+      toast.add({ title: 'Error', description: errorMsg, color: 'error' })
+    }
   } finally {
     loading.value = false
     loadingStatus.value = ''
@@ -533,6 +549,98 @@ function handleSend() {
     sendAssistantMessage()
   } else {
     sendMessage()
+  }
+}
+
+// Setup assistant: download FunctionGemma + auto-start
+async function setupAssistant() {
+  if (settingUpAssistant.value) return
+
+  settingUpAssistant.value = true
+  assistantSetupStatus.value = 'Starting download...'
+  assistantSetupProgress.value = 0
+
+  try {
+    // Start pull
+    await $api('/mlx/pull', {
+      method: 'POST',
+      body: { model: ASSISTANT_MODEL_ID }
+    })
+
+    assistantSetupStatus.value = 'Downloading FunctionGemma (150MB)...'
+
+    // Poll for progress
+    await new Promise<void>((resolve, reject) => {
+      const pollInterval = setInterval(async () => {
+        try {
+          const progress = await $api<{
+            status: string
+            progress: number
+            bytes_total: number
+            bytes_done: number
+            speed: number
+            eta: number
+            message: string
+          }>(`/mlx/pull/progress?model=${encodeURIComponent(ASSISTANT_MODEL_ID)}`)
+
+          if (progress) {
+            assistantSetupProgress.value = progress.progress || 0
+
+            if (progress.speed > 0) {
+              const speedMB = (progress.speed / 1024 / 1024).toFixed(1)
+              assistantSetupStatus.value = `Downloading... ${Math.round(progress.progress)}% (${speedMB} MB/s)`
+            }
+
+            if (progress.status === 'completed') {
+              clearInterval(pollInterval)
+              resolve()
+            } else if (progress.status === 'error' || progress.status === 'cancelled') {
+              clearInterval(pollInterval)
+              reject(new Error(progress.message || 'Download failed'))
+            }
+          }
+        } catch {
+          // Progress endpoint might not have data yet
+        }
+      }, 1000)
+
+      // Timeout after 10 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval)
+        reject(new Error('Download timed out'))
+      }, 10 * 60 * 1000)
+    })
+
+    // Download complete, start the assistant via a warmup call
+    assistantSetupStatus.value = 'Starting assistant model...'
+    assistantSetupProgress.value = 100
+
+    await refreshStatus()
+
+    // Send a warmup message to trigger model auto-start
+    try {
+      await $api('/ai/ask', {
+        method: 'POST',
+        body: { message: 'hello' }
+      })
+    } catch {
+      // Warmup may timeout on first load, that's ok - model will start on next request
+    }
+
+    await refreshStatus()
+    assistantSetupStatus.value = ''
+    toast.add({
+      title: 'Assistant ready',
+      description: 'FunctionGemma is ready to use',
+      color: 'success'
+    })
+  } catch (error: any) {
+    const errorMsg = error?.message || error?.data?.error || 'Setup failed'
+    toast.add({ title: 'Setup failed', description: errorMsg, color: 'error' })
+    assistantSetupStatus.value = ''
+  } finally {
+    settingUpAssistant.value = false
+    assistantSetupProgress.value = 0
   }
 }
 
@@ -734,14 +842,39 @@ async function manualRefresh() {
             <UIcon :name="mode === 'assistant' ? 'i-heroicons-sparkles' : 'i-heroicons-chat-bubble-left-right'" class="w-12 h-12 mx-auto mb-4 opacity-50" />
             <template v-if="mode === 'assistant'">
               <p class="text-lg">AI Assistant</p>
-              <p class="text-sm mt-1">Ask me to manage your apps, check status, or view logs</p>
-              <div class="mt-3 flex flex-wrap gap-2 justify-center">
-                <button v-for="hint in ['list my apps', 'storage info', 'system info']" :key="hint"
-                  class="px-3 py-1 text-xs bg-(--ui-bg-muted) rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                  @click="input = hint; sendAssistantMessage()">
-                  {{ hint }}
-                </button>
-              </div>
+              <!-- Setup needed: model not downloaded -->
+              <template v-if="!isAssistantModelReady && !settingUpAssistant">
+                <p class="text-sm mt-1 text-gray-500">FunctionGemma is required for the assistant</p>
+                <UButton class="mt-4" size="lg" @click="setupAssistant">
+                  <UIcon name="i-heroicons-arrow-down-tray" class="w-4 h-4 mr-2" />
+                  Setup Assistant
+                  <span class="text-xs opacity-70 ml-1">(150MB)</span>
+                </UButton>
+              </template>
+              <!-- Setting up: show progress -->
+              <template v-else-if="settingUpAssistant">
+                <p class="text-sm mt-2 text-gray-500">{{ assistantSetupStatus }}</p>
+                <div class="mt-3 w-64 mx-auto">
+                  <div class="h-2 bg-(--ui-bg-muted) rounded-full overflow-hidden">
+                    <div
+                      class="h-full bg-primary-500 rounded-full transition-all duration-300"
+                      :style="{ width: `${assistantSetupProgress}%` }"
+                    />
+                  </div>
+                  <p class="text-xs text-gray-400 mt-1">{{ Math.round(assistantSetupProgress) }}%</p>
+                </div>
+              </template>
+              <!-- Ready: show quick hints -->
+              <template v-else>
+                <p class="text-sm mt-1">Ask me to manage your apps, check status, or view logs</p>
+                <div class="mt-3 flex flex-wrap gap-2 justify-center">
+                  <button v-for="hint in ['list my apps', 'storage info', 'system info']" :key="hint"
+                    class="px-3 py-1 text-xs bg-(--ui-bg-muted) rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                    @click="input = hint; sendAssistantMessage()">
+                    {{ hint }}
+                  </button>
+                </div>
+              </template>
             </template>
             <template v-else>
               <p class="text-lg">Start a conversation</p>
