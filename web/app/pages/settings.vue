@@ -154,7 +154,7 @@ const settings = ref({
 
 // Email settings
 const emailSettings = ref({
-  provider: configData.value?.email?.provider || '',
+  provider: configData.value?.email?.provider || 'none',
   postmark_token: '',
   resend_key: '',
   from_address: configData.value?.email?.from_address || '',
@@ -176,7 +176,7 @@ watch(configData, (newConfig) => {
     settings.value.enableWildcard = newConfig.domain.wildcard ?? true
   }
   if (newConfig?.email) {
-    emailSettings.value.provider = newConfig.email.provider || ''
+    emailSettings.value.provider = newConfig.email.provider || 'none'
     emailSettings.value.from_address = newConfig.email.from_address || ''
   }
 }, { immediate: true })
@@ -220,13 +220,15 @@ const saveEmailSettings = async () => {
   emailError.value = ''
   emailSuccess.value = false
   try {
+    // Map 'none' back to '' for the backend
+    const provider = emailSettings.value.provider === 'none' ? '' : emailSettings.value.provider
     await $api('/system/config', {
       method: 'PUT',
       body: {
         email: {
-          provider: emailSettings.value.provider,
-          postmark_token: emailSettings.value.postmark_token || undefined,
-          resend_key: emailSettings.value.resend_key || undefined,
+          provider,
+          postmark_token: emailSettings.value.postmark_token,
+          resend_key: emailSettings.value.resend_key,
           from_address: emailSettings.value.from_address
         }
       }
@@ -904,7 +906,7 @@ const formatDate = (dateStr: string) => {
                 <USelect
                   v-model="emailSettings.provider"
                   :items="[
-                    { label: 'None (disabled)', value: '' },
+                    { label: 'None (disabled)', value: 'none' },
                     { label: 'Postmark', value: 'postmark' },
                     { label: 'Resend', value: 'resend' }
                   ]"
@@ -912,14 +914,14 @@ const formatDate = (dateStr: string) => {
               </UFormField>
 
               <UFormField v-if="emailSettings.provider === 'postmark'" label="Postmark Server Token" :help="configData?.email?.postmark_token ? 'Current: ' + configData.email.postmark_token : 'Enter your X-Postmark-Server-Token'">
-                <UInput v-model="emailSettings.postmark_token" type="password" placeholder="Enter token to update" />
+                <UInput v-model="emailSettings.postmark_token" placeholder="Enter token to update" />
               </UFormField>
 
               <UFormField v-if="emailSettings.provider === 'resend'" label="Resend API Key" :help="configData?.email?.resend_key ? 'Current: ' + configData.email.resend_key : 'Enter your Resend API key'">
-                <UInput v-model="emailSettings.resend_key" type="password" placeholder="Enter key to update" />
+                <UInput v-model="emailSettings.resend_key" placeholder="Enter key to update" />
               </UFormField>
 
-              <UFormField v-if="emailSettings.provider" label="From Address" help="The sender email address (e.g. info@yourdomain.com)">
+              <UFormField v-if="emailSettings.provider && emailSettings.provider !== 'none'" label="From Address" help="The sender email address (e.g. info@yourdomain.com)">
                 <UInput v-model="emailSettings.from_address" type="email" placeholder="info@yourdomain.com" />
               </UFormField>
 
