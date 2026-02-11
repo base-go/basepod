@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SystemInfoResponse, HealthResponse } from '~/types'
+import type { SystemInfoResponse, HealthResponse, AuthUser } from '~/types'
 
 interface VersionInfo {
   current: string
@@ -11,6 +11,9 @@ const colorMode = useColorMode()
 const { data: systemInfo } = await useApiFetch<SystemInfoResponse>('/system/info')
 const { data: health } = await useApiFetch<HealthResponse>('/health')
 const { data: version } = await useApiFetch<VersionInfo>('/system/version')
+const { data: currentUser } = await useApiFetch<AuthUser>('/auth/me')
+
+const isAdmin = computed(() => !currentUser.value || currentUser.value.role === 'admin')
 
 // Compute logo status based on system state
 const logoStatus = computed<'ok' | 'update' | 'error'>(() => {
@@ -82,6 +85,28 @@ const bottomNavigation = [
   }
 ]
 
+const filteredBottomNav = computed(() =>
+  bottomNavigation.filter(item =>
+    item.to !== '/settings' || isAdmin.value
+  )
+)
+
+const userInitial = computed(() => {
+  if (currentUser.value?.email) {
+    return currentUser.value.email.charAt(0).toUpperCase()
+  }
+  return 'A'
+})
+
+const roleColor = computed(() => {
+  switch (currentUser.value?.role) {
+    case 'admin': return 'error' as const
+    case 'deployer': return 'warning' as const
+    case 'viewer': return 'info' as const
+    default: return 'error' as const
+  }
+})
+
 const logout = async () => {
   try {
     await $fetch('/api/auth/logout', { method: 'POST' })
@@ -112,7 +137,7 @@ const logout = async () => {
           />
           <div class="flex-1" />
           <UNavigationMenu
-            :items="bottomNavigation"
+            :items="filteredBottomNav"
             orientation="vertical"
             :collapsed="collapsed"
             highlight
@@ -153,12 +178,45 @@ const logout = async () => {
           </template>
           <template #trailing>
             <div class="flex items-center gap-2">
-              <UButton
-                icon="i-heroicons-arrow-right-on-rectangle"
-                variant="ghost"
-                color="neutral"
-                @click="logout"
-              />
+              <UPopover>
+                <template #default>
+                  <UButton variant="ghost" color="neutral" class="flex items-center gap-2">
+                    <div class="w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
+                      <span class="text-xs font-medium text-primary-600 dark:text-primary-400">
+                        {{ userInitial }}
+                      </span>
+                    </div>
+                    <span v-if="currentUser?.email" class="text-sm hidden sm:inline">{{ currentUser.email }}</span>
+                    <UBadge :color="roleColor" variant="soft" size="xs" class="hidden sm:inline-flex">
+                      {{ currentUser?.role || 'admin' }}
+                    </UBadge>
+                  </UButton>
+                </template>
+                <template #content>
+                  <div class="p-2 w-56">
+                    <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 mb-1">
+                      <p class="text-sm font-medium truncate">{{ currentUser?.email || 'Admin' }}</p>
+                      <UBadge :color="roleColor" variant="soft" size="xs" class="mt-1">
+                        {{ currentUser?.role || 'admin' }}
+                      </UBadge>
+                    </div>
+                    <NuxtLink
+                      to="/settings?tab=security"
+                      class="flex items-center gap-2 px-3 py-2 text-sm rounded hover:bg-(--ui-bg-muted) transition-colors"
+                    >
+                      <UIcon name="i-heroicons-key" class="w-4 h-4" />
+                      Change Password
+                    </NuxtLink>
+                    <button
+                      class="flex items-center gap-2 px-3 py-2 text-sm rounded hover:bg-(--ui-bg-muted) transition-colors w-full text-left text-red-500"
+                      @click="logout"
+                    >
+                      <UIcon name="i-heroicons-arrow-right-on-rectangle" class="w-4 h-4" />
+                      Logout
+                    </button>
+                  </div>
+                </template>
+              </UPopover>
             </div>
           </template>
         </UDashboardNavbar>

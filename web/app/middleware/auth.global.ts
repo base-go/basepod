@@ -1,6 +1,6 @@
 export default defineNuxtRouteMiddleware(async (to) => {
   // Skip auth check for login and setup pages
-  if (to.path === '/login' || to.path === '/setup') {
+  if (to.path === '/login' || to.path === '/user/login' || to.path === '/setup') {
     return
   }
 

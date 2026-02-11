@@ -157,6 +157,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	s.router.HandleFunc("POST /api/auth/setup", s.handleSetup) // Initial password setup
 	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.handleChangePassword))
+	s.router.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleGetMe))
 
 	// User management (admin only)
 	s.router.HandleFunc("GET /api/users", s.requireAdmin(s.handleListUsers))
@@ -448,8 +449,8 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	needsSetup := s.auth.NeedsSetup()
 	authenticated := false
 
+	token := ""
 	if !needsSetup {
-		token := ""
 		if cookie, err := r.Cookie("basepod_token"); err == nil {
 			token = cookie.Value
 		}
@@ -460,9 +461,37 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		authenticated = s.auth.ValidateSession(token)
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"needsSetup":    needsSetup,
 		"authenticated": authenticated,
+	}
+
+	if authenticated {
+		if session := s.auth.GetSession(token); session != nil {
+			response["user"] = map[string]string{
+				"id":    session.UserID,
+				"email": session.UserEmail,
+				"role":  session.UserRole,
+			}
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, response)
+}
+
+// handleGetMe returns the current user's info from their session
+func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
+	token := s.getSessionToken(r)
+	session := s.auth.GetSession(token)
+	if session == nil {
+		errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"id":    session.UserID,
+		"email": session.UserEmail,
+		"role":  session.UserRole,
 	})
 }
 
@@ -6317,7 +6346,34 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusInternalServerError, "Failed to list users")
 		return
 	}
-	jsonResponse(w, http.StatusOK, map[string]interface{}{"users": users})
+
+	// Build response with computed status field
+	type userResponse struct {
+		ID          string     `json:"id"`
+		Email       string     `json:"email"`
+		Role        string     `json:"role"`
+		Status      string     `json:"status"`
+		CreatedAt   time.Time  `json:"created_at"`
+		LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	}
+
+	result := make([]userResponse, len(users))
+	for i, u := range users {
+		status := "active"
+		if u.PasswordHash == "" {
+			status = "invited"
+		}
+		result[i] = userResponse{
+			ID:          u.ID,
+			Email:       u.Email,
+			Role:        u.Role,
+			Status:      status,
+			CreatedAt:   u.CreatedAt,
+			LastLoginAt: u.LastLoginAt,
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"users": result})
 }
 
 func (s *Server) handleInviteUser(w http.ResponseWriter, r *http.Request) {

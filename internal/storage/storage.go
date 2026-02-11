@@ -1163,7 +1163,7 @@ func (s *Storage) GetUserByInviteToken(token string) (*app.User, error) {
 
 func (s *Storage) ListUsers() ([]app.User, error) {
 	rows, err := s.db.Query(
-		"SELECT id, email, role, created_at, last_login_at FROM users ORDER BY created_at DESC",
+		"SELECT id, email, password_hash, role, created_at, last_login_at FROM users ORDER BY created_at DESC",
 	)
 	if err != nil {
 		return nil, err
@@ -1174,7 +1174,7 @@ func (s *Storage) ListUsers() ([]app.User, error) {
 	for rows.Next() {
 		var u app.User
 		var lastLogin sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.CreatedAt, &lastLogin); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt, &lastLogin); err != nil {
 			return nil, err
 		}
 		if lastLogin.Valid {

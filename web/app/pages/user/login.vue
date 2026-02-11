@@ -3,6 +3,7 @@ definePageMeta({
   layout: false
 })
 
+const email = ref('')
 const password = ref('')
 const error = ref('')
 const loading = ref(false)
@@ -14,7 +15,7 @@ const login = async () => {
   try {
     await $fetch('/api/auth/login', {
       method: 'POST',
-      body: { password: password.value }
+      body: { email: email.value, password: password.value }
     })
     clearNuxtData()
     await navigateTo('/', { replace: true, external: true })
@@ -34,18 +35,30 @@ const login = async () => {
         <div class="text-center mb-10">
           <BasepodLogo status="ok" class="mx-auto mb-4" />
           <p class="text-gray-500 dark:text-gray-400">
-            Enter your admin password to continue
+            Sign in to your account
           </p>
         </div>
 
         <form class="space-y-6" @submit.prevent="login">
+          <UFormField label="Email">
+            <UInput
+              v-model="email"
+              type="email"
+              placeholder="you@example.com"
+              size="xl"
+              autofocus
+              :disabled="loading"
+              class="w-full"
+              :ui="{ base: 'w-full' }"
+            />
+          </UFormField>
+
           <UFormField label="Password">
             <UInput
               v-model="password"
               type="password"
               placeholder="Enter password"
               size="xl"
-              autofocus
               :disabled="loading"
               class="w-full"
               :ui="{ base: 'w-full' }"
@@ -65,13 +78,13 @@ const login = async () => {
             size="xl"
             :loading="loading"
           >
-            Login
+            Sign In
           </UButton>
         </form>
 
         <p class="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-          Team member?
-          <NuxtLink to="/user/login" class="text-primary-500 hover:text-primary-600 font-medium">
+          Admin?
+          <NuxtLink to="/login" class="text-primary-500 hover:text-primary-600 font-medium">
             Sign in here
           </NuxtLink>
         </p>

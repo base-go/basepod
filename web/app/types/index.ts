@@ -301,6 +301,14 @@ export interface User {
   id: string
   email: string
   role: 'admin' | 'deployer' | 'viewer'
+  status?: 'active' | 'invited'
   created_at: string
   last_login_at?: string
+}
+
+// Auth user from session
+export interface AuthUser {
+  id: string
+  email: string
+  role: 'admin' | 'deployer' | 'viewer'
 }

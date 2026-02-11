@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { HealthResponse } from '~/types'
+import type { HealthResponse, AuthUser } from '~/types'
 import type { ConfigResponse } from '~/composables/useApi'
 
 interface VersionInfo {
@@ -39,21 +39,25 @@ definePageMeta({
 const toast = useToast()
 const { data: health, refresh: refreshHealth } = await useApiFetch<HealthResponse>('/health')
 const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
+const { data: currentUser } = await useApiFetch<AuthUser>('/auth/me')
+
+const isAdmin = computed(() => !currentUser.value || currentUser.value.role === 'admin')
 
 // Tabs
 const route = useRoute()
-const tabs = [
-  { label: 'General', value: 'general', slot: 'general', icon: 'i-heroicons-cog-6-tooth' },
-  { label: 'Users', value: 'users', slot: 'users', icon: 'i-heroicons-users' },
-  { label: 'Security', value: 'security', slot: 'security', icon: 'i-heroicons-shield-check' },
-  { label: 'Notifications', value: 'notifications', slot: 'notifications', icon: 'i-heroicons-bell' },
-  { label: 'Backup', value: 'backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up' },
-  { label: 'System', value: 'system', slot: 'system', icon: 'i-heroicons-server' }
+const allTabs = [
+  { label: 'General', value: 'general', slot: 'general', icon: 'i-heroicons-cog-6-tooth', adminOnly: true },
+  { label: 'Users', value: 'users', slot: 'users', icon: 'i-heroicons-users', adminOnly: true },
+  { label: 'Security', value: 'security', slot: 'security', icon: 'i-heroicons-shield-check', adminOnly: false },
+  { label: 'Notifications', value: 'notifications', slot: 'notifications', icon: 'i-heroicons-bell', adminOnly: true },
+  { label: 'Backup', value: 'backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up', adminOnly: true },
+  { label: 'System', value: 'system', slot: 'system', icon: 'i-heroicons-server', adminOnly: true }
 ]
+const tabs = computed(() => allTabs.filter(t => !t.adminOnly || isAdmin.value))
 const defaultTab = computed(() => {
   const tab = route.query.tab as string
-  if (tab && tabs.some(t => t.value === tab)) return tab
-  return 'general'
+  if (tab && tabs.value.some(t => t.value === tab)) return tab
+  return isAdmin.value ? 'general' : 'security'
 })
 
 // Version info
@@ -299,6 +303,7 @@ interface User {
   id: string
   email: string
   role: 'admin' | 'deployer' | 'viewer'
+  status?: 'active' | 'invited'
   created_at: string
   last_login_at?: string
 }
@@ -762,7 +767,7 @@ const formatDate = (dateStr: string) => {
       <p class="text-gray-500">Manage your Basepod configuration</p>
     </div>
 
-    <UTabs :items="tabs" :default-value="defaultTab" class="w-full">
+    <UTabs :items="tabs" :default-value="defaultTab" :key="tabs.length" class="w-full">
       <!-- General Tab -->
       <template #general>
         <div class="space-y-6 py-4">
@@ -849,10 +854,33 @@ const formatDate = (dateStr: string) => {
                     </span>
                   </div>
                   <div>
-                    <p class="font-medium text-sm">{{ user.email }}</p>
+                    <div class="flex items-center gap-2">
+                      <p class="font-medium text-sm">{{ user.email }}</p>
+                      <UBadge
+                        v-if="user.status === 'invited'"
+                        color="warning"
+                        variant="soft"
+                        size="xs"
+                      >
+                        Invited
+                      </UBadge>
+                      <UBadge
+                        v-else
+                        color="success"
+                        variant="soft"
+                        size="xs"
+                      >
+                        Active
+                      </UBadge>
+                    </div>
                     <p class="text-xs text-gray-500">
-                      Joined {{ new Date(user.created_at).toLocaleDateString() }}
-                      <span v-if="user.last_login_at"> · Last login {{ new Date(user.last_login_at).toLocaleDateString() }}</span>
+                      <template v-if="user.status === 'invited'">
+                        Invited {{ new Date(user.created_at).toLocaleDateString() }}
+                      </template>
+                      <template v-else>
+                        Joined {{ new Date(user.created_at).toLocaleDateString() }}
+                        <span v-if="user.last_login_at"> · Last login {{ new Date(user.last_login_at).toLocaleDateString() }}</span>
+                      </template>
                     </p>
                   </div>
                 </div>
