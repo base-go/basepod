@@ -794,11 +794,20 @@ async function fetchConnectionInfo() {
 
 // Tab change watchers for new tabs
 watch(activeTab, (tab) => {
+  if (tab === 'overview') { fetchMetrics(); fetchActivities() }
   if (tab === 'cron') fetchCronJobs()
   if (tab === 'activity') fetchActivities()
   if (tab === 'health') fetchActivities() // merged health+activity tab
   if (tab === 'metrics') fetchMetrics()
   if (tab === 'settings') fetchConnectionInfo()
+})
+
+// Fetch overview data on mount
+onMounted(() => {
+  if (activeTab.value === 'overview') {
+    fetchMetrics()
+    fetchActivities()
+  }
 })
 </script>
 
@@ -978,6 +987,70 @@ watch(activeTab, (tab) => {
             </dd>
           </div>
         </dl>
+      </UCard>
+
+      <!-- Current Metrics (container apps only) -->
+      <template v-if="app.type !== 'static'">
+        <div class="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <UCard>
+            <div class="text-center">
+              <div class="text-xs text-gray-500 uppercase tracking-wide">CPU</div>
+              <div class="text-2xl font-bold mt-1">{{ metricsCurrent ? metricsCurrent.cpu_percent.toFixed(1) + '%' : '-' }}</div>
+            </div>
+          </UCard>
+          <UCard>
+            <div class="text-center">
+              <div class="text-xs text-gray-500 uppercase tracking-wide">Memory</div>
+              <div class="text-2xl font-bold mt-1">{{ metricsCurrent ? formatBytes(metricsCurrent.mem_usage) : '-' }}</div>
+              <div v-if="metricsCurrent?.mem_limit" class="text-xs text-gray-400">/ {{ formatBytes(metricsCurrent.mem_limit) }}</div>
+            </div>
+          </UCard>
+          <UCard>
+            <div class="text-center">
+              <div class="text-xs text-gray-500 uppercase tracking-wide">Net In</div>
+              <div class="text-2xl font-bold mt-1">{{ metricsCurrent ? formatBytes(metricsCurrent.net_input) : '-' }}</div>
+            </div>
+          </UCard>
+          <UCard>
+            <div class="text-center">
+              <div class="text-xs text-gray-500 uppercase tracking-wide">Net Out</div>
+              <div class="text-2xl font-bold mt-1">{{ metricsCurrent ? formatBytes(metricsCurrent.net_output) : '-' }}</div>
+            </div>
+          </UCard>
+        </div>
+      </template>
+
+      <!-- Recent Activity -->
+      <UCard class="lg:col-span-2">
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Recent Activity</h3>
+            <UButton variant="ghost" size="xs" @click="activeTab = 'health'">View All</UButton>
+          </div>
+        </template>
+
+        <div v-if="activities.length === 0" class="text-center py-4 text-gray-500 text-sm">
+          No activity recorded yet
+        </div>
+
+        <div v-else class="space-y-2">
+          <div
+            v-for="entry in activities.slice(0, 10)"
+            :key="entry.id"
+            class="flex items-center gap-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0"
+          >
+            <UIcon :name="getActivityIcon(entry.action)" class="w-4 h-4 text-gray-400 shrink-0" />
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <UBadge :color="entry.status === 'success' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral'" size="xs">
+                  {{ entry.action }}
+                </UBadge>
+                <span v-if="entry.details" class="text-xs text-gray-500 truncate">{{ entry.details }}</span>
+              </div>
+            </div>
+            <span class="text-xs text-gray-400 shrink-0">{{ new Date(entry.created_at).toLocaleString() }}</span>
+          </div>
+        </div>
       </UCard>
     </div>
 
@@ -1255,7 +1328,7 @@ watch(activeTab, (tab) => {
         <div v-if="!app.health_check" class="text-center py-8 text-gray-500">
           <UIcon name="i-heroicons-heart" class="w-12 h-12 mx-auto mb-2 opacity-50" />
           <p>Health checks are not enabled</p>
-          <p class="text-sm mt-1">Enable health checks below to monitor this app</p>
+          <p class="text-sm mt-1">Enable health checks in the Settings tab</p>
         </div>
 
         <div v-else-if="healthStatus" class="space-y-4">
@@ -1297,56 +1370,6 @@ watch(activeTab, (tab) => {
 
         <div v-else class="text-center py-4 text-gray-500">
           <p class="text-sm">No health data yet. Waiting for first check...</p>
-        </div>
-      </UCard>
-
-      <!-- Health Check Configuration -->
-      <UCard>
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold">Configuration</h3>
-            <UButton :loading="savingHealth" @click="saveHealthConfig">
-              Save
-            </UButton>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-            <div>
-              <div class="font-medium text-sm">Enable Health Checks</div>
-              <div class="text-xs text-gray-500">Periodically check if your app is responding</div>
-            </div>
-            <USwitch v-model="healthCheckEnabled" />
-          </div>
-
-          <template v-if="healthCheckEnabled">
-            <UFormField label="Health Endpoint" hint="HTTP path to check">
-              <UInput v-model="healthForm.endpoint" placeholder="/health" />
-            </UFormField>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <UFormField label="Check Interval (seconds)" hint="Time between checks">
-                <UInput v-model.number="healthForm.interval" type="number" min="5" placeholder="30" />
-              </UFormField>
-
-              <UFormField label="Timeout (seconds)" hint="Max wait per check">
-                <UInput v-model.number="healthForm.timeout" type="number" min="1" placeholder="5" />
-              </UFormField>
-
-              <UFormField label="Max Failures" hint="Before auto-restart">
-                <UInput v-model.number="healthForm.max_failures" type="number" min="1" placeholder="3" />
-              </UFormField>
-            </div>
-
-            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-              <div>
-                <div class="font-medium text-sm">Auto-Restart on Failure</div>
-                <div class="text-xs text-gray-500">Automatically restart the app after consecutive failures</div>
-              </div>
-              <USwitch v-model="healthForm.auto_restart" />
-            </div>
-          </template>
         </div>
       </UCard>
 
@@ -1952,6 +1975,56 @@ watch(activeTab, (tab) => {
           Save All Changes
         </UButton>
       </div>
+
+      <!-- Health Check Configuration (non-static only) -->
+      <UCard v-if="app?.type !== 'static'">
+        <template #header>
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold">Health Checks</h3>
+            <UButton :loading="savingHealth" @click="saveHealthConfig">
+              Save
+            </UButton>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div>
+              <div class="font-medium text-sm">Enable Health Checks</div>
+              <div class="text-xs text-gray-500">Periodically check if your app is responding</div>
+            </div>
+            <USwitch v-model="healthCheckEnabled" />
+          </div>
+
+          <template v-if="healthCheckEnabled">
+            <UFormField label="Health Endpoint" hint="HTTP path to check">
+              <UInput v-model="healthForm.endpoint" placeholder="/health" />
+            </UFormField>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <UFormField label="Check Interval (seconds)" hint="Time between checks">
+                <UInput v-model.number="healthForm.interval" type="number" min="5" placeholder="30" />
+              </UFormField>
+
+              <UFormField label="Timeout (seconds)" hint="Max wait per check">
+                <UInput v-model.number="healthForm.timeout" type="number" min="1" placeholder="5" />
+              </UFormField>
+
+              <UFormField label="Max Failures" hint="Before auto-restart">
+                <UInput v-model.number="healthForm.max_failures" type="number" min="1" placeholder="3" />
+              </UFormField>
+            </div>
+
+            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+              <div>
+                <div class="font-medium text-sm">Auto-Restart on Failure</div>
+                <div class="text-xs text-gray-500">Automatically restart the app after consecutive failures</div>
+              </div>
+              <USwitch v-model="healthForm.auto_restart" />
+            </div>
+          </template>
+        </div>
+      </UCard>
 
       <!-- Danger Zone -->
       <UCard class="border-red-200 dark:border-red-800">
