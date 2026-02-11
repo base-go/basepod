@@ -236,6 +236,16 @@ func (s *Storage) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_invite ON users(invite_token)`,
+		// Per-app access control for deployers
+		`CREATE TABLE IF NOT EXISTS user_app_access (
+			user_id TEXT NOT NULL,
+			app_id TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			PRIMARY KEY (user_id, app_id),
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_app_access_user ON user_app_access(user_id)`,
 	}
 
 	for _, migration := range migrations {
@@ -1214,6 +1224,124 @@ func (s *Storage) CountUsers() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
 	return count, err
+}
+
+// --- User App Access ---
+
+// SetUserAppAccess replaces all app access for a user
+func (s *Storage) SetUserAppAccess(userID string, appIDs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete existing access
+	if _, err := tx.Exec("DELETE FROM user_app_access WHERE user_id = ?", userID); err != nil {
+		return fmt.Errorf("failed to clear user app access: %w", err)
+	}
+
+	// Insert new access
+	now := time.Now()
+	for _, appID := range appIDs {
+		if _, err := tx.Exec("INSERT INTO user_app_access (user_id, app_id, created_at) VALUES (?, ?, ?)", userID, appID, now); err != nil {
+			return fmt.Errorf("failed to insert user app access: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetUserAppAccess returns list of app IDs a user can access
+func (s *Storage) GetUserAppAccess(userID string) ([]string, error) {
+	rows, err := s.db.Query("SELECT app_id FROM user_app_access WHERE user_id = ?", userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user app access: %w", err)
+	}
+	defer rows.Close()
+
+	var appIDs []string
+	for rows.Next() {
+		var appID string
+		if err := rows.Scan(&appID); err != nil {
+			continue
+		}
+		appIDs = append(appIDs, appID)
+	}
+	return appIDs, nil
+}
+
+// ListAppsForUser returns apps filtered by user_app_access
+func (s *Storage) ListAppsForUser(userID string) ([]app.App, error) {
+	rows, err := s.db.Query(`
+		SELECT a.id, a.name, a.domain, a.aliases, a.container_id, a.image, a.status, a.env, a.ports, a.volumes, a.resources, a.deployment, a.deployments, a.ssl, a.type, a.mlx, a.health_check, a.created_at, a.updated_at
+		FROM apps a
+		INNER JOIN user_app_access ua ON a.id = ua.app_id
+		WHERE ua.user_id = ?
+		ORDER BY a.created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list apps for user: %w", err)
+	}
+	defer rows.Close()
+
+	var apps []app.App
+	for rows.Next() {
+		var a app.App
+		var envJSON, portsJSON, volumesJSON, resourcesJSON, deploymentJSON, sslJSON string
+		var domain, aliasesJSON, deploymentsJSON, containerID, image, appType, mlxJSON, healthCheckJSON sql.NullString
+
+		err := rows.Scan(
+			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
+			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
+			&appType, &mlxJSON, &healthCheckJSON,
+			&a.CreatedAt, &a.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan app: %w", err)
+		}
+
+		a.Domain = domain.String
+		a.ContainerID = containerID.String
+		a.Image = image.String
+		a.Type = app.AppType(appType.String)
+		if a.Type == "" {
+			a.Type = app.AppTypeContainer
+		}
+
+		json.Unmarshal([]byte(envJSON), &a.Env)
+		json.Unmarshal([]byte(portsJSON), &a.Ports)
+		json.Unmarshal([]byte(volumesJSON), &a.Volumes)
+		json.Unmarshal([]byte(resourcesJSON), &a.Resources)
+		json.Unmarshal([]byte(deploymentJSON), &a.Deployment)
+		json.Unmarshal([]byte(sslJSON), &a.SSL)
+		if mlxJSON.Valid && mlxJSON.String != "" {
+			json.Unmarshal([]byte(mlxJSON.String), &a.MLX)
+		}
+		if aliasesJSON.Valid && aliasesJSON.String != "" {
+			json.Unmarshal([]byte(aliasesJSON.String), &a.Aliases)
+		}
+		if deploymentsJSON.Valid && deploymentsJSON.String != "" {
+			json.Unmarshal([]byte(deploymentsJSON.String), &a.Deployments)
+		}
+		if healthCheckJSON.Valid && healthCheckJSON.String != "" {
+			json.Unmarshal([]byte(healthCheckJSON.String), &a.HealthCheck)
+		}
+
+		apps = append(apps, a)
+	}
+
+	return apps, nil
+}
+
+// UserHasAppAccess checks if a user has access to a specific app
+func (s *Storage) UserHasAppAccess(userID, appID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM user_app_access WHERE user_id = ? AND app_id = ?", userID, appID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check user app access: %w", err)
+	}
+	return count > 0, nil
 }
 
 // --- App Metrics ---

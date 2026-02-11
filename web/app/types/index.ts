@@ -312,3 +312,17 @@ export interface AuthUser {
   email: string
   role: 'admin' | 'deployer' | 'viewer'
 }
+
+// Email Config
+export interface EmailConfig {
+  provider: 'postmark' | 'resend' | ''
+  postmark_token: string
+  resend_key: string
+  from_address: string
+}
+
+// User App Access
+export interface UserAppAccess {
+  user_id: string
+  app_ids: string[]
+}

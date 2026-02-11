@@ -166,24 +166,28 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("DELETE /api/users/{id}", s.requireAdmin(s.handleDeleteUser))
 	s.router.HandleFunc("POST /api/auth/accept-invite", s.handleAcceptInvite)
 
-	// Apps (auth required)
+	// User app access (admin only)
+	s.router.HandleFunc("GET /api/users/{id}/apps", s.requireAdmin(s.handleGetUserApps))
+	s.router.HandleFunc("PUT /api/users/{id}/apps", s.requireAdmin(s.handleSetUserApps))
+
+	// Apps (auth required, per-app access for deployers)
 	s.router.HandleFunc("GET /api/apps", s.requireAuth(s.handleListApps))
 	s.router.HandleFunc("POST /api/apps", s.requireAuth(s.handleCreateApp))
-	s.router.HandleFunc("GET /api/apps/{id}", s.requireAuth(s.handleGetApp))
-	s.router.HandleFunc("PUT /api/apps/{id}", s.requireAuth(s.handleUpdateApp))
-	s.router.HandleFunc("DELETE /api/apps/{id}", s.requireAuth(s.handleDeleteApp))
+	s.router.HandleFunc("GET /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleGetApp)))
+	s.router.HandleFunc("PUT /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleUpdateApp)))
+	s.router.HandleFunc("DELETE /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleDeleteApp)))
 
-	// App actions (auth required)
-	s.router.HandleFunc("POST /api/apps/{id}/start", s.requireAuth(s.handleStartApp))
-	s.router.HandleFunc("POST /api/apps/{id}/stop", s.requireAuth(s.handleStopApp))
-	s.router.HandleFunc("POST /api/apps/{id}/restart", s.requireAuth(s.handleRestartApp))
-	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.requireAuth(s.handleDeployApp))
-	s.router.HandleFunc("GET /api/apps/{id}/logs", s.requireAuth(s.handleGetAppLogs))
-	s.router.HandleFunc("GET /api/apps/{id}/terminal", s.requireAuth(s.handleTerminal))
+	// App actions (auth required, per-app access for deployers)
+	s.router.HandleFunc("POST /api/apps/{id}/start", s.requireAuth(s.requireAppAccess(s.handleStartApp)))
+	s.router.HandleFunc("POST /api/apps/{id}/stop", s.requireAuth(s.requireAppAccess(s.handleStopApp)))
+	s.router.HandleFunc("POST /api/apps/{id}/restart", s.requireAuth(s.requireAppAccess(s.handleRestartApp)))
+	s.router.HandleFunc("POST /api/apps/{id}/deploy", s.requireAuth(s.requireAppAccess(s.handleDeployApp)))
+	s.router.HandleFunc("GET /api/apps/{id}/logs", s.requireAuth(s.requireAppAccess(s.handleGetAppLogs)))
+	s.router.HandleFunc("GET /api/apps/{id}/terminal", s.requireAuth(s.requireAppAccess(s.handleTerminal)))
 
-	// App health checks (auth required)
-	s.router.HandleFunc("GET /api/apps/{id}/health", s.requireAuth(s.handleGetAppHealth))
-	s.router.HandleFunc("POST /api/apps/{id}/health/check", s.requireAuth(s.handleTriggerHealthCheck))
+	// App health checks (auth required, per-app access)
+	s.router.HandleFunc("GET /api/apps/{id}/health", s.requireAuth(s.requireAppAccess(s.handleGetAppHealth)))
+	s.router.HandleFunc("POST /api/apps/{id}/health/check", s.requireAuth(s.requireAppAccess(s.handleTriggerHealthCheck)))
 
 	// System (auth required)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
@@ -229,8 +233,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/container-images", s.requireAuth(s.handleListContainerImages))
 	s.router.HandleFunc("DELETE /api/container-images/{id}", s.requireAuth(s.handleDeleteContainerImage))
 
-	// Access logs (auth required)
-	s.router.HandleFunc("GET /api/apps/{id}/access-logs", s.requireAuth(s.handleAppAccessLogs))
+	// Access logs (auth required, per-app access)
+	s.router.HandleFunc("GET /api/apps/{id}/access-logs", s.requireAuth(s.requireAppAccess(s.handleAppAccessLogs)))
 
 	// Caddy on-demand TLS check (no auth - called by Caddy)
 	s.router.HandleFunc("GET /api/caddy/check", s.handleCaddyCheck)
@@ -238,25 +242,25 @@ func (s *Server) setupRoutes() {
 	// Webhook endpoint - NO auth (GitHub calls this, validated via HMAC)
 	s.router.HandleFunc("POST /api/apps/{id}/webhook", s.handleWebhook)
 
-	// Webhook management (auth required)
-	s.router.HandleFunc("POST /api/apps/{id}/webhook/setup", s.requireAuth(s.handleWebhookSetup))
-	s.router.HandleFunc("GET /api/apps/{id}/webhook/deliveries", s.requireAuth(s.handleWebhookDeliveries))
+	// Webhook management (auth required, per-app access)
+	s.router.HandleFunc("POST /api/apps/{id}/webhook/setup", s.requireAuth(s.requireAppAccess(s.handleWebhookSetup)))
+	s.router.HandleFunc("GET /api/apps/{id}/webhook/deliveries", s.requireAuth(s.requireAppAccess(s.handleWebhookDeliveries)))
 
-	// Rollback and deployment logs (auth required)
-	s.router.HandleFunc("POST /api/apps/{id}/rollback", s.requireAuth(s.handleRollback))
-	s.router.HandleFunc("GET /api/apps/{id}/deployments/{deployId}/logs", s.requireAuth(s.handleDeploymentLogs))
+	// Rollback and deployment logs (auth required, per-app access)
+	s.router.HandleFunc("POST /api/apps/{id}/rollback", s.requireAuth(s.requireAppAccess(s.handleRollback)))
+	s.router.HandleFunc("GET /api/apps/{id}/deployments/{deployId}/logs", s.requireAuth(s.requireAppAccess(s.handleDeploymentLogs)))
 
-	// Cron jobs (auth required)
-	s.router.HandleFunc("GET /api/apps/{id}/cron", s.requireAuth(s.handleListCronJobs))
-	s.router.HandleFunc("POST /api/apps/{id}/cron", s.requireAuth(s.handleCreateCronJob))
-	s.router.HandleFunc("PUT /api/apps/{id}/cron/{jobId}", s.requireAuth(s.handleUpdateCronJob))
-	s.router.HandleFunc("DELETE /api/apps/{id}/cron/{jobId}", s.requireAuth(s.handleDeleteCronJob))
-	s.router.HandleFunc("POST /api/apps/{id}/cron/{jobId}/run", s.requireAuth(s.handleRunCronJob))
-	s.router.HandleFunc("GET /api/apps/{id}/cron/{jobId}/executions", s.requireAuth(s.handleListCronExecutions))
+	// Cron jobs (auth required, per-app access)
+	s.router.HandleFunc("GET /api/apps/{id}/cron", s.requireAuth(s.requireAppAccess(s.handleListCronJobs)))
+	s.router.HandleFunc("POST /api/apps/{id}/cron", s.requireAuth(s.requireAppAccess(s.handleCreateCronJob)))
+	s.router.HandleFunc("PUT /api/apps/{id}/cron/{jobId}", s.requireAuth(s.requireAppAccess(s.handleUpdateCronJob)))
+	s.router.HandleFunc("DELETE /api/apps/{id}/cron/{jobId}", s.requireAuth(s.requireAppAccess(s.handleDeleteCronJob)))
+	s.router.HandleFunc("POST /api/apps/{id}/cron/{jobId}/run", s.requireAuth(s.requireAppAccess(s.handleRunCronJob)))
+	s.router.HandleFunc("GET /api/apps/{id}/cron/{jobId}/executions", s.requireAuth(s.requireAppAccess(s.handleListCronExecutions)))
 
-	// Activity log (auth required)
+	// Activity log (auth required, per-app access)
 	s.router.HandleFunc("GET /api/activity", s.requireAuth(s.handleListActivity))
-	s.router.HandleFunc("GET /api/apps/{id}/activity", s.requireAuth(s.handleListAppActivity))
+	s.router.HandleFunc("GET /api/apps/{id}/activity", s.requireAuth(s.requireAppAccess(s.handleListAppActivity)))
 
 	// Notification hooks (auth required)
 	s.router.HandleFunc("GET /api/notifications", s.requireAuth(s.handleListNotifications))
@@ -270,12 +274,12 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/deploy-tokens", s.requireAuth(s.handleCreateDeployToken))
 	s.router.HandleFunc("DELETE /api/deploy-tokens/{id}", s.requireAuth(s.handleDeleteDeployToken))
 
-	// App metrics (auth required)
-	s.router.HandleFunc("GET /api/apps/{id}/metrics", s.requireAuth(s.handleAppMetrics))
+	// App metrics (auth required, per-app access)
+	s.router.HandleFunc("GET /api/apps/{id}/metrics", s.requireAuth(s.requireAppAccess(s.handleAppMetrics)))
 
-	// Database provisioning (auth required)
-	s.router.HandleFunc("POST /api/apps/{id}/link/{dbId}", s.requireAuth(s.handleLinkDatabase))
-	s.router.HandleFunc("GET /api/apps/{id}/connection-info", s.requireAuth(s.handleConnectionInfo))
+	// Database provisioning (auth required, per-app access)
+	s.router.HandleFunc("POST /api/apps/{id}/link/{dbId}", s.requireAuth(s.requireAppAccess(s.handleLinkDatabase)))
+	s.router.HandleFunc("GET /api/apps/{id}/connection-info", s.requireAuth(s.requireAppAccess(s.handleConnectionInfo)))
 
 	// AI Deploy Assistant (auth required)
 	s.router.HandleFunc("POST /api/ai/analyze", s.requireAuth(s.handleAIAnalyze))
@@ -357,6 +361,152 @@ func (s *Server) requireAdmin(handler http.HandlerFunc) http.HandlerFunc {
 		}
 
 		handler(w, r)
+	}
+}
+
+// requireAppAccess wraps a handler, checking per-app access for deployers
+func (s *Server) requireAppAccess(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := s.getSessionToken(r)
+		session := s.auth.GetSession(token)
+		if session == nil {
+			errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		// Admin and viewer pass through (admin=full access, viewer=read-only to all)
+		if session.UserRole == "admin" || session.UserRole == "" || session.UserRole == "viewer" {
+			handler(w, r)
+			return
+		}
+
+		// Deployer: check per-app access
+		if session.UserRole == "deployer" {
+			appID := r.PathValue("id")
+			if appID == "" {
+				handler(w, r)
+				return
+			}
+
+			hasAccess, err := s.storage.UserHasAppAccess(session.UserID, appID)
+			if err != nil {
+				errorResponse(w, http.StatusInternalServerError, "Failed to check app access")
+				return
+			}
+			if !hasAccess {
+				errorResponse(w, http.StatusForbidden, "You don't have access to this app")
+				return
+			}
+		}
+
+		handler(w, r)
+	}
+}
+
+// maskToken masks a token for safe display
+func maskToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	if len(token) > 10 {
+		return token[:6] + "****" + token[len(token)-4:]
+	}
+	return "****"
+}
+
+// sendInviteEmail sends an invitation email via configured provider (Postmark or Resend)
+func (s *Server) sendInviteEmail(toEmail, inviteURL string) {
+	cfg := s.config.Email
+	if cfg.Provider == "" {
+		return // No email provider configured, skip silently
+	}
+
+	fromAddr := cfg.FromAddress
+	if fromAddr == "" {
+		fromAddr = "noreply@basepod.app"
+	}
+
+	subject := "You've been invited to Basepod"
+	htmlBody := fmt.Sprintf(`<html><body>
+<h2>You've been invited to Basepod</h2>
+<p>You've been invited to join a Basepod instance. Click the link below to set your password and get started:</p>
+<p><a href="%s" style="display:inline-block;padding:12px 24px;background-color:#3b82f6;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold;">Accept Invitation</a></p>
+<p>Or copy this URL: %s</p>
+<p>This invitation link is single-use.</p>
+</body></html>`, inviteURL, inviteURL)
+	textBody := fmt.Sprintf("You've been invited to Basepod.\n\nAccept your invitation: %s\n\nThis invitation link is single-use.", inviteURL)
+
+	var reqBody []byte
+	var apiURL string
+	var headers map[string]string
+
+	switch cfg.Provider {
+	case "postmark":
+		if cfg.PostmarkToken == "" {
+			log.Printf("Email: Postmark token not configured, skipping invite email")
+			return
+		}
+		apiURL = "https://api.postmarkapp.com/email"
+		headers = map[string]string{
+			"X-Postmark-Server-Token": cfg.PostmarkToken,
+			"Content-Type":            "application/json",
+			"Accept":                  "application/json",
+		}
+		payload := map[string]string{
+			"From":     fromAddr,
+			"To":       toEmail,
+			"Subject":  subject,
+			"HtmlBody": htmlBody,
+			"TextBody": textBody,
+		}
+		reqBody, _ = json.Marshal(payload)
+
+	case "resend":
+		if cfg.ResendKey == "" {
+			log.Printf("Email: Resend API key not configured, skipping invite email")
+			return
+		}
+		apiURL = "https://api.resend.com/emails"
+		headers = map[string]string{
+			"Authorization": "Bearer " + cfg.ResendKey,
+			"Content-Type":  "application/json",
+		}
+		payload := map[string]interface{}{
+			"from":    fromAddr,
+			"to":      []string{toEmail},
+			"subject": subject,
+			"html":    htmlBody,
+			"text":    textBody,
+		}
+		reqBody, _ = json.Marshal(payload)
+
+	default:
+		log.Printf("Email: Unknown provider %q, skipping invite email", cfg.Provider)
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	httpReq, err := http.NewRequest("POST", apiURL, strings.NewReader(string(reqBody)))
+	if err != nil {
+		log.Printf("Email: Failed to create request: %v", err)
+		return
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("Email: Failed to send invite email to %s via %s: %v", toEmail, cfg.Provider, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		log.Printf("Email: Invite email sent to %s via %s", toEmail, cfg.Provider)
+	} else {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Email: Failed to send invite email to %s via %s (HTTP %d): %s", toEmail, cfg.Provider, resp.StatusCode, string(body))
 	}
 }
 
@@ -712,9 +862,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, status)
 }
 
-// handleListApps lists all apps
+// handleListApps lists all apps (filtered by access for deployers)
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
-	apps, err := s.storage.ListApps()
+	var apps []app.App
+	var err error
+
+	// Check if deployer - filter apps by access
+	token := s.getSessionToken(r)
+	session := s.auth.GetSession(token)
+	if session != nil && session.UserRole == "deployer" && session.UserID != "" {
+		apps, err = s.storage.ListAppsForUser(session.UserID)
+	} else {
+		apps, err = s.storage.ListApps()
+	}
+
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1998,6 +2159,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"ai": map[string]interface{}{
 			"huggingface_token": maskedToken,
 		},
+		"email": map[string]interface{}{
+			"provider":       s.config.Email.Provider,
+			"postmark_token": maskToken(s.config.Email.PostmarkToken),
+			"resend_key":     maskToken(s.config.Email.ResendKey),
+			"from_address":   s.config.Email.FromAddress,
+		},
 		"multi_user": userCount > 0,
 	}
 	jsonResponse(w, http.StatusOK, cfg)
@@ -2033,6 +2200,26 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			if aiReq.HuggingFaceToken != "" {
 				s.config.AI.HuggingFaceToken = aiReq.HuggingFaceToken
 			}
+		}
+	}
+
+	// Update email config only if email field was provided
+	if emailRaw, ok := rawReq["email"]; ok {
+		var emailReq struct {
+			Provider      string `json:"provider"`
+			PostmarkToken string `json:"postmark_token"`
+			ResendKey     string `json:"resend_key"`
+			FromAddress   string `json:"from_address"`
+		}
+		if err := json.Unmarshal(emailRaw, &emailReq); err == nil {
+			s.config.Email.Provider = emailReq.Provider
+			if emailReq.PostmarkToken != "" && !strings.Contains(emailReq.PostmarkToken, "****") {
+				s.config.Email.PostmarkToken = emailReq.PostmarkToken
+			}
+			if emailReq.ResendKey != "" && !strings.Contains(emailReq.ResendKey, "****") {
+				s.config.Email.ResendKey = emailReq.ResendKey
+			}
+			s.config.Email.FromAddress = emailReq.FromAddress
 		}
 	}
 
@@ -6432,6 +6619,9 @@ func (s *Server) handleInviteUser(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	inviteURL := fmt.Sprintf("%s://%s/setup?invite=%s", scheme, host, inviteToken)
 
+	// Send invite email if configured
+	go s.sendInviteEmail(req.Email, inviteURL)
+
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{
 		"user":         user,
 		"invite_token": inviteToken,
@@ -6746,4 +6936,52 @@ In 2-3 sentences, suggest:
 		return result.Choices[0].Message.Content
 	}
 	return ""
+}
+
+// --- User App Access ---
+
+func (s *Server) handleGetUserApps(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	appIDs, err := s.storage.GetUserAppAccess(userID)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to get user app access")
+		return
+	}
+	if appIDs == nil {
+		appIDs = []string{}
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"user_id": userID,
+		"app_ids": appIDs,
+	})
+}
+
+func (s *Server) handleSetUserApps(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	var req struct {
+		AppIDs []string `json:"app_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	if err := s.storage.SetUserAppAccess(userID, req.AppIDs); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to set user app access: "+err.Error())
+		return
+	}
+
+	// Look up user for logging
+	user, _ := s.storage.GetUserByID(userID)
+	targetName := userID
+	if user != nil {
+		targetName = user.Email
+	}
+	s.logActivity("user", "set_app_access", "user", userID, targetName, "success", fmt.Sprintf("apps: %v", req.AppIDs))
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status":  "updated",
+		"user_id": userID,
+		"app_ids": req.AppIDs,
+	})
 }

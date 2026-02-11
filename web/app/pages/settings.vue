@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { HealthResponse, AuthUser } from '~/types'
+import type { HealthResponse, AuthUser, App } from '~/types'
 import type { ConfigResponse } from '~/composables/useApi'
 
 interface VersionInfo {
@@ -149,8 +149,15 @@ const performUpdate = async () => {
 // Initialize settings from configData
 const settings = ref({
   domain: configData.value?.domain?.root || '',
-  email: '',
   enableWildcard: configData.value?.domain?.wildcard ?? true,
+})
+
+// Email settings
+const emailSettings = ref({
+  provider: configData.value?.email?.provider || '',
+  postmark_token: '',
+  resend_key: '',
+  from_address: configData.value?.email?.from_address || '',
 })
 
 // Check version on load
@@ -167,6 +174,10 @@ watch(configData, (newConfig) => {
   if (newConfig?.domain) {
     settings.value.domain = newConfig.domain.root || ''
     settings.value.enableWildcard = newConfig.domain.wildcard ?? true
+  }
+  if (newConfig?.email) {
+    emailSettings.value.provider = newConfig.email.provider || ''
+    emailSettings.value.from_address = newConfig.email.from_address || ''
   }
 }, { immediate: true })
 
@@ -197,6 +208,93 @@ const saveDomainSettings = async () => {
   } finally {
     savingDomain.value = false
   }
+}
+
+// Email settings
+const savingEmail = ref(false)
+const emailSuccess = ref(false)
+const emailError = ref('')
+
+const saveEmailSettings = async () => {
+  savingEmail.value = true
+  emailError.value = ''
+  emailSuccess.value = false
+  try {
+    await $api('/system/config', {
+      method: 'PUT',
+      body: {
+        email: {
+          provider: emailSettings.value.provider,
+          postmark_token: emailSettings.value.postmark_token || undefined,
+          resend_key: emailSettings.value.resend_key || undefined,
+          from_address: emailSettings.value.from_address
+        }
+      }
+    })
+    emailSuccess.value = true
+    // Clear token fields after save
+    emailSettings.value.postmark_token = ''
+    emailSettings.value.resend_key = ''
+    toast.add({ title: 'Email settings saved', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    emailError.value = err.data?.error || 'Failed to save email settings'
+  } finally {
+    savingEmail.value = false
+  }
+}
+
+// App assignment for deployers
+const allApps = ref<App[]>([])
+const selectedUserForApps = ref<string | null>(null)
+const userAppIds = ref<string[]>([])
+const loadingApps = ref(false)
+const savingApps = ref(false)
+
+async function loadAllApps() {
+  loadingApps.value = true
+  try {
+    const data = await $api<{ apps: App[] }>('/apps')
+    allApps.value = data.apps || []
+  } catch { allApps.value = [] }
+  finally { loadingApps.value = false }
+}
+
+async function openAppAssignment(userId: string) {
+  if (selectedUserForApps.value === userId) {
+    selectedUserForApps.value = null
+    return
+  }
+  selectedUserForApps.value = userId
+  await loadAllApps()
+  try {
+    const data = await $api<{ app_ids: string[] }>(`/users/${userId}/apps`)
+    userAppIds.value = data.app_ids || []
+  } catch { userAppIds.value = [] }
+}
+
+function toggleAppAccess(appId: string) {
+  const idx = userAppIds.value.indexOf(appId)
+  if (idx >= 0) {
+    userAppIds.value.splice(idx, 1)
+  } else {
+    userAppIds.value.push(appId)
+  }
+}
+
+async function saveAppAssignment() {
+  if (!selectedUserForApps.value) return
+  savingApps.value = true
+  try {
+    await $api(`/users/${selectedUserForApps.value}/apps`, {
+      method: 'PUT',
+      body: { app_ids: userAppIds.value }
+    })
+    toast.add({ title: 'App access updated', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to update app access', description: err.data?.error, color: 'error' })
+  } finally { savingApps.value = false }
 }
 
 // Service restart
@@ -320,8 +418,8 @@ const deletingUser = ref<string | null>(null)
 
 const roleOptions = [
   { label: 'Admin', value: 'admin', description: 'Full access to all features' },
-  { label: 'Deployer', value: 'deployer', description: 'Deploy and manage apps' },
-  { label: 'Viewer', value: 'viewer', description: 'Read-only access' }
+  { label: 'Deployer', value: 'deployer', description: 'Deploy and manage assigned apps only' },
+  { label: 'Viewer', value: 'viewer', description: 'Read-only access to all apps' }
 ]
 
 async function loadUsers() {
@@ -795,6 +893,45 @@ const formatDate = (dateStr: string) => {
             </form>
           </UCard>
 
+          <!-- Email Invitations -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">Email Invitations</h3>
+            </template>
+
+            <form class="space-y-4" @submit.prevent="saveEmailSettings">
+              <UFormField label="Email Provider" help="Choose how to send invite emails. Leave as None to disable.">
+                <USelect
+                  v-model="emailSettings.provider"
+                  :items="[
+                    { label: 'None (disabled)', value: '' },
+                    { label: 'Postmark', value: 'postmark' },
+                    { label: 'Resend', value: 'resend' }
+                  ]"
+                />
+              </UFormField>
+
+              <UFormField v-if="emailSettings.provider === 'postmark'" label="Postmark Server Token" :help="configData?.email?.postmark_token ? 'Current: ' + configData.email.postmark_token : 'Enter your X-Postmark-Server-Token'">
+                <UInput v-model="emailSettings.postmark_token" type="password" placeholder="Enter token to update" />
+              </UFormField>
+
+              <UFormField v-if="emailSettings.provider === 'resend'" label="Resend API Key" :help="configData?.email?.resend_key ? 'Current: ' + configData.email.resend_key : 'Enter your Resend API key'">
+                <UInput v-model="emailSettings.resend_key" type="password" placeholder="Enter key to update" />
+              </UFormField>
+
+              <UFormField v-if="emailSettings.provider" label="From Address" help="The sender email address (e.g. info@yourdomain.com)">
+                <UInput v-model="emailSettings.from_address" type="email" placeholder="info@yourdomain.com" />
+              </UFormField>
+
+              <UAlert v-if="emailError" color="error" variant="soft" :title="emailError" />
+              <UAlert v-if="emailSuccess" color="success" variant="soft" title="Email settings saved successfully" />
+
+              <UButton type="submit" :loading="savingEmail">
+                Save Email Settings
+              </UButton>
+            </form>
+          </UCard>
+
         </div>
       </template>
 
@@ -846,60 +983,109 @@ const formatDate = (dateStr: string) => {
             </div>
 
             <div v-else class="divide-y divide-gray-200 dark:divide-gray-800">
-              <div v-for="user in users" :key="user.id" class="py-3 flex items-center justify-between">
-                <div class="flex items-center gap-3">
-                  <div class="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
-                    <span class="text-sm font-medium text-primary-600 dark:text-primary-400">
-                      {{ user.email.charAt(0).toUpperCase() }}
-                    </span>
-                  </div>
-                  <div>
-                    <div class="flex items-center gap-2">
-                      <p class="font-medium text-sm">{{ user.email }}</p>
-                      <UBadge
-                        v-if="user.status === 'invited'"
-                        color="warning"
-                        variant="soft"
-                        size="xs"
-                      >
-                        Invited
-                      </UBadge>
-                      <UBadge
-                        v-else
-                        color="success"
-                        variant="soft"
-                        size="xs"
-                      >
-                        Active
-                      </UBadge>
+              <div v-for="user in users" :key="user.id" class="py-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
+                      <span class="text-sm font-medium text-primary-600 dark:text-primary-400">
+                        {{ user.email.charAt(0).toUpperCase() }}
+                      </span>
                     </div>
-                    <p class="text-xs text-gray-500">
-                      <template v-if="user.status === 'invited'">
-                        Invited {{ new Date(user.created_at).toLocaleDateString() }}
-                      </template>
-                      <template v-else>
-                        Joined {{ new Date(user.created_at).toLocaleDateString() }}
-                        <span v-if="user.last_login_at"> · Last login {{ new Date(user.last_login_at).toLocaleDateString() }}</span>
-                      </template>
-                    </p>
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <p class="font-medium text-sm">{{ user.email }}</p>
+                        <UBadge
+                          v-if="user.status === 'invited'"
+                          color="warning"
+                          variant="soft"
+                          size="xs"
+                        >
+                          Invited
+                        </UBadge>
+                        <UBadge
+                          v-else
+                          color="success"
+                          variant="soft"
+                          size="xs"
+                        >
+                          Active
+                        </UBadge>
+                      </div>
+                      <p class="text-xs text-gray-500">
+                        <template v-if="user.status === 'invited'">
+                          Invited {{ new Date(user.created_at).toLocaleDateString() }}
+                        </template>
+                        <template v-else>
+                          Joined {{ new Date(user.created_at).toLocaleDateString() }}
+                          <span v-if="user.last_login_at"> · Last login {{ new Date(user.last_login_at).toLocaleDateString() }}</span>
+                        </template>
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <UButton
+                      v-if="user.role === 'deployer'"
+                      size="xs"
+                      variant="soft"
+                      @click="openAppAssignment(user.id)"
+                    >
+                      <UIcon name="i-heroicons-squares-2x2" class="mr-1" />
+                      Apps
+                    </UButton>
+                    <USelect
+                      :model-value="user.role"
+                      :items="roleOptions.map(r => ({ label: r.label, value: r.value }))"
+                      size="xs"
+                      :loading="updatingRole === user.id"
+                      @update:model-value="(val: string) => updateUserRole(user.id, val)"
+                    />
+                    <UButton
+                      icon="i-heroicons-trash"
+                      variant="ghost"
+                      color="error"
+                      size="xs"
+                      :loading="deletingUser === user.id"
+                      @click="deleteUser(user)"
+                    />
                   </div>
                 </div>
-                <div class="flex items-center gap-2">
-                  <USelect
-                    :model-value="user.role"
-                    :items="roleOptions.map(r => ({ label: r.label, value: r.value }))"
-                    size="xs"
-                    :loading="updatingRole === user.id"
-                    @update:model-value="(val: string) => updateUserRole(user.id, val)"
-                  />
-                  <UButton
-                    icon="i-heroicons-trash"
-                    variant="ghost"
-                    color="error"
-                    size="xs"
-                    :loading="deletingUser === user.id"
-                    @click="deleteUser(user)"
-                  />
+
+                <!-- App Assignment Panel -->
+                <div v-if="selectedUserForApps === user.id && user.role === 'deployer'" class="mt-3 ml-11 p-4 bg-(--ui-bg-muted) rounded-lg space-y-3">
+                  <p class="text-sm font-medium">Assign apps to {{ user.email }}</p>
+                  <div v-if="loadingApps" class="flex justify-center py-4">
+                    <UIcon name="i-heroicons-arrow-path" class="animate-spin text-xl" />
+                  </div>
+                  <div v-else-if="allApps.length === 0" class="text-sm text-gray-500">
+                    No apps available
+                  </div>
+                  <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div
+                      v-for="a in allApps"
+                      :key="a.id"
+                      class="flex items-center gap-2 p-2 rounded border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
+                      :class="{ 'bg-primary-50 dark:bg-primary-950 border-primary-300 dark:border-primary-700': userAppIds.includes(a.id) }"
+                      @click="toggleAppAccess(a.id)"
+                    >
+                      <UCheckbox :model-value="userAppIds.includes(a.id)" @click.stop @update:model-value="toggleAppAccess(a.id)" />
+                      <div class="flex-1 min-w-0">
+                        <p class="text-sm font-medium truncate">{{ a.name }}</p>
+                        <p class="text-xs text-gray-500 truncate">{{ a.domain || 'No domain' }}</p>
+                      </div>
+                      <UBadge
+                        :color="a.status === 'running' ? 'success' : a.status === 'stopped' ? 'neutral' : 'warning'"
+                        variant="soft"
+                        size="xs"
+                      >
+                        {{ a.status }}
+                      </UBadge>
+                    </div>
+                  </div>
+                  <div class="flex gap-2 pt-2">
+                    <UButton size="sm" :loading="savingApps" @click="saveAppAssignment">Save Access</UButton>
+                    <UButton size="sm" variant="ghost" @click="selectedUserForApps = null">Cancel</UButton>
+                    <span class="text-xs text-gray-500 self-center ml-auto">{{ userAppIds.length }} app(s) selected</span>
+                  </div>
                 </div>
               </div>
             </div>

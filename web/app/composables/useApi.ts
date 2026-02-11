@@ -84,9 +84,17 @@ export interface AIConfig {
   huggingface_token: string
 }
 
+export interface EmailConfig {
+  provider: 'postmark' | 'resend' | ''
+  postmark_token: string
+  resend_key: string
+  from_address: string
+}
+
 export interface ConfigResponse {
   domain: DomainConfig
   ai?: AIConfig
+  email?: EmailConfig
 }
 
 // Helper to generate app domain from config

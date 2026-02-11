@@ -38,11 +38,22 @@ type Config struct {
 
 	// AI settings (HuggingFace, etc.)
 	AI AIConfig `yaml:"ai"`
+
+	// Email settings (for invite emails)
+	Email EmailConfig `yaml:"email"`
 }
 
 // AIConfig holds AI-related configuration
 type AIConfig struct {
 	HuggingFaceToken string `yaml:"huggingface_token"` // HuggingFace API token for gated models
+}
+
+// EmailConfig holds email provider configuration for invite emails
+type EmailConfig struct {
+	Provider      string `yaml:"provider"`       // "postmark", "resend", or "" (disabled)
+	PostmarkToken string `yaml:"postmark_token"` // X-Postmark-Server-Token
+	ResendKey     string `yaml:"resend_key"`     // Resend API key
+	FromAddress   string `yaml:"from_address"`   // e.g. "info@base.al"
 }
 
 // DNSConfig holds DNS server configuration
