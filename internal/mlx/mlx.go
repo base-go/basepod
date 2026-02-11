@@ -1218,41 +1218,64 @@ func estimateModelSize(modelID string) string {
 func GetModelCatalog() []ModelInfo {
 	return []ModelInfo{
 		// === Chat Models (General Purpose) ===
+		// -- Qwen 3 (latest, thinking mode built-in) --
+		{ID: "mlx-community/Qwen3-0.6B-4bit", Name: "Qwen 3 0.6B", Size: "0.4GB", Category: "chat", Description: "Tiny, ultra-fast chat"},
+		{ID: "mlx-community/Qwen3-1.7B-4bit", Name: "Qwen 3 1.7B", Size: "1GB", Category: "chat", Description: "Fast, with thinking mode"},
+		{ID: "mlx-community/Qwen3-4B-Instruct-2507-4bit", Name: "Qwen 3 4B", Size: "2.5GB", Category: "chat", Description: "Great balance of speed and quality"},
+		{ID: "mlx-community/Qwen3-8B-4bit", Name: "Qwen 3 8B", Size: "5GB", Category: "chat", Description: "Strong general purpose"},
+		{ID: "mlx-community/Qwen3-32B-4bit", Name: "Qwen 3 32B", Size: "18GB", Category: "chat", Description: "Excellent quality, thinking mode"},
+		// -- Gemma 3 (Google, multimodal at 4B+) --
+		{ID: "mlx-community/gemma-3-1b-it-4bit", Name: "Gemma 3 1B", Size: "0.6GB", Category: "chat", Description: "Google, ultra-lightweight"},
+		{ID: "mlx-community/gemma-3-4b-it-4bit", Name: "Gemma 3 4B", Size: "2.5GB", Category: "chat", Description: "Google, multimodal capable"},
+		{ID: "mlx-community/gemma-3-12b-it-4bit", Name: "Gemma 3 12B", Size: "7GB", Category: "chat", Description: "Google, strong multimodal"},
+		{ID: "mlx-community/gemma-3-27b-it-4bit", Name: "Gemma 3 27B", Size: "15GB", Category: "chat", Description: "Google, top quality"},
+		// -- Llama (Meta) --
 		{ID: "mlx-community/Llama-3.2-1B-Instruct-4bit", Name: "Llama 3.2 1B", Size: "0.7GB", Category: "chat", Description: "Ultra-fast, great for quick tasks"},
 		{ID: "mlx-community/Llama-3.2-3B-Instruct-4bit", Name: "Llama 3.2 3B", Size: "2GB", Category: "chat", Description: "Fast and capable"},
 		{ID: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit", Name: "Llama 3.1 8B", Size: "4.5GB", Category: "chat", Description: "Strong general purpose"},
-		{ID: "mlx-community/Mistral-7B-Instruct-v0.3-4bit", Name: "Mistral 7B", Size: "4GB", Category: "chat", Description: "Popular, well-balanced"},
+		// -- SmolLM3 (HuggingFace) --
+		{ID: "mlx-community/SmolLM3-3B-4bit", Name: "SmolLM3 3B", Size: "2GB", Category: "chat", Description: "HuggingFace, beats Llama 3.2 3B"},
+		// -- Mistral --
+		{ID: "mlx-community/Mistral-Small-24B-Instruct-2501-4bit", Name: "Mistral Small 24B", Size: "13GB", Category: "chat", Description: "Mistral's best small model"},
 		{ID: "mlx-community/Mistral-Nemo-Instruct-2407-4bit", Name: "Mistral Nemo 12B", Size: "7GB", Category: "chat", Description: "Multilingual, Mistral/NVIDIA"},
-		{ID: "mlx-community/gemma-2-2b-it-4bit", Name: "Gemma 2 2B", Size: "1.4GB", Category: "chat", Description: "Google's efficient model"},
-		{ID: "mlx-community/gemma-2-9b-it-4bit", Name: "Gemma 2 9B", Size: "5.5GB", Category: "chat", Description: "Google's powerful model"},
-		{ID: "mlx-community/Phi-3.5-mini-instruct-4bit", Name: "Phi 3.5 Mini", Size: "2.4GB", Category: "chat", Description: "Microsoft, reasoning-focused"},
-		{ID: "mlx-community/Phi-4-4bit", Name: "Phi 4", Size: "8GB", Category: "chat", Description: "Microsoft's latest"},
-		{ID: "mlx-community/Qwen2.5-1.5B-Instruct-4bit", Name: "Qwen 2.5 1.5B", Size: "1GB", Category: "chat", Description: "Lightweight, multilingual"},
-		{ID: "mlx-community/Qwen2.5-3B-Instruct-4bit", Name: "Qwen 2.5 3B", Size: "2GB", Category: "chat", Description: "Fast, multilingual"},
-		{ID: "mlx-community/Qwen2.5-7B-Instruct-4bit", Name: "Qwen 2.5 7B", Size: "4.5GB", Category: "chat", Description: "Powerful, multilingual"},
-		{ID: "mlx-community/Qwen2.5-14B-Instruct-4bit", Name: "Qwen 2.5 14B", Size: "8.5GB", Category: "chat", Description: "Very capable"},
-		{ID: "mlx-community/Qwen2.5-32B-Instruct-4bit", Name: "Qwen 2.5 32B", Size: "18GB", Category: "chat", Description: "Excellent quality"},
+		// -- Phi (Microsoft) --
+		{ID: "mlx-community/Phi-4-mini-instruct-4bit", Name: "Phi 4 Mini", Size: "2.2GB", Category: "chat", Description: "Microsoft, compact and fast"},
+		{ID: "mlx-community/Phi-4-4bit", Name: "Phi 4", Size: "8GB", Category: "chat", Description: "Microsoft, reasoning-focused"},
+		// -- GLM (Zhipu AI) --
+		{ID: "mlx-community/GLM-4.6-4bit", Name: "GLM 4.6", Size: "5GB", Category: "chat", Description: "Zhipu AI, strong multilingual"},
+		// -- Gemma 3n (on-device, multimodal) --
+		{ID: "mlx-community/gemma-3n-E2B-it-lm-4bit", Name: "Gemma 3n E2B", Size: "1.5GB", Category: "chat", Description: "Google, on-device efficient"},
+		{ID: "mlx-community/gemma-3n-E4B-it-lm-4bit", Name: "Gemma 3n E4B", Size: "2.5GB", Category: "chat", Description: "Google, on-device capable"},
 
 		// === Code Models ===
-		{ID: "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit", Name: "Qwen Coder 1.5B", Size: "1GB", Category: "code", Description: "Fast code completion"},
+		{ID: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", Name: "Qwen3 Coder 30B MoE", Size: "17GB", Category: "code", Description: "MoE, 3B active, top-tier coding"},
+		{ID: "mlx-community/Devstral-Small-2505-4bit", Name: "Devstral Small", Size: "14GB", Category: "code", Description: "Mistral's coding agent model"},
 		{ID: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", Name: "Qwen Coder 7B", Size: "4.5GB", Category: "code", Description: "Strong coding assistant"},
 		{ID: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit", Name: "Qwen Coder 14B", Size: "8.5GB", Category: "code", Description: "Advanced coding"},
 		{ID: "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit", Name: "Qwen Coder 32B", Size: "18GB", Category: "code", Description: "Best-in-class coding"},
+		{ID: "mlx-community/codestral-22B-v0.1-4bit", Name: "Codestral 22B", Size: "12GB", Category: "code", Description: "Mistral, 80+ languages"},
 		{ID: "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit", Name: "DeepSeek Coder V2", Size: "2.3GB", Category: "code", Description: "Efficient code specialist"},
-		{ID: "mlx-community/codestral-22B-v0.1-4bit", Name: "Codestral 22B", Size: "12GB", Category: "code", Description: "Mistral's coding model, 80+ languages"},
-		{ID: "mlx-community/starcoder2-7b-4bit", Name: "StarCoder2 7B", Size: "4GB", Category: "code", Description: "BigCode, code completion"},
+		{ID: "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit", Name: "Qwen Coder 1.5B", Size: "1GB", Category: "code", Description: "Fast code completion"},
 
 		// === Vision Models ===
-		{ID: "mlx-community/Qwen2-VL-2B-Instruct-4bit", Name: "Qwen2 VL 2B", Size: "1.5GB", Category: "vision", Description: "Fast image understanding"},
-		{ID: "mlx-community/Qwen2-VL-7B-Instruct-4bit", Name: "Qwen2 VL 7B", Size: "5GB", Category: "vision", Description: "Strong vision-language"},
+		{ID: "mlx-community/Qwen3-VL-4B-Instruct-4bit", Name: "Qwen3 VL 4B", Size: "3GB", Category: "vision", Description: "Fast image understanding"},
+		{ID: "mlx-community/Qwen3-VL-8B-Instruct-4bit", Name: "Qwen3 VL 8B", Size: "5GB", Category: "vision", Description: "Strong vision-language"},
+		{ID: "mlx-community/gemma-3n-E4B-it-4bit", Name: "Gemma 3n VL E4B", Size: "5.8GB", Category: "vision", Description: "Google, text+image+audio+video"},
+		{ID: "mlx-community/SmolVLM-Instruct-4bit", Name: "SmolVLM", Size: "1GB", Category: "vision", Description: "HuggingFace, tiny vision model"},
+		{ID: "mlx-community/paligemma2-3b-ft-docci-448-8bit", Name: "PaliGemma 2 3B", Size: "3GB", Category: "vision", Description: "Google, image captioning"},
 		{ID: "mlx-community/llava-1.5-7b-4bit", Name: "LLaVA 1.5 7B", Size: "4GB", Category: "vision", Description: "Image + text conversations"},
-		{ID: "mlx-community/paligemma-3b-mix-224-4bit", Name: "PaliGemma 3B", Size: "2GB", Category: "vision", Description: "Google's vision model"},
 
 		// === Reasoning Models ===
+		{ID: "mlx-community/QwQ-32B-4bit", Name: "QwQ 32B", Size: "18GB", Category: "reasoning", Description: "Qwen's dedicated reasoning model"},
+		{ID: "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", Name: "DeepSeek R1 Qwen3 8B", Size: "5GB", Category: "reasoning", Description: "Latest R1 distill, strong reasoning"},
 		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", Name: "DeepSeek R1 1.5B", Size: "1GB", Category: "reasoning", Description: "Fast chain-of-thought"},
 		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit", Name: "DeepSeek R1 7B", Size: "4.5GB", Category: "reasoning", Description: "Strong reasoning"},
 		{ID: "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit", Name: "DeepSeek R1 14B", Size: "8.5GB", Category: "reasoning", Description: "Advanced reasoning"},
 		{ID: "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit", Name: "DeepSeek R1 Llama 8B", Size: "5GB", Category: "reasoning", Description: "Reasoning on Llama base"},
+
+		// === Agent / Tool Use Models ===
+		{ID: "mlx-community/functiongemma-270m-it-4bit", Name: "FunctionGemma 270M", Size: "0.15GB", Category: "agent", Description: "Google, function calling / tool use router"},
+		{ID: "mlx-community/Orchestrator-8B-4bit", Name: "Orchestrator 8B", Size: "5GB", Category: "agent", Description: "Agent orchestration and planning"},
 
 		// === Embedding Models ===
 		{ID: "mlx-community/bge-small-en-v1.5-mlx", Name: "BGE Small", Size: "0.1GB", Category: "embedding", Description: "Fast English embeddings"},
@@ -1261,12 +1284,16 @@ func GetModelCatalog() []ModelInfo {
 		{ID: "mlx-community/gte-Qwen2-1.5B-instruct-mlx", Name: "GTE Qwen 1.5B", Size: "1GB", Category: "embedding", Description: "Alibaba text embeddings"},
 
 		// === Speech Models ===
-		{ID: "mlx-community/whisper-tiny-mlx", Name: "Whisper Tiny", Size: "0.1GB", Category: "speech", Description: "Ultra-fast transcription"},
-		{ID: "mlx-community/whisper-base-mlx", Name: "Whisper Base", Size: "0.2GB", Category: "speech", Description: "Fast transcription"},
-		{ID: "mlx-community/whisper-small-mlx", Name: "Whisper Small", Size: "0.5GB", Category: "speech", Description: "Balanced transcription"},
-		{ID: "mlx-community/whisper-medium-mlx", Name: "Whisper Medium", Size: "1.5GB", Category: "speech", Description: "Accurate transcription"},
+		{ID: "mlx-community/whisper-large-v3-turbo", Name: "Whisper Large v3 Turbo", Size: "1.6GB", Category: "speech", Description: "Fast + accurate transcription"},
 		{ID: "mlx-community/whisper-large-v3-mlx", Name: "Whisper Large v3", Size: "3GB", Category: "speech", Description: "Best quality transcription"},
-		{ID: "mlx-community/whisper-large-v3-turbo", Name: "Whisper Large v3 Turbo", Size: "1.6GB", Category: "speech", Description: "Fast + accurate"},
+		{ID: "mlx-community/whisper-small-mlx", Name: "Whisper Small", Size: "0.5GB", Category: "speech", Description: "Balanced transcription"},
+		{ID: "mlx-community/whisper-tiny-mlx", Name: "Whisper Tiny", Size: "0.1GB", Category: "speech", Description: "Ultra-fast transcription"},
+		{ID: "mlx-community/Kokoro-82M-4bit", Name: "Kokoro TTS 82M", Size: "0.1GB", Category: "speech", Description: "Tiny text-to-speech"},
+		{ID: "mlx-community/Dia-1.6B-4bit", Name: "Dia TTS 1.6B", Size: "1GB", Category: "speech", Description: "NariLabs, natural speech synthesis"},
+		{ID: "mlx-community/Llama-OuteTTS-1.0-1B-4bit", Name: "OuteTTS 1B", Size: "0.6GB", Category: "speech", Description: "Llama-based text-to-speech"},
+		{ID: "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit", Name: "Qwen3 TTS 0.6B", Size: "0.4GB", Category: "speech", Description: "Qwen text-to-speech"},
+		{ID: "mlx-community/VibeVoice-Realtime-0.5B-4bit", Name: "VibeVoice 0.5B", Size: "0.3GB", Category: "speech", Description: "Realtime voice generation"},
+		{ID: "mlx-community/Qwen3-ASR-0.6B-4bit", Name: "Qwen3 ASR 0.6B", Size: "0.4GB", Category: "speech", Description: "Qwen speech recognition"},
 	}
 }
 

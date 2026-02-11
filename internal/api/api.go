@@ -1765,15 +1765,24 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	var categories []StorageCategory
 	var basepodTotal int64
 
-	// Container Images
+	// Container Images — only count tagged (non-dangling) images
 	var imagesSize int64
 	var imagesCount int
 	images, err := s.podman.ListImages(ctx)
 	if err == nil {
 		for _, img := range images {
-			imagesSize += img.Size
+			tagged := false
+			for _, tag := range img.RepoTags {
+				if tag != "" && tag != "<none>:<none>" {
+					tagged = true
+					break
+				}
+			}
+			if tagged {
+				imagesSize += img.Size
+				imagesCount++
+			}
 		}
-		imagesCount = len(images)
 	}
 	categories = append(categories, StorageCategory{
 		ID: "images", Name: "Container Images",
@@ -1884,18 +1893,35 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	})
 	basepodTotal += hfSize
 
-	// Podman Build Cache (overlay layers, intermediate builds, etc.)
-	podmanDir := filepath.Join(home, ".local", "share", "containers")
-	podmanDirSize := diskutil.DirSize(podmanDir)
-	// Build cache = total podman dir - reported image sizes (already counted above)
-	podmanCacheSize := podmanDirSize - imagesSize
-	if podmanCacheSize < 0 {
-		podmanCacheSize = 0
+	// Podman Build Cache — use "podman system df" for accurate sizes
+	var podmanCacheSize int64
+	var podmanCacheCount int
+	if dfOut, err := exec.Command("podman", "system", "df", "--format", "json").Output(); err == nil {
+		var dfEntries []struct {
+			Type           string `json:"Type"`
+			Total          int    `json:"Total"`
+			Active         int    `json:"Active"`
+			RawSize        int64  `json:"RawSize"`
+			RawReclaimable int64  `json:"RawReclaimable"`
+		}
+		if json.Unmarshal(dfOut, &dfEntries) == nil {
+			for _, entry := range dfEntries {
+				if entry.Type == "Images" {
+					// Inactive images = build cache / dangling layers
+					podmanCacheCount = entry.Total - entry.Active
+					if podmanCacheCount < 0 {
+						podmanCacheCount = 0
+					}
+					podmanCacheSize = entry.RawReclaimable
+					break
+				}
+			}
+		}
 	}
 	categories = append(categories, StorageCategory{
 		ID: "podman", Name: "Build Cache & Layers",
 		Size: podmanCacheSize, Formatted: diskutil.FormatBytes(podmanCacheSize),
-		Count: 0, Icon: "i-heroicons-archive-box", Color: "indigo",
+		Count: podmanCacheCount, Icon: "i-heroicons-archive-box", Color: "indigo",
 	})
 	basepodTotal += podmanCacheSize
 

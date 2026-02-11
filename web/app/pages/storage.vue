@@ -150,6 +150,16 @@ function formatImageDate(created: number): string {
 
 const pruningImages = ref(false)
 
+// Filter images based on which category modal is open
+const displayedImages = computed(() => {
+  if (detailModalCategory.value === 'podman') {
+    // Build Cache: only dangling/untagged images
+    return podmanImages.value.filter(i => isUntagged(i))
+  }
+  // Container Images: only tagged images
+  return podmanImages.value.filter(i => !isUntagged(i))
+})
+
 async function loadPodmanImages() {
   podmanLoading.value = true
   try {
@@ -548,14 +558,19 @@ async function clearCategory(catId: string) {
             </div>
           </template>
 
-          <!-- Podman Images content -->
+          <!-- Podman Images content (tagged images for 'images', dangling only for 'podman') -->
           <template v-if="detailModalCategory === 'images' || detailModalCategory === 'podman'">
             <div class="mb-3 flex items-center justify-between">
               <div class="text-sm text-gray-500 dark:text-gray-400">
-                {{ podmanImages.length }} {{ podmanImages.length === 1 ? 'image' : 'images' }}
-                <span v-if="podmanImages.filter(i => isUntagged(i)).length > 0" class="text-yellow-500">
-                  ({{ podmanImages.filter(i => isUntagged(i)).length }} dangling)
-                </span>
+                <template v-if="detailModalCategory === 'podman'">
+                  {{ podmanImages.filter(i => isUntagged(i)).length }} dangling {{ podmanImages.filter(i => isUntagged(i)).length === 1 ? 'layer' : 'layers' }}
+                </template>
+                <template v-else>
+                  {{ podmanImages.filter(i => !isUntagged(i)).length }} {{ podmanImages.filter(i => !isUntagged(i)).length === 1 ? 'image' : 'images' }}
+                  <span v-if="podmanImages.filter(i => isUntagged(i)).length > 0" class="text-yellow-500">
+                    ({{ podmanImages.filter(i => isUntagged(i)).length }} dangling)
+                  </span>
+                </template>
               </div>
               <UButton
                 v-if="podmanImages.filter(i => isUntagged(i)).length > 0"
@@ -572,12 +587,12 @@ async function clearCategory(catId: string) {
             <div v-if="podmanLoading" class="py-8 text-center">
               <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
             </div>
-            <div v-else-if="podmanImages.length === 0" class="py-8 text-center text-sm text-gray-500">
-              No images found
+            <div v-else-if="displayedImages.length === 0" class="py-8 text-center text-sm text-gray-500">
+              {{ detailModalCategory === 'podman' ? 'No dangling layers' : 'No images found' }}
             </div>
             <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
               <div
-                v-for="img in podmanImages"
+                v-for="img in displayedImages"
                 :key="img.Id"
                 class="py-3 flex items-center justify-between"
               >
