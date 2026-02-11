@@ -351,7 +351,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Custom Model Input -->
-    <div v-if="mlxData?.supported" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+    <div v-if="mlxData?.supported" class="mb-6 p-4 bg-(--ui-bg-muted) rounded-lg border border-gray-200 dark:border-gray-700">
       <div class="flex items-center gap-2 mb-3">
         <UIcon name="i-heroicons-plus-circle" class="w-5 h-5 text-gray-500" />
         <h3 class="font-medium">Run Custom Model</h3>
@@ -402,7 +402,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="flex items-center gap-3">
-          <code class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded text-gray-500">{{ mlxData?.endpoint }}</code>
+          <code class="text-sm bg-(--ui-bg-muted) px-2 py-1 rounded text-gray-500">{{ mlxData?.endpoint }}</code>
           <NuxtLink to="/chat">
             <UButton size="sm">
               <UIcon name="i-heroicons-chat-bubble-left-right" class="w-4 h-4 mr-1" />
@@ -430,7 +430,7 @@ onUnmounted(() => {
           <div
             v-for="model in modelsByCategory[category]"
             :key="model.id"
-            class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+            class="p-4 bg-(--ui-bg-elevated) rounded-lg border border-gray-200 dark:border-gray-700"
             :class="{
               'ring-2 ring-orange-500': mlxData?.active_model === model.id,
               'opacity-60': !mlxData?.supported
@@ -529,7 +529,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Usage Info -->
-    <div v-if="mlxData?.running" class="mt-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+    <div v-if="mlxData?.running" class="mt-6 p-4 bg-(--ui-bg-muted) rounded-lg">
       <h3 class="font-medium mb-2">API Usage</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
         The MLX server is OpenAI-compatible. Use it with any OpenAI client:
@@ -559,15 +559,15 @@ onUnmounted(() => {
           <!-- Model Info -->
           <div class="space-y-4">
             <div class="grid grid-cols-2 gap-4">
-              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="p-3 bg-(--ui-bg-muted) rounded-lg">
                 <div class="text-xs text-gray-500 mb-1">Size</div>
                 <div class="font-medium">{{ selectedModel.size }}</div>
               </div>
-              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="p-3 bg-(--ui-bg-muted) rounded-lg">
                 <div class="text-xs text-gray-500 mb-1">Category</div>
                 <div class="font-medium capitalize">{{ selectedModel.category }}</div>
               </div>
-              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="p-3 bg-(--ui-bg-muted) rounded-lg">
                 <div class="text-xs text-gray-500 mb-1">Status</div>
                 <div class="font-medium">
                   <span v-if="mlxData?.active_model === selectedModel.id" class="text-green-600">Running</span>
@@ -575,14 +575,14 @@ onUnmounted(() => {
                   <span v-else class="text-gray-500">Not Downloaded</span>
                 </div>
               </div>
-              <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div class="p-3 bg-(--ui-bg-muted) rounded-lg">
                 <div class="text-xs text-gray-500 mb-1">Required RAM</div>
                 <div class="font-medium">{{ selectedModel.required_ram_gb || '~' }}GB</div>
               </div>
             </div>
 
             <!-- Model ID -->
-            <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <div class="p-3 bg-(--ui-bg-muted) rounded-lg">
               <div class="text-xs text-gray-500 mb-1">Model ID</div>
               <code class="text-xs break-all">{{ selectedModel.id }}</code>
             </div>

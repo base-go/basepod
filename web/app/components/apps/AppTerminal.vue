@@ -74,18 +74,19 @@ onMounted(() => {
     fontSize: 14,
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     theme: {
-      background: '#1a1b26',
-      foreground: '#c0caf5',
-      cursor: '#c0caf5',
-      selectionBackground: '#33467c',
-      black: '#15161e',
-      red: '#f7768e',
-      green: '#9ece6a',
-      yellow: '#e0af68',
-      blue: '#7aa2f7',
-      magenta: '#bb9af7',
-      cyan: '#7dcfff',
-      white: '#a9b1d6',
+      background: '#0a0a0a',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      cursorAccent: '#0a0a0a',
+      selectionBackground: '#264f78',
+      black: '#000000',
+      red: '#f44747',
+      green: '#6a9955',
+      yellow: '#d7ba7d',
+      blue: '#569cd6',
+      magenta: '#c586c0',
+      cyan: '#4ec9b0',
+      white: '#d4d4d4',
     },
   })
 
@@ -127,7 +128,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex flex-col h-full">
     <!-- Status bar -->
-    <div class="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-700 rounded-t-lg">
+    <div class="flex items-center justify-between px-4 py-2 bg-gray-950 border-b border-gray-800 rounded-t-lg">
       <div class="flex items-center gap-2">
         <span
           class="w-2 h-2 rounded-full"
@@ -155,6 +156,6 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Terminal — fill remaining viewport -->
-    <div ref="terminalRef" class="flex-1 bg-[#1a1b26] rounded-b-lg" style="min-height: calc(100vh - 320px);" />
+    <div ref="terminalRef" class="flex-1 bg-[#0a0a0a] rounded-b-lg" style="min-height: calc(100vh - 320px);" />
   </div>
 </template>

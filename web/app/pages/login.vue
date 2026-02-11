@@ -31,7 +31,7 @@ const login = async () => {
 <template>
   <div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
     <div class="w-full max-w-md px-4">
-      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-10">
+      <div class="bg-(--ui-bg-elevated) rounded-xl shadow-xl p-10">
         <div class="text-center mb-10">
           <BasepodLogo status="ok" class="mx-auto mb-4" />
           <p class="text-gray-500 dark:text-gray-400">Enter your password to continue</p>

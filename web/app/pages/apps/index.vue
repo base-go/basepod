@@ -152,7 +152,7 @@ const columns: TableColumn<App>[] = [
         </template>
 
         <template #image-cell="{ row }">
-          <code v-if="row.original.image" class="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
+          <code v-if="row.original.image" class="text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">
             {{ row.original.image }}
           </code>
           <UBadge v-else-if="row.original.type === 'static'" color="info" variant="soft">

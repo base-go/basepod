@@ -592,7 +592,7 @@ async function manualRefresh() {
                     'p-2 rounded cursor-pointer transition-colors',
                     model.id === mlxData?.active_model
                       ? 'bg-primary-100 dark:bg-primary-900/30'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                      : 'hover:bg-(--ui-bg-muted)'
                   ]"
                   @click="switchModel(model.id)">
                   <div class="flex items-center justify-between">
@@ -671,7 +671,7 @@ async function manualRefresh() {
               'max-w-[80%] rounded-2xl overflow-hidden',
               msg.role === 'user'
                 ? 'bg-primary-500 text-white rounded-br-md'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-bl-md'
+                : 'bg-(--ui-bg-muted) text-gray-900 dark:text-gray-100 rounded-bl-md'
             ]"
           >
             <!-- Images in message -->
@@ -690,7 +690,7 @@ async function manualRefresh() {
 
         <!-- Loading indicator with status -->
         <div v-if="loading" class="flex justify-start">
-          <div class="bg-gray-100 dark:bg-gray-800 px-4 py-3 rounded-2xl rounded-bl-md">
+          <div class="bg-(--ui-bg-muted) px-4 py-3 rounded-2xl rounded-bl-md">
             <div class="flex items-center gap-2">
               <div class="flex items-center gap-1">
                 <span class="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style="animation-delay: 0ms" />

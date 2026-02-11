@@ -82,7 +82,7 @@ async function submit() {
         </UFormField>
 
         <UFormField label="Domain">
-          <div class="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-md font-mono text-sm">
+          <div class="flex items-center gap-2 px-3 py-2 bg-(--ui-bg-muted) rounded-md font-mono text-sm">
             <span class="text-gray-500">https://</span>
             <span>{{ autoDomain || domainPlaceholder }}</span>
           </div>

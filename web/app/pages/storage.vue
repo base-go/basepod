@@ -99,12 +99,34 @@ function getImageName(image: ContainerImage): string {
   if (image.RepoTags && image.RepoTags.length > 0 && image.RepoTags[0] !== '<none>:<none>') {
     return image.RepoTags[0] ?? image.Id.substring(0, 12)
   }
-  return image.Id.substring(0, 12)
+  return ''
 }
+
+function isUntagged(image: ContainerImage): boolean {
+  return !image.RepoTags || image.RepoTags.length === 0 || image.RepoTags[0] === '<none>:<none>'
+}
+
+function getShortId(id: string): string {
+  return id.replace('sha256:', '').substring(0, 12)
+}
+
+function formatImageDate(dateStr: string): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  const days = Math.floor(diff / 86400000)
+  if (days === 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days} days ago`
+  return d.toLocaleDateString()
+}
+
+const pruningImages = ref(false)
 
 async function togglePodman() {
   podmanExpanded.value = !podmanExpanded.value
-  if (podmanExpanded.value && podmanImages.value.length === 0) {
+  if (podmanExpanded.value) {
     podmanLoading.value = true
     try {
       podmanImages.value = await $api<ContainerImage[]>('/container-images')
@@ -117,7 +139,8 @@ async function togglePodman() {
 }
 
 async function deleteImage(image: ContainerImage) {
-  if (!confirm(`Delete image ${getImageName(image)}? This cannot be undone.`)) return
+  const name = getImageName(image) || getShortId(image.Id)
+  if (!confirm(`Delete image ${name}? This cannot be undone.`)) return
   deletingImage.value = image.Id
   try {
     await $api(`/container-images/${encodeURIComponent(image.Id)}?force=true`, { method: 'DELETE' })
@@ -132,70 +155,97 @@ async function deleteImage(image: ContainerImage) {
   }
 }
 
-// --- LLM Models drill-down ---
-interface MLXModel {
-  id: string
-  name: string
-  size: string
-  downloaded: boolean
-  downloaded_at?: string
+async function pruneImages() {
+  if (!confirm('Remove all unused/dangling images? This will free up disk space. Running containers will not be affected.')) return
+  pruningImages.value = true
+  try {
+    await $api('/system/prune', { method: 'POST' })
+    toast.add({ title: 'Unused images pruned', color: 'success' })
+    // Reload images and storage
+    podmanImages.value = await $api<ContainerImage[]>('/container-images')
+    await refreshSystemStorage()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Prune failed', description: err.data?.error, color: 'error' })
+  } finally {
+    pruningImages.value = false
+  }
 }
 
-interface MLXModelsResponse {
-  models: MLXModel[]
-  supported: boolean
+// --- LLM Storage drill-down ---
+interface LLMStorageItem {
+  name: string
+  size: number
+  formatted: string
+  path: string
 }
 
 const llmExpanded = ref(false)
-const llmModels = ref<MLXModel[]>([])
+const llmItems = ref<LLMStorageItem[]>([])
 const llmLoading = ref(false)
-const deletingModel = ref<string | null>(null)
+const deletingLLMItem = ref<string | null>(null)
 
 async function toggleLLM() {
   llmExpanded.value = !llmExpanded.value
-  if (llmExpanded.value && llmModels.value.length === 0) {
+  if (llmExpanded.value) {
     llmLoading.value = true
     try {
-      const data = await $api<MLXModelsResponse>('/mlx/models')
-      llmModels.value = (data.models || []).filter(m => m.downloaded)
+      llmItems.value = await $api<LLMStorageItem[]>('/system/storage/llm')
     } catch {
-      llmModels.value = []
+      llmItems.value = []
     } finally {
       llmLoading.value = false
     }
   }
 }
 
-async function deleteModel(model: MLXModel) {
-  if (!confirm(`Delete model ${model.name}? This cannot be undone.`)) return
-  deletingModel.value = model.id
+async function deleteLLMItem(item: LLMStorageItem) {
+  if (!confirm(`Delete "${item.name}" (${item.formatted})? This cannot be undone.`)) return
+  deletingLLMItem.value = item.name
   try {
-    await $api(`/mlx/models/${encodeURIComponent(model.id)}`, { method: 'DELETE' })
-    llmModels.value = llmModels.value.filter(m => m.id !== model.id)
-    toast.add({ title: `${model.name} deleted`, color: 'success' })
+    await $api(`/system/storage/llm/${encodeURIComponent(item.name)}`, { method: 'DELETE' })
+    llmItems.value = llmItems.value.filter(i => i.name !== item.name)
+    toast.add({ title: `${item.name} deleted`, description: `Freed ${item.formatted}`, color: 'success' })
     await refreshSystemStorage()
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
-    toast.add({ title: 'Failed to delete model', description: err.data?.error, color: 'error' })
+    toast.add({ title: 'Failed to delete', description: err.data?.error, color: 'error' })
   } finally {
-    deletingModel.value = null
+    deletingLLMItem.value = null
   }
 }
 
-// Expandable categories
-const expandableCategories = ['volumes', 'podman', 'llm']
+// Expandable categories — clicking opens a detail modal
+const expandableCategories = ['images', 'volumes', 'podman', 'llm']
+
+// Detail modal state
+const detailModalOpen = ref(false)
+const detailModalTitle = ref('')
+const detailModalCategory = ref('')
 
 function toggleCategory(catId: string) {
-  if (catId === 'volumes') toggleVolumes()
-  else if (catId === 'podman') togglePodman()
-  else if (catId === 'llm') toggleLLM()
+  detailModalCategory.value = catId
+  // images and podman share the same data
+  if (catId === 'images' || catId === 'podman') {
+    detailModalTitle.value = catId === 'images' ? 'Container Images' : 'Podman Storage'
+    if (podmanImages.value.length === 0) togglePodman()
+    else { podmanExpanded.value = true }
+  } else if (catId === 'volumes') {
+    detailModalTitle.value = 'Container Volumes'
+    if (volumesList.value.length === 0) toggleVolumes()
+    else { volumesExpanded.value = true }
+  } else if (catId === 'llm') {
+    detailModalTitle.value = 'LLM Model Storage'
+    if (llmItems.value.length === 0) toggleLLM()
+    else { llmExpanded.value = true }
+  }
+  detailModalOpen.value = true
 }
 
 function isCategoryExpanded(catId: string): boolean {
-  if (catId === 'volumes') return volumesExpanded.value
-  if (catId === 'podman') return podmanExpanded.value
-  if (catId === 'llm') return llmExpanded.value
-  return false
+  if (!detailModalOpen.value) return false
+  if (catId === 'images' || catId === 'podman') return detailModalCategory.value === 'images' || detailModalCategory.value === 'podman'
+  return detailModalCategory.value === catId
 }
 
 // Color maps — explicit classes (no dynamic Tailwind interpolation)
@@ -325,7 +375,7 @@ async function clearCategory(catId: string) {
     </div>
 
     <!-- Section 1: Disk Overview Bar -->
-    <div class="mb-6 p-5 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+    <div class="mb-6 p-5 bg-(--ui-bg-elevated) rounded-lg border border-gray-200 dark:border-gray-700">
       <div class="flex items-center justify-between mb-4">
         <div>
           <span class="text-2xl font-bold">{{ systemStorage?.disk.formatted.used || '—' }}</span>
@@ -376,7 +426,7 @@ async function clearCategory(catId: string) {
         <div
           v-for="cat in systemStorage?.categories || []"
           :key="cat.id"
-          class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3 border-l-4 transition-colors"
+          class="bg-(--ui-bg-elevated) rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3 border-l-4 transition-colors"
           :class="[
             borderColorMap[cat.color] || 'border-l-gray-400',
             isCategoryExpanded(cat.id) ? 'ring-2 ring-primary-500/30' : '',
@@ -419,148 +469,152 @@ async function clearCategory(catId: string) {
       </div>
     </div>
 
-    <!-- Section 3: Volumes Drill-down -->
-    <div v-if="volumesExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h3 class="font-semibold flex items-center gap-2">
-          <UIcon name="i-heroicons-circle-stack" class="w-5 h-5 text-cyan-500" />
-          Container Volumes Detail
-        </h3>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          {{ volumesList.length }} {{ volumesList.length === 1 ? 'volume' : 'volumes' }}
-        </p>
-      </div>
-
-      <div v-if="volumesLoading" class="p-8 text-center">
-        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
-      </div>
-
-      <div v-else-if="volumesList.length === 0" class="p-8 text-center text-sm text-gray-500">
-        No volumes found
-      </div>
-
-      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
-        <div
-          v-for="vol in volumesList"
-          :key="vol.name"
-          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
-        >
-          <div class="flex items-center gap-3 min-w-0 flex-1">
-            <UIcon name="i-heroicons-circle-stack" class="w-4 h-4 text-cyan-500 shrink-0" />
-            <div class="min-w-0">
-              <div class="font-medium text-sm truncate">{{ vol.name }}</div>
-              <div class="text-xs text-gray-500 font-mono truncate" :title="vol.mountpoint">
-                {{ truncatePath(vol.mountpoint) }}
+    <!-- Storage Detail Modal -->
+    <UModal v-model:open="detailModalOpen" :title="detailModalTitle">
+      <template #body>
+        <div class="max-h-[70vh] overflow-y-auto -mx-6 px-6">
+          <!-- Volumes content -->
+          <template v-if="detailModalCategory === 'volumes'">
+            <div class="mb-3 text-sm text-gray-500 dark:text-gray-400">
+              {{ volumesList.length }} {{ volumesList.length === 1 ? 'volume' : 'volumes' }}
+            </div>
+            <div v-if="volumesLoading" class="py-8 text-center">
+              <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+            </div>
+            <div v-else-if="volumesList.length === 0" class="py-8 text-center text-sm text-gray-500">
+              No volumes found
+            </div>
+            <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+              <div
+                v-for="vol in volumesList"
+                :key="vol.name"
+                class="py-3 flex items-center justify-between"
+              >
+                <div class="flex items-center gap-3 min-w-0 flex-1">
+                  <UIcon name="i-heroicons-circle-stack" class="w-4 h-4 text-cyan-500 shrink-0" />
+                  <div class="min-w-0">
+                    <div class="font-medium text-sm truncate">{{ vol.name }}</div>
+                    <div class="text-xs text-gray-500 font-mono truncate" :title="vol.mountpoint">
+                      {{ truncatePath(vol.mountpoint) }}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-4 shrink-0">
+                  <span v-if="vol.created_at" class="text-xs text-gray-500 hidden sm:inline">
+                    {{ vol.created_at }}
+                  </span>
+                  <span class="text-sm font-semibold min-w-[70px] text-right">{{ vol.formatted }}</span>
+                </div>
               </div>
             </div>
-          </div>
-          <div class="flex items-center gap-4 shrink-0">
-            <span v-if="vol.created_at" class="text-xs text-gray-500 hidden sm:inline">
-              {{ vol.created_at }}
-            </span>
-            <span class="text-sm font-semibold min-w-[70px] text-right">{{ vol.formatted }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+          </template>
 
-    <!-- Section 4: Podman Images Drill-down -->
-    <div v-if="podmanExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h3 class="font-semibold flex items-center gap-2">
-          <UIcon name="i-heroicons-cube" class="w-5 h-5 text-indigo-500" />
-          Podman Images
-        </h3>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          {{ podmanImages.length }} {{ podmanImages.length === 1 ? 'image' : 'images' }}
-        </p>
-      </div>
-
-      <div v-if="podmanLoading" class="p-8 text-center">
-        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
-      </div>
-
-      <div v-else-if="podmanImages.length === 0" class="p-8 text-center text-sm text-gray-500">
-        No images found
-      </div>
-
-      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
-        <div
-          v-for="img in podmanImages"
-          :key="img.Id"
-          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
-        >
-          <div class="flex items-center gap-3 min-w-0 flex-1">
-            <UIcon name="i-heroicons-cube" class="w-4 h-4 text-indigo-500 shrink-0" />
-            <div class="min-w-0">
-              <div class="font-medium text-sm truncate">{{ getImageName(img) }}</div>
-              <div class="text-xs text-gray-500 font-mono">{{ img.Id.replace('sha256:', '').substring(0, 12) }}</div>
+          <!-- Podman Images content -->
+          <template v-if="detailModalCategory === 'images' || detailModalCategory === 'podman'">
+            <div class="mb-3 flex items-center justify-between">
+              <div class="text-sm text-gray-500 dark:text-gray-400">
+                {{ podmanImages.length }} {{ podmanImages.length === 1 ? 'image' : 'images' }}
+                <span v-if="podmanImages.filter(i => isUntagged(i)).length > 0" class="text-yellow-500">
+                  ({{ podmanImages.filter(i => isUntagged(i)).length }} dangling)
+                </span>
+              </div>
+              <UButton
+                v-if="podmanImages.filter(i => isUntagged(i)).length > 0"
+                size="sm"
+                color="warning"
+                variant="soft"
+                :loading="pruningImages"
+                @click="pruneImages"
+              >
+                <UIcon name="i-heroicons-trash" class="mr-1" />
+                Prune Unused
+              </UButton>
             </div>
-          </div>
-          <div class="flex items-center gap-3 shrink-0">
-            <span class="text-sm font-semibold min-w-[70px] text-right">{{ formatSize(img.Size) }}</span>
-            <UButton
-              icon="i-heroicons-trash"
-              variant="ghost"
-              color="error"
-              size="xs"
-              :loading="deletingImage === img.Id"
-              @click.stop="deleteImage(img)"
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Section 5: LLM Models Drill-down -->
-    <div v-if="llmExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h3 class="font-semibold flex items-center gap-2">
-          <UIcon name="i-heroicons-cpu-chip" class="w-5 h-5 text-pink-500" />
-          Downloaded LLM Models
-        </h3>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          {{ llmModels.length }} {{ llmModels.length === 1 ? 'model' : 'models' }}
-        </p>
-      </div>
-
-      <div v-if="llmLoading" class="p-8 text-center">
-        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
-      </div>
-
-      <div v-else-if="llmModels.length === 0" class="p-8 text-center text-sm text-gray-500">
-        No downloaded models found
-      </div>
-
-      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
-        <div
-          v-for="model in llmModels"
-          :key="model.id"
-          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
-        >
-          <div class="flex items-center gap-3 min-w-0 flex-1">
-            <UIcon name="i-heroicons-cpu-chip" class="w-4 h-4 text-pink-500 shrink-0" />
-            <div class="min-w-0">
-              <div class="font-medium text-sm truncate">{{ model.name }}</div>
-              <div v-if="model.downloaded_at" class="text-xs text-gray-500">
-                Downloaded {{ new Date(model.downloaded_at).toLocaleDateString() }}
+            <div v-if="podmanLoading" class="py-8 text-center">
+              <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+            </div>
+            <div v-else-if="podmanImages.length === 0" class="py-8 text-center text-sm text-gray-500">
+              No images found
+            </div>
+            <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+              <div
+                v-for="img in podmanImages"
+                :key="img.Id"
+                class="py-3 flex items-center justify-between"
+              >
+                <div class="flex items-center gap-3 min-w-0 flex-1">
+                  <UIcon
+                    name="i-heroicons-cube"
+                    class="w-4 h-4 shrink-0"
+                    :class="isUntagged(img) ? 'text-yellow-500' : 'text-indigo-500'"
+                  />
+                  <div class="min-w-0">
+                    <div v-if="getImageName(img)" class="font-medium text-sm truncate">{{ getImageName(img) }}</div>
+                    <div v-else class="flex items-center gap-1.5">
+                      <UBadge color="warning" variant="soft" size="xs">dangling</UBadge>
+                      <span class="text-sm text-gray-500">Unused build layer</span>
+                    </div>
+                    <div class="text-xs text-gray-500 flex items-center gap-2">
+                      <code class="font-mono">{{ getShortId(img.Id) }}</code>
+                      <span v-if="img.Created">{{ formatImageDate(img.Created) }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-3 shrink-0">
+                  <span class="text-sm font-semibold min-w-[70px] text-right">{{ formatSize(img.Size) }}</span>
+                  <UButton
+                    icon="i-heroicons-trash"
+                    variant="ghost"
+                    color="error"
+                    size="xs"
+                    :loading="deletingImage === img.Id"
+                    @click="deleteImage(img)"
+                  />
+                </div>
               </div>
             </div>
-          </div>
-          <div class="flex items-center gap-3 shrink-0">
-            <span class="text-sm font-semibold min-w-[70px] text-right">{{ model.size }}</span>
-            <UButton
-              icon="i-heroicons-trash"
-              variant="ghost"
-              color="error"
-              size="xs"
-              :loading="deletingModel === model.id"
-              @click.stop="deleteModel(model)"
-            />
-          </div>
+          </template>
+
+          <!-- LLM Storage content -->
+          <template v-if="detailModalCategory === 'llm'">
+            <div class="mb-3 text-sm text-gray-500 dark:text-gray-400">
+              {{ llmItems.length }} {{ llmItems.length === 1 ? 'item' : 'items' }}
+            </div>
+            <div v-if="llmLoading" class="py-8 text-center">
+              <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+            </div>
+            <div v-else-if="llmItems.length === 0" class="py-8 text-center text-sm text-gray-500">
+              No model files found
+            </div>
+            <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+              <div
+                v-for="item in llmItems"
+                :key="item.name"
+                class="py-3 flex items-center justify-between"
+              >
+                <div class="flex items-center gap-3 min-w-0 flex-1">
+                  <UIcon name="i-heroicons-cpu-chip" class="w-4 h-4 text-pink-500 shrink-0" />
+                  <div class="min-w-0">
+                    <div class="font-medium text-sm truncate">{{ item.name }}</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-3 shrink-0">
+                  <span class="text-sm font-semibold min-w-[70px] text-right">{{ item.formatted }}</span>
+                  <UButton
+                    icon="i-heroicons-trash"
+                    variant="ghost"
+                    color="error"
+                    size="xs"
+                    :loading="deletingLLMItem === item.name"
+                    @click="deleteLLMItem(item)"
+                  />
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
-      </div>
-    </div>
+      </template>
+    </UModal>
 
   </div>
 </template>

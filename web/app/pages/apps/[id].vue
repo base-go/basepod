@@ -4,7 +4,7 @@ import Convert from 'ansi-to-html'
 
 const route = useRoute()
 const toast = useToast()
-const ansiConvert = new Convert({ fg: '#c0caf5', bg: '#1a1b26', newline: true })
+const ansiConvert = new Convert({ fg: '#d4d4d4', bg: '#0a0a0a', newline: true })
 const appId = route.params.id as string
 
 const { data: app, refresh } = await useApiFetch<App>(`/apps/${appId}`)
@@ -916,7 +916,7 @@ onUnmounted(() => {
             </template>
             <!-- Show deploy hint if app has not been deployed -->
             <span v-else class="text-sm text-gray-500">
-              Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code>
+              Deploy with <code class="bg-(--ui-bg-muted) px-1.5 py-0.5 rounded font-mono">bp deploy</code>
             </span>
           </div>
         </template>
@@ -969,11 +969,11 @@ onUnmounted(() => {
           <template v-if="app.type !== 'static'">
             <div v-if="app.internal_host" class="flex justify-between items-center border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
               <dt class="text-gray-500">Internal Host</dt>
-              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.internal_host }}:{{ app.ports?.container_port || 8080 }}</dd>
+              <dd class="font-mono text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">{{ app.internal_host }}:{{ app.ports?.container_port || 8080 }}</dd>
             </div>
             <div v-if="app.ports?.expose_external && app.external_host" class="flex justify-between items-center">
               <dt class="text-gray-500">External Host</dt>
-              <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ app.external_host }}</dd>
+              <dd class="font-mono text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">{{ app.external_host }}</dd>
             </div>
             <!-- Database Credentials -->
             <template v-if="dbCredentials">
@@ -982,15 +982,15 @@ onUnmounted(() => {
               </div>
               <div v-if="dbCredentials.username" class="flex justify-between items-center">
                 <dt class="text-gray-500">Username</dt>
-                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.username }}</dd>
+                <dd class="font-mono text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">{{ dbCredentials.username }}</dd>
               </div>
               <div v-if="dbCredentials.password" class="flex justify-between items-center">
                 <dt class="text-gray-500">Password</dt>
-                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.password }}</dd>
+                <dd class="font-mono text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">{{ dbCredentials.password }}</dd>
               </div>
               <div v-if="dbCredentials.database" class="flex justify-between items-center">
                 <dt class="text-gray-500">Database</dt>
-                <dd class="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dbCredentials.database }}</dd>
+                <dd class="font-mono text-sm bg-(--ui-bg-muted) px-2 py-1 rounded">{{ dbCredentials.database }}</dd>
               </div>
             </template>
           </template>
@@ -1094,7 +1094,7 @@ onUnmounted(() => {
       <div v-if="!app.deployments || app.deployments.length === 0" class="text-center py-8 text-gray-500">
         <UIcon name="i-heroicons-rocket-launch" class="w-12 h-12 mx-auto mb-2 opacity-50" />
         <p>No deployments yet</p>
-        <p class="text-sm mt-1">Deploy with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">bp deploy</code></p>
+        <p class="text-sm mt-1">Deploy with <code class="bg-(--ui-bg-muted) px-1.5 py-0.5 rounded font-mono">bp deploy</code></p>
       </div>
 
       <div v-else class="space-y-3">
@@ -1102,7 +1102,7 @@ onUnmounted(() => {
           v-for="(deployment, index) in app.deployments.slice(0, deploymentsLimit)"
           :key="deployment.id"
           class="p-4 rounded-lg border"
-          :class="index === 0 ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700'"
+          :class="index === 0 ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-(--ui-bg-muted) border-gray-200 dark:border-gray-700'"
         >
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center gap-2">
@@ -1198,7 +1198,7 @@ onUnmounted(() => {
           <div>
             <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
             <div class="flex gap-2">
-              <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
+              <code class="flex-1 px-3 py-2 text-sm bg-(--ui-bg-muted) rounded-md font-mono overflow-x-auto break-all">{{ app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook` }}</code>
               <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.domain ? `https://${app.domain}/api/apps/${app.id}/webhook` : `/api/apps/${app.id}/webhook`)" />
             </div>
           </div>
@@ -1206,7 +1206,7 @@ onUnmounted(() => {
           <div>
             <label class="block text-xs text-gray-500 mb-1">Secret</label>
             <div class="flex gap-2">
-              <code class="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
+              <code class="flex-1 px-3 py-2 text-sm bg-(--ui-bg-muted) rounded-md font-mono">{{ showWebhookSecret ? app.deployment?.webhook_secret : '••••••••••••••••' }}</code>
               <UButton variant="outline" size="sm" :icon="showWebhookSecret ? 'i-heroicons-eye-slash' : 'i-heroicons-eye'" @click="showWebhookSecret = !showWebhookSecret" />
               <UButton variant="outline" size="sm" icon="i-heroicons-clipboard" @click="copyToClipboard(app.deployment?.webhook_secret || '')" />
             </div>
@@ -1214,7 +1214,7 @@ onUnmounted(() => {
 
           <div>
             <label class="block text-xs text-gray-500 mb-1">Git URL</label>
-            <code class="block px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
+            <code class="block px-3 py-2 text-sm bg-(--ui-bg-muted) rounded-md font-mono break-all">{{ app.deployment?.git_url }}</code>
           </div>
         </div>
 
@@ -1250,7 +1250,7 @@ onUnmounted(() => {
         <div
           v-for="delivery in webhookDeliveries.slice(0, webhookDeliveriesLimit)"
           :key="delivery.id"
-          class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+          class="p-3 rounded-lg bg-(--ui-bg-muted) border border-gray-200 dark:border-gray-700"
         >
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2">
@@ -1344,7 +1344,7 @@ onUnmounted(() => {
           <UIcon name="i-heroicons-document-text" class="w-12 h-12 mx-auto mb-2 opacity-50" />
           <p>App has not been deployed yet</p>
         </div>
-        <pre v-else class="bg-[#1a1b26] text-[#c0caf5] p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto" style="min-height: calc(100vh - 320px); max-height: calc(100vh - 320px);" v-html="logsHtml || 'No logs available'" />
+        <pre v-else class="bg-gray-950 text-gray-300 p-4 rounded-lg overflow-x-auto text-sm font-mono overflow-y-auto leading-relaxed" style="min-height: calc(100vh - 320px); max-height: calc(100vh - 320px);" v-html="logsHtml || 'No logs available'" />
       </template>
     </UCard>
 
@@ -1435,7 +1435,7 @@ onUnmounted(() => {
           <div
             v-for="entry in activities.slice(0, activitiesLimit)"
             :key="entry.id"
-            class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+            class="flex items-start gap-3 p-3 rounded-lg bg-(--ui-bg-muted)"
           >
             <UIcon :name="getActivityIcon(entry.action)" class="w-5 h-5 mt-0.5 text-gray-400" />
             <div class="flex-1 min-w-0">
@@ -1552,7 +1552,7 @@ onUnmounted(() => {
         </template>
 
         <!-- Add Cron Job Form -->
-        <div v-if="showCronForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+        <div v-if="showCronForm" class="mb-6 p-4 bg-(--ui-bg-muted) rounded-lg space-y-3">
           <UFormField label="Name">
             <UInput v-model="cronForm.name" placeholder="Database backup" />
           </UFormField>
@@ -1620,7 +1620,7 @@ onUnmounted(() => {
           <div
             v-for="exec in cronExecutions"
             :key="exec.id"
-            class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+            class="p-3 rounded-lg bg-(--ui-bg-muted) border border-gray-200 dark:border-gray-700"
           >
             <div class="flex items-center justify-between">
               <UBadge :color="exec.status === 'success' ? 'success' : exec.status === 'running' ? 'warning' : 'error'" size="xs">
@@ -1661,7 +1661,7 @@ onUnmounted(() => {
         <div
           v-for="(volume, index) in volumeList"
           :key="index"
-          class="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700"
+          class="p-4 rounded-lg bg-(--ui-bg-muted) border border-gray-200 dark:border-gray-700"
         >
           <div class="flex items-start gap-3">
             <div class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1737,7 +1737,7 @@ onUnmounted(() => {
         <div
           v-for="(envVar, index) in envVars"
           :key="index"
-          class="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+          class="flex items-center gap-2 p-2 rounded-lg bg-(--ui-bg-muted)"
         >
           <input
             v-model="envVar.key"
@@ -1786,7 +1786,7 @@ onUnmounted(() => {
         <div
           v-for="entry in activities"
           :key="entry.id"
-          class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+          class="flex items-start gap-3 p-3 rounded-lg bg-(--ui-bg-muted)"
         >
           <UIcon :name="getActivityIcon(entry.action)" class="w-5 h-5 mt-0.5 text-gray-400" />
           <div class="flex-1 min-w-0">
@@ -1840,7 +1840,7 @@ onUnmounted(() => {
 
             <div class="text-sm text-gray-500">
               <strong>Container ID:</strong>
-              <code class="ml-2 px-2 py-0.5 bg-gray-100 dark:bg-gray-800 rounded">{{ app?.container_id ? app.container_id.slice(0, 12) : 'Not deployed' }}</code>
+              <code class="ml-2 px-2 py-0.5 bg-(--ui-bg-muted) rounded">{{ app?.container_id ? app.container_id.slice(0, 12) : 'Not deployed' }}</code>
             </div>
           </div>
         </UCard>
@@ -1878,7 +1878,7 @@ onUnmounted(() => {
               <div
                 v-for="(alias, index) in aliases"
                 :key="alias"
-                class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-sm"
+                class="flex items-center justify-between p-2 bg-(--ui-bg-muted) rounded-lg text-sm"
               >
                 <div class="flex items-center gap-2 min-w-0">
                   <UIcon name="i-heroicons-globe-alt" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
@@ -1932,7 +1932,7 @@ onUnmounted(() => {
           </template>
 
           <div class="space-y-4">
-            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div class="flex items-center justify-between p-3 bg-(--ui-bg-muted) rounded-lg">
               <div>
                 <div class="font-medium text-sm">External Access</div>
                 <div class="text-xs text-gray-500">Direct TCP from outside</div>
@@ -1989,7 +1989,7 @@ onUnmounted(() => {
               <div
                 v-for="(alias, index) in aliases"
                 :key="alias"
-                class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-sm"
+                class="flex items-center justify-between p-2 bg-(--ui-bg-muted) rounded-lg text-sm"
               >
                 <div class="flex items-center gap-2 min-w-0">
                   <UIcon name="i-heroicons-globe-alt" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
@@ -2036,7 +2036,7 @@ onUnmounted(() => {
         </template>
 
         <div class="space-y-4">
-          <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+          <div class="flex items-center justify-between p-3 bg-(--ui-bg-muted) rounded-lg">
             <div>
               <div class="font-medium text-sm">Enable Health Checks</div>
               <div class="text-xs text-gray-500">Periodically check if your app is responding</div>
@@ -2063,7 +2063,7 @@ onUnmounted(() => {
               </UFormField>
             </div>
 
-            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            <div class="flex items-center justify-between p-3 bg-(--ui-bg-muted) rounded-lg">
               <div>
                 <div class="font-medium text-sm">Auto-Restart on Failure</div>
                 <div class="text-xs text-gray-500">Automatically restart the app after consecutive failures</div>

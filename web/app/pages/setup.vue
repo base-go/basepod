@@ -3,6 +3,10 @@ definePageMeta({
   layout: false
 })
 
+const route = useRoute()
+const inviteToken = computed(() => route.query.invite as string || '')
+const isInvite = computed(() => !!inviteToken.value)
+
 const password = ref('')
 const confirmPassword = ref('')
 const error = ref('')
@@ -24,10 +28,19 @@ const setup = async () => {
   loading.value = true
 
   try {
-    await $fetch('/api/auth/setup', {
-      method: 'POST',
-      body: { password: password.value }
-    })
+    if (isInvite.value) {
+      // Accept invite — set password for invited user
+      await $fetch('/api/auth/accept-invite', {
+        method: 'POST',
+        body: { invite_token: inviteToken.value, password: password.value }
+      })
+    } else {
+      // Initial admin setup
+      await $fetch('/api/auth/setup', {
+        method: 'POST',
+        body: { password: password.value }
+      })
+    }
     // Clear nuxt data cache and redirect to dashboard
     clearNuxtData()
     await navigateTo('/', { replace: true, external: true })
@@ -43,10 +56,14 @@ const setup = async () => {
 <template>
   <div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
     <div class="w-full max-w-sm">
-      <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+      <div class="bg-(--ui-bg-elevated) rounded-lg shadow-lg p-8">
         <div class="text-center mb-8">
-          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Welcome to Basepod</h1>
-          <p class="text-gray-500 dark:text-gray-400 mt-2">Set up your admin password to get started</p>
+          <h1 class="text-2xl font-bold text-gray-900 dark:text-white">
+            {{ isInvite ? 'Accept Invite' : 'Welcome to Basepod' }}
+          </h1>
+          <p class="text-gray-500 dark:text-gray-400 mt-2">
+            {{ isInvite ? 'Set your password to join the team' : 'Set up your admin password to get started' }}
+          </p>
         </div>
 
         <form class="space-y-6" @submit.prevent="setup">
@@ -84,7 +101,7 @@ const setup = async () => {
             size="lg"
             :loading="loading"
           >
-            Complete Setup
+            {{ isInvite ? 'Set Password & Join' : 'Complete Setup' }}
           </UButton>
         </form>
       </div>

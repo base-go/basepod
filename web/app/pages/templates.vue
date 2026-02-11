@@ -205,7 +205,7 @@ async function deployTemplate() {
                   {{ template.description }}
                 </p>
                 <div class="mt-2 flex items-center gap-2">
-                  <code class="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
+                  <code class="text-xs bg-(--ui-bg-muted) px-2 py-0.5 rounded">
                     {{ template.image }}
                   </code>
                   <span class="text-xs text-gray-400">:{{ template.port }}</span>
@@ -228,7 +228,7 @@ async function deployTemplate() {
     <UModal v-model:open="isDeployModalOpen" :title="`Create ${selectedTemplate?.name}`">
       <template #body>
         <div class="space-y-4">
-          <div v-if="selectedTemplate" class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg space-y-3">
+          <div v-if="selectedTemplate" class="p-3 bg-(--ui-bg-muted) rounded-lg space-y-3">
             <div class="flex items-center gap-3">
               <UIcon :name="selectedTemplate.icon" class="w-8 h-8 text-primary-500" />
               <div class="flex-1">
@@ -269,7 +269,7 @@ async function deployTemplate() {
 
           <!-- Domain for web apps -->
           <UFormField v-if="!isDatabase" label="Domain">
-            <div class="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-md font-mono text-sm">
+            <div class="flex items-center gap-2 px-3 py-2 bg-(--ui-bg-muted) rounded-md font-mono text-sm">
               <span class="text-gray-500">{{ protocol }}</span>
               <span>{{ autoDomain || domainPlaceholder }}</span>
             </div>
@@ -282,7 +282,7 @@ async function deployTemplate() {
               <span class="text-sm font-medium">External Access</span>
               <USwitch v-model="deployForm.exposeExternal" size="sm" />
             </div>
-            <div class="p-3 bg-gray-100 dark:bg-gray-800 rounded-md space-y-2">
+            <div class="p-3 bg-(--ui-bg-muted) rounded-md space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500">Internal (container-to-container)</span>
                 <code class="text-xs">basepod-{{ deployForm.name }}:{{ selectedTemplate?.port }}</code>

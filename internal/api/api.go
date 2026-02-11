@@ -195,6 +195,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/system/storage", s.requireAuth(s.handleSystemStorage))
 	s.router.HandleFunc("GET /api/system/volumes", s.requireAuth(s.handleListVolumes))
 	s.router.HandleFunc("DELETE /api/system/storage/{id}", s.requireAuth(s.handleDeleteStorageCategory))
+	s.router.HandleFunc("GET /api/system/storage/llm", s.requireAuth(s.handleListLLMStorage))
+	s.router.HandleFunc("DELETE /api/system/storage/llm/{name}", s.requireAuth(s.handleDeleteLLMStorage))
 	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
@@ -1768,6 +1770,77 @@ func (s *Server) handleDeleteStorageCategory(w http.ResponseWriter, r *http.Requ
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"message": label + " cleared",
 		"cleared": size,
+		"cleared_formatted": diskutil.FormatBytes(size),
+	})
+}
+
+// handleListLLMStorage lists actual directories in the MLX model storage folder
+func (s *Server) handleListLLMStorage(w http.ResponseWriter, r *http.Request) {
+	home, _ := os.UserHomeDir()
+	mlxDir := filepath.Join(home, ".local", "share", "basepod", "mlx")
+
+	type LLMStorageItem struct {
+		Name      string `json:"name"`
+		Size      int64  `json:"size"`
+		Formatted string `json:"formatted"`
+		Path      string `json:"path"`
+	}
+
+	var items []LLMStorageItem
+	entries, err := os.ReadDir(mlxDir)
+	if err != nil {
+		jsonResponse(w, http.StatusOK, items)
+		return
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(mlxDir, entry.Name())
+		size := diskutil.DirSize(fullPath)
+		if !entry.IsDir() {
+			size = diskutil.FileSize(fullPath)
+		}
+		items = append(items, LLMStorageItem{
+			Name:      entry.Name(),
+			Size:      size,
+			Formatted: diskutil.FormatBytes(size),
+			Path:      fullPath,
+		})
+	}
+
+	jsonResponse(w, http.StatusOK, items)
+}
+
+// handleDeleteLLMStorage deletes a specific directory from LLM storage
+func (s *Server) handleDeleteLLMStorage(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		errorResponse(w, http.StatusBadRequest, "Name required")
+		return
+	}
+
+	// Prevent path traversal
+	if strings.Contains(name, "/") || strings.Contains(name, "..") {
+		errorResponse(w, http.StatusBadRequest, "Invalid name")
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	targetPath := filepath.Join(home, ".local", "share", "basepod", "mlx", name)
+
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		errorResponse(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	size := diskutil.DirSize(targetPath)
+	if err := os.RemoveAll(targetPath); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to delete: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"message":           name + " deleted",
+		"cleared":           size,
 		"cleared_formatted": diskutil.FormatBytes(size),
 	})
 }

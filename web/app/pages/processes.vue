@@ -218,7 +218,7 @@ const hasProcesses = computed(() => {
           <div
             v-for="proc in groupedProcesses.mlx"
             :key="proc.id"
-            class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
+            class="flex items-center justify-between p-3 bg-(--ui-bg-muted) rounded-lg"
           >
             <div class="flex items-center gap-4">
               <div>
@@ -258,7 +258,7 @@ const hasProcesses = computed(() => {
           <div
             v-for="proc in groupedProcesses.downloads"
             :key="proc.id"
-            class="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
+            class="p-3 bg-(--ui-bg-muted) rounded-lg"
           >
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2">

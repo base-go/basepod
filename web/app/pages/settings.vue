@@ -808,7 +808,7 @@ const formatDate = (dateStr: string) => {
             </template>
 
             <!-- Invite Form -->
-            <div v-if="showInviteForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+            <div v-if="showInviteForm" class="mb-6 p-4 bg-(--ui-bg-muted) rounded-lg space-y-3">
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <UFormField label="Email" class="md:col-span-2">
                   <UInput v-model="inviteEmail" type="email" placeholder="user@example.com" />
@@ -949,7 +949,7 @@ const formatDate = (dateStr: string) => {
             </template>
 
             <!-- Create Token Form -->
-            <div v-if="showTokenForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+            <div v-if="showTokenForm" class="mb-6 p-4 bg-(--ui-bg-muted) rounded-lg space-y-3">
               <UFormField label="Token Name" help="A descriptive name for this token (e.g., 'GitHub Actions')">
                 <UInput v-model="tokenForm.name" placeholder="my-ci-token" />
               </UFormField>
@@ -1018,7 +1018,7 @@ const formatDate = (dateStr: string) => {
             </template>
 
             <!-- Create Notification Form -->
-            <div v-if="showNotificationForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-4">
+            <div v-if="showNotificationForm" class="mb-6 p-4 bg-(--ui-bg-muted) rounded-lg space-y-4">
               <UFormField label="Name">
                 <UInput v-model="notificationForm.name" placeholder="My Slack notifications" />
               </UFormField>
@@ -1051,8 +1051,8 @@ const formatDate = (dateStr: string) => {
                     :key="evt.value"
                     :model-value="notificationForm.events.includes(evt.value)"
                     :label="evt.label"
-                    @update:model-value="(checked: boolean) => {
-                      if (checked) notificationForm.events.push(evt.value)
+                    @update:model-value="(checked: boolean | 'indeterminate') => {
+                      if (checked === true) notificationForm.events.push(evt.value)
                       else notificationForm.events = notificationForm.events.filter(e => e !== evt.value)
                     }"
                   />

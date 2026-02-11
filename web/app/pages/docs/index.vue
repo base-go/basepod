@@ -57,7 +57,7 @@ const activeSection = ref('getting-started')
               class="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-colors"
               :class="activeSection === section.id
                 ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400'
-                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'"
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-(--ui-bg-elevated)'"
               @click="activeSection = section.id"
             >
               <UIcon :name="section.icon" class="w-5 h-5" />
@@ -205,67 +205,41 @@ const activeSection = ref('getting-started')
           <!-- API Reference -->
           <div v-show="activeSection === 'api'" class="prose dark:prose-invert max-w-none">
             <h2>API Reference</h2>
-            <p>Basepod provides a REST API for programmatic access.</p>
+            <p>Basepod provides a comprehensive REST API for programmatic access to all features.</p>
 
             <h3>Authentication</h3>
-            <p>All API requests (except login) require a Bearer token:</p>
+            <p>All API requests (except login and health) require a Bearer token or session cookie:</p>
             <pre><code>Authorization: Bearer YOUR_TOKEN</code></pre>
 
-            <h3>Endpoints</h3>
+            <h3>Interactive API Docs</h3>
+            <p>Browse all endpoints with parameters, types, and example requests:</p>
+            <NuxtLink to="/docs/api" class="inline-flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 no-underline transition-colors">
+              Open API Reference
+            </NuxtLink>
+
+            <h3>Quick Overview</h3>
             <table>
               <thead>
                 <tr>
-                  <th>Method</th>
-                  <th>Endpoint</th>
+                  <th>Category</th>
+                  <th>Endpoints</th>
                   <th>Description</th>
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td>POST</td>
-                  <td>/api/auth/login</td>
-                  <td>Get auth token</td>
-                </tr>
-                <tr>
-                  <td>GET</td>
-                  <td>/api/apps</td>
-                  <td>List all apps</td>
-                </tr>
-                <tr>
-                  <td>GET</td>
-                  <td>/api/apps/:id</td>
-                  <td>Get app details</td>
-                </tr>
-                <tr>
-                  <td>POST</td>
-                  <td>/api/apps/:id/start</td>
-                  <td>Start app</td>
-                </tr>
-                <tr>
-                  <td>POST</td>
-                  <td>/api/apps/:id/stop</td>
-                  <td>Stop app</td>
-                </tr>
-                <tr>
-                  <td>POST</td>
-                  <td>/api/apps/:id/restart</td>
-                  <td>Restart app</td>
-                </tr>
-                <tr>
-                  <td>DELETE</td>
-                  <td>/api/apps/:id</td>
-                  <td>Delete app</td>
-                </tr>
-                <tr>
-                  <td>GET</td>
-                  <td>/api/templates</td>
-                  <td>List templates</td>
-                </tr>
-                <tr>
-                  <td>POST</td>
-                  <td>/api/templates/:id/deploy</td>
-                  <td>Deploy template</td>
-                </tr>
+                <tr><td>Auth</td><td>6</td><td>Login, logout, setup, invite, password management</td></tr>
+                <tr><td>Apps</td><td>12</td><td>CRUD, start, stop, restart, deploy, logs, terminal</td></tr>
+                <tr><td>Templates</td><td>2</td><td>List and deploy one-click app templates</td></tr>
+                <tr><td>Health & Metrics</td><td>4</td><td>Health checks, resource usage, access logs</td></tr>
+                <tr><td>Webhooks</td><td>3</td><td>GitHub auto-deploy webhook setup and delivery tracking</td></tr>
+                <tr><td>Cron Jobs</td><td>6</td><td>Scheduled task management and execution history</td></tr>
+                <tr><td>MLX / LLM</td><td>8</td><td>Local LLM model management on Apple Silicon</td></tr>
+                <tr><td>Storage</td><td>8</td><td>Disk usage, volumes, images, LLM storage</td></tr>
+                <tr><td>System</td><td>9</td><td>Info, config, version, update, prune, restart</td></tr>
+                <tr><td>Backups</td><td>6</td><td>Create, download, restore, delete backups</td></tr>
+                <tr><td>Users</td><td>4</td><td>User management and invitations (admin)</td></tr>
+                <tr><td>Notifications</td><td>5</td><td>Webhook/Slack/Discord notification hooks</td></tr>
+                <tr><td>Deploy Tokens</td><td>3</td><td>API token management for CI/CD</td></tr>
               </tbody>
             </table>
 

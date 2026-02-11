@@ -45,7 +45,7 @@ function handleCancel() {
               'bg-yellow-100 dark:bg-yellow-900/20': confirmColor === 'warning',
               'bg-primary-100 dark:bg-primary-900/20': confirmColor === 'primary',
               'bg-green-100 dark:bg-green-900/20': confirmColor === 'success',
-              'bg-gray-100 dark:bg-gray-800': confirmColor === 'neutral'
+              'bg-(--ui-bg-muted)': confirmColor === 'neutral'
             }"
           >
             <UIcon
