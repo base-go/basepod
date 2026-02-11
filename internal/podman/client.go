@@ -858,17 +858,18 @@ func (c *client) ContainerStats(ctx context.Context, id string) (*ContainerStats
 
 	var rawStats struct {
 		Stats []struct {
-			CPU        float64 `json:"cpu_percent"`
-			MemUsage   int64   `json:"mem_usage"`
-			MemLimit   int64   `json:"mem_limit"`
-			NetInput   int64   `json:"net_input"`
-			NetOutput  int64   `json:"net_output"`
-		} `json:"stats"`
-		CPUPercent float64 `json:"cpu_percent"`
-		MemUsage   int64   `json:"mem_usage"`
-		MemLimit   int64   `json:"mem_limit"`
-		NetInput   int64   `json:"net_input"`
-		NetOutput  int64   `json:"net_output"`
+			CPU      float64 `json:"CPU"`
+			MemUsage int64   `json:"MemUsage"`
+			MemLimit int64   `json:"MemLimit"`
+			NetInput int64   `json:"NetInput"`
+			NetOutput int64  `json:"NetOutput"`
+		} `json:"Stats"`
+		// Flat fields as fallback
+		CPU      float64 `json:"CPU"`
+		MemUsage int64   `json:"MemUsage"`
+		MemLimit int64   `json:"MemLimit"`
+		NetInput int64   `json:"NetInput"`
+		NetOutput int64  `json:"NetOutput"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&rawStats); err != nil {
@@ -876,14 +877,14 @@ func (c *client) ContainerStats(ctx context.Context, id string) (*ContainerStats
 	}
 
 	result := &ContainerStatsResult{
-		CPUPercent: rawStats.CPUPercent,
+		CPUPercent: rawStats.CPU,
 		MemUsage:   rawStats.MemUsage,
 		MemLimit:   rawStats.MemLimit,
 		NetInput:   rawStats.NetInput,
 		NetOutput:  rawStats.NetOutput,
 	}
 
-	// Podman sometimes returns stats in a stats array
+	// Podman returns stats in a Stats array
 	if len(rawStats.Stats) > 0 {
 		s := rawStats.Stats[0]
 		result.CPUPercent = s.CPU

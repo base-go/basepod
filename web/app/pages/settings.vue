@@ -44,7 +44,9 @@ const { data: configData } = await useApiFetch<ConfigResponse>('/system/config')
 const route = useRoute()
 const tabs = [
   { label: 'General', value: 'general', slot: 'general', icon: 'i-heroicons-cog-6-tooth' },
+  { label: 'Users', value: 'users', slot: 'users', icon: 'i-heroicons-users' },
   { label: 'Security', value: 'security', slot: 'security', icon: 'i-heroicons-shield-check' },
+  { label: 'Notifications', value: 'notifications', slot: 'notifications', icon: 'i-heroicons-bell' },
   { label: 'Backup', value: 'backup', slot: 'backup', icon: 'i-heroicons-cloud-arrow-up' },
   { label: 'System', value: 'system', slot: 'system', icon: 'i-heroicons-server' }
 ]
@@ -145,13 +147,15 @@ const settings = ref({
   domain: configData.value?.domain?.root || '',
   email: '',
   enableWildcard: configData.value?.domain?.wildcard ?? true,
-  hfToken: configData.value?.ai?.huggingface_token || ''
 })
 
 // Check version on load
 onMounted(() => {
   checkVersion()
   loadBackups()
+  loadUsers()
+  loadNotifications()
+  loadDeployTokens()
 })
 
 // Watch for configData changes
@@ -160,43 +164,12 @@ watch(configData, (newConfig) => {
     settings.value.domain = newConfig.domain.root || ''
     settings.value.enableWildcard = newConfig.domain.wildcard ?? true
   }
-  if (newConfig?.ai) {
-    settings.value.hfToken = newConfig.ai.huggingface_token || ''
-  }
 }, { immediate: true })
 
 // Domain settings
 const savingDomain = ref(false)
 const domainSuccess = ref(false)
 const domainError = ref('')
-
-// AI settings
-const savingAI = ref(false)
-const aiSuccess = ref(false)
-const aiError = ref('')
-
-const saveAISettings = async () => {
-  savingAI.value = true
-  aiError.value = ''
-  aiSuccess.value = false
-  try {
-    await $api('/system/config', {
-      method: 'PUT',
-      body: {
-        ai: {
-          huggingface_token: settings.value.hfToken
-        }
-      }
-    })
-    aiSuccess.value = true
-    toast.add({ title: 'AI settings saved', color: 'success' })
-  } catch (e: unknown) {
-    const err = e as { data?: { error?: string } }
-    aiError.value = err.data?.error || 'Failed to save AI settings'
-  } finally {
-    savingAI.value = false
-  }
-}
 
 const saveDomainSettings = async () => {
   savingDomain.value = true
@@ -316,6 +289,264 @@ const pruneResources = async () => {
   } finally {
     pruning.value = false
   }
+}
+
+// ============================================================================
+// Users / Team management
+// ============================================================================
+
+interface User {
+  id: string
+  email: string
+  role: 'admin' | 'deployer' | 'viewer'
+  created_at: string
+  last_login_at?: string
+}
+
+const users = ref<User[]>([])
+const loadingUsers = ref(false)
+const showInviteForm = ref(false)
+const inviteEmail = ref('')
+const inviteRole = ref<'admin' | 'deployer' | 'viewer'>('viewer')
+const inviting = ref(false)
+const inviteResult = ref<{ invite_url: string; invite_token: string } | null>(null)
+const updatingRole = ref<string | null>(null)
+const deletingUser = ref<string | null>(null)
+
+const roleOptions = [
+  { label: 'Admin', value: 'admin', description: 'Full access to all features' },
+  { label: 'Deployer', value: 'deployer', description: 'Deploy and manage apps' },
+  { label: 'Viewer', value: 'viewer', description: 'Read-only access' }
+]
+
+async function loadUsers() {
+  loadingUsers.value = true
+  try {
+    const data = await $api<{ users: User[] }>('/users')
+    users.value = data.users || []
+  } catch { users.value = [] }
+  finally { loadingUsers.value = false }
+}
+
+async function inviteUser() {
+  if (!inviteEmail.value) return
+  inviting.value = true
+  inviteResult.value = null
+  try {
+    const data = await $api<{ user: User; invite_url: string; invite_token: string }>('/users/invite', {
+      method: 'POST',
+      body: { email: inviteEmail.value, role: inviteRole.value }
+    })
+    inviteResult.value = { invite_url: data.invite_url, invite_token: data.invite_token }
+    toast.add({ title: `Invited ${inviteEmail.value}`, color: 'success' })
+    inviteEmail.value = ''
+    await loadUsers()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to invite user', description: err.data?.error, color: 'error' })
+  } finally { inviting.value = false }
+}
+
+async function updateUserRole(userId: string, role: string) {
+  updatingRole.value = userId
+  try {
+    await $api(`/users/${userId}/role`, { method: 'PUT', body: { role } })
+    toast.add({ title: 'Role updated', color: 'success' })
+    await loadUsers()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to update role', description: err.data?.error, color: 'error' })
+  } finally { updatingRole.value = null }
+}
+
+async function deleteUser(user: User) {
+  if (!confirm(`Remove user ${user.email}? This cannot be undone.`)) return
+  deletingUser.value = user.id
+  try {
+    await $api(`/users/${user.id}`, { method: 'DELETE' })
+    toast.add({ title: `${user.email} removed`, color: 'success' })
+    await loadUsers()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to remove user', description: err.data?.error, color: 'error' })
+  } finally { deletingUser.value = null }
+}
+
+// ============================================================================
+// Notifications
+// ============================================================================
+
+interface NotificationConfig {
+  id: string
+  name: string
+  type: 'webhook' | 'slack' | 'discord'
+  enabled: boolean
+  scope: 'global' | 'app'
+  scope_id?: string
+  webhook_url?: string
+  slack_webhook_url?: string
+  discord_webhook_url?: string
+  events: string[]
+  created_at: string
+  updated_at: string
+}
+
+const notifications = ref<NotificationConfig[]>([])
+const loadingNotifications = ref(false)
+const showNotificationForm = ref(false)
+const testingNotification = ref<string | null>(null)
+const deletingNotification = ref<string | null>(null)
+const savingNotification = ref(false)
+
+const notificationForm = ref({
+  name: '',
+  type: 'webhook' as 'webhook' | 'slack' | 'discord',
+  webhook_url: '',
+  slack_webhook_url: '',
+  discord_webhook_url: '',
+  events: [] as string[]
+})
+
+const availableEvents = [
+  { value: 'deploy_success', label: 'Deploy Success' },
+  { value: 'deploy_failed', label: 'Deploy Failed' },
+  { value: 'health_check_fail', label: 'Health Check Failure' },
+  { value: 'app_start', label: 'App Started' },
+  { value: 'app_stop', label: 'App Stopped' },
+  { value: 'backup_created', label: 'Backup Created' }
+]
+
+async function loadNotifications() {
+  loadingNotifications.value = true
+  try {
+    const data = await $api<{ notifications: NotificationConfig[] }>('/notifications')
+    notifications.value = data.notifications || []
+  } catch { notifications.value = [] }
+  finally { loadingNotifications.value = false }
+}
+
+async function createNotification() {
+  savingNotification.value = true
+  try {
+    const body: Record<string, unknown> = {
+      name: notificationForm.value.name,
+      type: notificationForm.value.type,
+      events: notificationForm.value.events
+    }
+    if (notificationForm.value.type === 'webhook') body.webhook_url = notificationForm.value.webhook_url
+    if (notificationForm.value.type === 'slack') body.slack_webhook_url = notificationForm.value.slack_webhook_url
+    if (notificationForm.value.type === 'discord') body.discord_webhook_url = notificationForm.value.discord_webhook_url
+
+    await $api('/notifications', { method: 'POST', body })
+    toast.add({ title: 'Notification hook created', color: 'success' })
+    showNotificationForm.value = false
+    notificationForm.value = { name: '', type: 'webhook', webhook_url: '', slack_webhook_url: '', discord_webhook_url: '', events: [] }
+    await loadNotifications()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to create notification', description: err.data?.error, color: 'error' })
+  } finally { savingNotification.value = false }
+}
+
+async function toggleNotification(notif: NotificationConfig) {
+  try {
+    await $api(`/notifications/${notif.id}`, { method: 'PUT', body: { enabled: !notif.enabled } })
+    await loadNotifications()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to update', description: err.data?.error, color: 'error' })
+  }
+}
+
+async function testNotification(id: string) {
+  testingNotification.value = id
+  try {
+    await $api(`/notifications/${id}/test`, { method: 'POST' })
+    toast.add({ title: 'Test notification sent', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Test failed', description: err.data?.error, color: 'error' })
+  } finally { testingNotification.value = null }
+}
+
+async function deleteNotification(notif: NotificationConfig) {
+  if (!confirm(`Delete notification hook "${notif.name}"?`)) return
+  deletingNotification.value = notif.id
+  try {
+    await $api(`/notifications/${notif.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Notification deleted', color: 'success' })
+    await loadNotifications()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete', description: err.data?.error, color: 'error' })
+  } finally { deletingNotification.value = null }
+}
+
+// ============================================================================
+// Deploy Tokens
+// ============================================================================
+
+interface DeployToken {
+  id: string
+  name: string
+  prefix: string
+  scopes: string[]
+  last_used_at?: string
+  created_at: string
+  expires_at?: string
+}
+
+const deployTokens = ref<DeployToken[]>([])
+const loadingTokens = ref(false)
+const showTokenForm = ref(false)
+const creatingToken = ref(false)
+const deletingToken = ref<string | null>(null)
+const newTokenValue = ref('')
+
+const tokenForm = ref({
+  name: '',
+  scopes: ['deploy:*']
+})
+
+async function loadDeployTokens() {
+  loadingTokens.value = true
+  try {
+    const data = await $api<{ tokens: DeployToken[] }>('/deploy-tokens')
+    deployTokens.value = data.tokens || []
+  } catch { deployTokens.value = [] }
+  finally { loadingTokens.value = false }
+}
+
+async function createDeployToken() {
+  if (!tokenForm.value.name) return
+  creatingToken.value = true
+  newTokenValue.value = ''
+  try {
+    const data = await $api<{ token: string; id: string }>('/deploy-tokens', {
+      method: 'POST',
+      body: { name: tokenForm.value.name, scopes: tokenForm.value.scopes }
+    })
+    newTokenValue.value = data.token
+    toast.add({ title: 'Token created - copy it now!', color: 'warning' })
+    tokenForm.value = { name: '', scopes: ['deploy:*'] }
+    await loadDeployTokens()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to create token', description: err.data?.error, color: 'error' })
+  } finally { creatingToken.value = false }
+}
+
+async function deleteDeployToken(token: DeployToken) {
+  if (!confirm(`Delete token "${token.name}"? Any CI/CD pipelines using this token will stop working.`)) return
+  deletingToken.value = token.id
+  try {
+    await $api(`/deploy-tokens/${token.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Token deleted', color: 'success' })
+    await loadDeployTokens()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete token', description: err.data?.error, color: 'error' })
+  } finally { deletingToken.value = null }
 }
 
 // ============================================================================
@@ -559,35 +790,106 @@ const formatDate = (dateStr: string) => {
             </form>
           </UCard>
 
-          <!-- AI Settings -->
+        </div>
+      </template>
+
+      <!-- Users Tab -->
+      <template #users>
+        <div class="space-y-6 py-4">
           <UCard>
             <template #header>
-              <h3 class="font-semibold">AI Settings</h3>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">Team Members</h3>
+                <UButton size="sm" @click="showInviteForm = !showInviteForm; loadUsers()">
+                  <UIcon name="i-heroicons-user-plus" class="mr-1" />
+                  Invite User
+                </UButton>
+              </div>
             </template>
 
-            <form class="space-y-4" @submit.prevent="saveAISettings">
-              <UFormField label="HuggingFace Token" help="Required for downloading gated FLUX models">
-                <UInput
-                  v-model="settings.hfToken"
-                  type="password"
-                  placeholder="hf_xxxxxxxxxxxx"
-                />
-              </UFormField>
+            <!-- Invite Form -->
+            <div v-if="showInviteForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <UFormField label="Email" class="md:col-span-2">
+                  <UInput v-model="inviteEmail" type="email" placeholder="user@example.com" />
+                </UFormField>
+                <UFormField label="Role">
+                  <USelect v-model="inviteRole" :items="roleOptions.map(r => ({ label: r.label, value: r.value }))" />
+                </UFormField>
+              </div>
+              <div class="flex gap-2">
+                <UButton :loading="inviting" @click="inviteUser">Send Invite</UButton>
+                <UButton variant="ghost" @click="showInviteForm = false">Cancel</UButton>
+              </div>
 
-              <UAlert
-                color="info"
-                variant="soft"
-                title="Some FLUX models require license acceptance"
-                description="Visit the model page on HuggingFace and accept the license before downloading."
-              />
+              <!-- Invite Result -->
+              <UAlert v-if="inviteResult" color="warning" variant="soft" title="Share this invite link">
+                <template #description>
+                  <code class="text-sm break-all">{{ inviteResult.invite_url }}</code>
+                </template>
+              </UAlert>
+            </div>
 
-              <UAlert v-if="aiError" color="error" variant="soft" :title="aiError" />
-              <UAlert v-if="aiSuccess" color="success" variant="soft" title="AI settings saved successfully" />
+            <!-- Users List -->
+            <div v-if="loadingUsers" class="flex justify-center py-8">
+              <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl" />
+            </div>
 
-              <UButton type="submit" :loading="savingAI">
-                Save AI Settings
-              </UButton>
-            </form>
+            <div v-else-if="users.length === 0" class="text-center py-8 text-gray-500">
+              <UIcon name="i-heroicons-users" class="text-4xl mb-2" />
+              <p>No users yet</p>
+            </div>
+
+            <div v-else class="divide-y divide-gray-200 dark:divide-gray-800">
+              <div v-for="user in users" :key="user.id" class="py-3 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div class="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
+                    <span class="text-sm font-medium text-primary-600 dark:text-primary-400">
+                      {{ user.email.charAt(0).toUpperCase() }}
+                    </span>
+                  </div>
+                  <div>
+                    <p class="font-medium text-sm">{{ user.email }}</p>
+                    <p class="text-xs text-gray-500">
+                      Joined {{ new Date(user.created_at).toLocaleDateString() }}
+                      <span v-if="user.last_login_at"> · Last login {{ new Date(user.last_login_at).toLocaleDateString() }}</span>
+                    </p>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <USelect
+                    :model-value="user.role"
+                    :items="roleOptions.map(r => ({ label: r.label, value: r.value }))"
+                    size="xs"
+                    :loading="updatingRole === user.id"
+                    @update:model-value="(val: string) => updateUserRole(user.id, val)"
+                  />
+                  <UButton
+                    icon="i-heroicons-trash"
+                    variant="ghost"
+                    color="error"
+                    size="xs"
+                    :loading="deletingUser === user.id"
+                    @click="deleteUser(user)"
+                  />
+                </div>
+              </div>
+            </div>
+          </UCard>
+
+          <!-- Role Descriptions -->
+          <UCard>
+            <template #header>
+              <h3 class="font-semibold">Roles</h3>
+            </template>
+            <div class="space-y-3">
+              <div v-for="role in roleOptions" :key="role.value" class="flex items-start gap-3">
+                <UBadge :color="role.value === 'admin' ? 'error' : role.value === 'deployer' ? 'warning' : 'info'" variant="soft" size="sm">
+                  {{ role.label }}
+                </UBadge>
+                <span class="text-sm text-gray-500">{{ role.description }}</span>
+              </div>
+            </div>
           </UCard>
         </div>
       </template>
@@ -632,6 +934,196 @@ const formatDate = (dateStr: string) => {
                 Change Password
               </UButton>
             </form>
+          </UCard>
+
+          <!-- Deploy Tokens -->
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">Deploy Tokens</h3>
+                <UButton size="sm" @click="showTokenForm = !showTokenForm; loadDeployTokens()">
+                  <UIcon name="i-heroicons-plus" class="mr-1" />
+                  Create Token
+                </UButton>
+              </div>
+            </template>
+
+            <!-- Create Token Form -->
+            <div v-if="showTokenForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-3">
+              <UFormField label="Token Name" help="A descriptive name for this token (e.g., 'GitHub Actions')">
+                <UInput v-model="tokenForm.name" placeholder="my-ci-token" />
+              </UFormField>
+              <div class="flex gap-2">
+                <UButton :loading="creatingToken" @click="createDeployToken">Create Token</UButton>
+                <UButton variant="ghost" @click="showTokenForm = false">Cancel</UButton>
+              </div>
+
+              <!-- New Token Display (only shown once) -->
+              <UAlert v-if="newTokenValue" color="warning" variant="soft" title="Save this token - it won't be shown again!">
+                <template #description>
+                  <code class="text-sm break-all select-all">{{ newTokenValue }}</code>
+                </template>
+              </UAlert>
+            </div>
+
+            <!-- Tokens List -->
+            <div v-if="loadingTokens" class="flex justify-center py-6">
+              <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl" />
+            </div>
+
+            <div v-else-if="deployTokens.length === 0 && !showTokenForm" class="text-center py-6 text-gray-500 text-sm">
+              <p>No deploy tokens. Create one for CI/CD integration.</p>
+            </div>
+
+            <div v-else-if="deployTokens.length > 0" class="divide-y divide-gray-200 dark:divide-gray-800">
+              <div v-for="token in deployTokens" :key="token.id" class="py-3 flex items-center justify-between">
+                <div>
+                  <p class="font-medium text-sm">{{ token.name }}</p>
+                  <p class="text-xs text-gray-500">
+                    <code>{{ token.prefix }}...</code>
+                    · Created {{ new Date(token.created_at).toLocaleDateString() }}
+                    <span v-if="token.last_used_at"> · Last used {{ new Date(token.last_used_at).toLocaleDateString() }}</span>
+                    <span v-if="token.expires_at"> · Expires {{ new Date(token.expires_at).toLocaleDateString() }}</span>
+                  </p>
+                  <div class="flex gap-1 mt-1">
+                    <UBadge v-for="scope in token.scopes" :key="scope" color="neutral" variant="soft" size="xs">{{ scope }}</UBadge>
+                  </div>
+                </div>
+                <UButton
+                  icon="i-heroicons-trash"
+                  variant="ghost"
+                  color="error"
+                  size="xs"
+                  :loading="deletingToken === token.id"
+                  @click="deleteDeployToken(token)"
+                />
+              </div>
+            </div>
+          </UCard>
+        </div>
+      </template>
+
+      <!-- Notifications Tab -->
+      <template #notifications>
+        <div class="space-y-6 py-4">
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold">Notification Hooks</h3>
+                <UButton size="sm" @click="showNotificationForm = !showNotificationForm; loadNotifications()">
+                  <UIcon name="i-heroicons-plus" class="mr-1" />
+                  Add Hook
+                </UButton>
+              </div>
+            </template>
+
+            <!-- Create Notification Form -->
+            <div v-if="showNotificationForm" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg space-y-4">
+              <UFormField label="Name">
+                <UInput v-model="notificationForm.name" placeholder="My Slack notifications" />
+              </UFormField>
+
+              <UFormField label="Type">
+                <USelect
+                  v-model="notificationForm.type"
+                  :items="[
+                    { label: 'Webhook (HTTP POST)', value: 'webhook' },
+                    { label: 'Slack', value: 'slack' },
+                    { label: 'Discord', value: 'discord' }
+                  ]"
+                />
+              </UFormField>
+
+              <UFormField v-if="notificationForm.type === 'webhook'" label="Webhook URL">
+                <UInput v-model="notificationForm.webhook_url" placeholder="https://example.com/webhook" />
+              </UFormField>
+              <UFormField v-if="notificationForm.type === 'slack'" label="Slack Webhook URL">
+                <UInput v-model="notificationForm.slack_webhook_url" placeholder="https://hooks.slack.com/services/..." />
+              </UFormField>
+              <UFormField v-if="notificationForm.type === 'discord'" label="Discord Webhook URL">
+                <UInput v-model="notificationForm.discord_webhook_url" placeholder="https://discord.com/api/webhooks/..." />
+              </UFormField>
+
+              <UFormField label="Events">
+                <div class="flex flex-wrap gap-2">
+                  <UCheckbox
+                    v-for="evt in availableEvents"
+                    :key="evt.value"
+                    :model-value="notificationForm.events.includes(evt.value)"
+                    :label="evt.label"
+                    @update:model-value="(checked: boolean) => {
+                      if (checked) notificationForm.events.push(evt.value)
+                      else notificationForm.events = notificationForm.events.filter(e => e !== evt.value)
+                    }"
+                  />
+                </div>
+              </UFormField>
+
+              <div class="flex gap-2">
+                <UButton :loading="savingNotification" @click="createNotification">Create Hook</UButton>
+                <UButton variant="ghost" @click="showNotificationForm = false">Cancel</UButton>
+              </div>
+            </div>
+
+            <!-- Notifications List -->
+            <div v-if="loadingNotifications" class="flex justify-center py-6">
+              <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl" />
+            </div>
+
+            <div v-else-if="notifications.length === 0 && !showNotificationForm" class="text-center py-6 text-gray-500 text-sm">
+              <UIcon name="i-heroicons-bell-slash" class="text-4xl mb-2" />
+              <p>No notification hooks configured</p>
+              <p class="text-xs mt-1">Get notified about deploys, health checks, and more</p>
+            </div>
+
+            <div v-else-if="notifications.length > 0" class="divide-y divide-gray-200 dark:divide-gray-800">
+              <div v-for="notif in notifications" :key="notif.id" class="py-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <UIcon
+                      :name="notif.type === 'slack' ? 'i-heroicons-chat-bubble-left' : notif.type === 'discord' ? 'i-heroicons-chat-bubble-bottom-center-text' : 'i-heroicons-globe-alt'"
+                      class="w-5 h-5 text-gray-400"
+                    />
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <p class="font-medium text-sm">{{ notif.name }}</p>
+                        <UBadge :color="notif.enabled ? 'success' : 'neutral'" variant="soft" size="xs">
+                          {{ notif.enabled ? 'Active' : 'Disabled' }}
+                        </UBadge>
+                        <UBadge color="info" variant="soft" size="xs">{{ notif.type }}</UBadge>
+                      </div>
+                      <div class="flex gap-1 mt-1">
+                        <UBadge v-for="evt in notif.events" :key="evt" color="neutral" variant="soft" size="xs">{{ evt }}</UBadge>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1">
+                    <UButton
+                      :icon="notif.enabled ? 'i-heroicons-pause' : 'i-heroicons-play'"
+                      variant="ghost"
+                      size="xs"
+                      @click="toggleNotification(notif)"
+                    />
+                    <UButton
+                      icon="i-heroicons-paper-airplane"
+                      variant="ghost"
+                      color="primary"
+                      size="xs"
+                      :loading="testingNotification === notif.id"
+                      @click="testNotification(notif.id)"
+                    />
+                    <UButton
+                      icon="i-heroicons-trash"
+                      variant="ghost"
+                      color="error"
+                      size="xs"
+                      :loading="deletingNotification === notif.id"
+                      @click="deleteNotification(notif)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
           </UCard>
         </div>
       </template>

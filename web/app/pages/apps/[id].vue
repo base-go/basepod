@@ -756,6 +756,26 @@ async function fetchMetrics() {
   }
 }
 
+// Live metrics polling (5s interval for overview/metrics tabs)
+let metricsInterval: ReturnType<typeof setInterval> | null = null
+
+function startMetricsPolling() {
+  stopMetricsPolling()
+  metricsInterval = setInterval(async () => {
+    try {
+      const data = await $api<AppMetricsResponse>(`/apps/${appId}/metrics?period=${metricsPeriod.value}`)
+      metricsCurrent.value = data.current || null
+    } catch { /* ignore */ }
+  }, 5000)
+}
+
+function stopMetricsPolling() {
+  if (metricsInterval) {
+    clearInterval(metricsInterval)
+    metricsInterval = null
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
   const k = 1024
@@ -799,20 +819,26 @@ async function fetchConnectionInfo() {
 
 // Tab change watchers for new tabs
 watch(activeTab, (tab) => {
-  if (tab === 'overview') { fetchMetrics(); fetchActivities() }
+  if (tab === 'overview') { fetchMetrics(); fetchActivities(); startMetricsPolling() }
+  else if (tab === 'metrics') { fetchMetrics(); startMetricsPolling() }
+  else { stopMetricsPolling() }
   if (tab === 'cron') fetchCronJobs()
   if (tab === 'activity') fetchActivities()
   if (tab === 'health') fetchActivities() // merged health+activity tab
-  if (tab === 'metrics') fetchMetrics()
   if (tab === 'settings') fetchConnectionInfo()
 })
 
-// Fetch overview data on mount
+// Fetch overview data on mount + start polling
 onMounted(() => {
   if (activeTab.value === 'overview') {
     fetchMetrics()
     fetchActivities()
+    startMetricsPolling()
   }
+})
+
+onUnmounted(() => {
+  stopMetricsPolling()
 })
 </script>
 

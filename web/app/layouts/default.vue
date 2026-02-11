@@ -61,6 +61,11 @@ const bottomNavigation = [
     to: '/processes'
   },
   {
+    label: 'Activity',
+    icon: 'i-heroicons-list-bullet',
+    to: '/activity'
+  },
+  {
     label: 'Storage',
     icon: 'i-heroicons-circle-stack',
     to: '/storage'

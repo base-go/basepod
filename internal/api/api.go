@@ -1695,10 +1695,11 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	// Podman Storage
 	podmanDir := filepath.Join(home, ".local", "share", "containers")
 	podmanStorageSize := diskutil.DirSize(podmanDir)
+	podmanCount := imagesCount // images stored in podman storage
 	categories = append(categories, StorageCategory{
 		ID: "podman", Name: "Podman Storage",
 		Size: podmanStorageSize, Formatted: diskutil.FormatBytes(podmanStorageSize),
-		Count: 0, Icon: "i-heroicons-cube", Color: "indigo",
+		Count: podmanCount, Icon: "i-heroicons-cube", Color: "indigo",
 	})
 	basepodTotal += podmanStorageSize
 
@@ -3086,8 +3087,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		writeLine("Auto-generated Dockerfile for detected stack")
 	}
 
-	// Build image using Podman
-	imageName := fmt.Sprintf("basepod/%s:latest", a.Name)
+	// Build image using Podman — unique tag for rollback support
+	deployTag := fmt.Sprintf("%d", time.Now().Unix())
+	imageName := fmt.Sprintf("basepod/%s:%s", a.Name, deployTag)
+	imageLatest := fmt.Sprintf("basepod/%s:latest", a.Name)
 	writeLine("Building image: " + imageName)
 
 	a.Status = app.StatusDeploying
@@ -3104,7 +3107,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -f %s .", sourceDir, podmanPath, imageName, dockerfile)
+	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -t %s -f %s .", sourceDir, podmanPath, imageName, imageLatest, dockerfile)
 	output, err := execCommandStream(ctx, "sh", []string{"-c", buildCmd}, writeLine)
 	if err != nil {
 		writeLine("ERROR: Build failed: " + err.Error())
@@ -5016,8 +5019,10 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 		buildLog.WriteString("Auto-generated Dockerfile for detected stack\n")
 	}
 
-	// Build image
-	imageName := fmt.Sprintf("basepod/%s:latest", a.Name)
+	// Build image — unique tag for rollback support
+	deployTag := fmt.Sprintf("%d", time.Now().Unix())
+	imageName := fmt.Sprintf("basepod/%s:%s", a.Name, deployTag)
+	imageLatest := fmt.Sprintf("basepod/%s:latest", a.Name)
 	log.Printf("Webhook deploy %s: building image %s", a.Name, imageName)
 
 	a.Status = app.StatusDeploying
@@ -5033,7 +5038,7 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 		}
 	}
 
-	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -f %s .", sourceDir, podmanPath, imageName, dockerfile)
+	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -t %s -f %s .", sourceDir, podmanPath, imageName, imageLatest, dockerfile)
 	output, err = execCommand(ctx, "sh", "-c", buildCmd)
 	buildLog.WriteString("$ " + buildCmd + "\n" + output + "\n")
 	if err != nil {

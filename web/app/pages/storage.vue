@@ -74,6 +74,130 @@ function truncatePath(path: string, max = 50): string {
   return '...' + path.slice(path.length - max + 3)
 }
 
+// --- Podman Images drill-down ---
+interface ContainerImage {
+  Id: string
+  RepoTags: string[]
+  Size: number
+  Created: string
+}
+
+const podmanExpanded = ref(false)
+const podmanImages = ref<ContainerImage[]>([])
+const podmanLoading = ref(false)
+const deletingImage = ref<string | null>(null)
+
+function formatSize(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+function getImageName(image: ContainerImage): string {
+  if (image.RepoTags && image.RepoTags.length > 0 && image.RepoTags[0] !== '<none>:<none>') {
+    return image.RepoTags[0] ?? image.Id.substring(0, 12)
+  }
+  return image.Id.substring(0, 12)
+}
+
+async function togglePodman() {
+  podmanExpanded.value = !podmanExpanded.value
+  if (podmanExpanded.value && podmanImages.value.length === 0) {
+    podmanLoading.value = true
+    try {
+      podmanImages.value = await $api<ContainerImage[]>('/container-images')
+    } catch {
+      podmanImages.value = []
+    } finally {
+      podmanLoading.value = false
+    }
+  }
+}
+
+async function deleteImage(image: ContainerImage) {
+  if (!confirm(`Delete image ${getImageName(image)}? This cannot be undone.`)) return
+  deletingImage.value = image.Id
+  try {
+    await $api(`/container-images/${encodeURIComponent(image.Id)}?force=true`, { method: 'DELETE' })
+    podmanImages.value = podmanImages.value.filter(i => i.Id !== image.Id)
+    toast.add({ title: 'Image deleted', color: 'success' })
+    await refreshSystemStorage()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete image', description: err.data?.error, color: 'error' })
+  } finally {
+    deletingImage.value = null
+  }
+}
+
+// --- LLM Models drill-down ---
+interface MLXModel {
+  id: string
+  name: string
+  size: string
+  downloaded: boolean
+  downloaded_at?: string
+}
+
+interface MLXModelsResponse {
+  models: MLXModel[]
+  supported: boolean
+}
+
+const llmExpanded = ref(false)
+const llmModels = ref<MLXModel[]>([])
+const llmLoading = ref(false)
+const deletingModel = ref<string | null>(null)
+
+async function toggleLLM() {
+  llmExpanded.value = !llmExpanded.value
+  if (llmExpanded.value && llmModels.value.length === 0) {
+    llmLoading.value = true
+    try {
+      const data = await $api<MLXModelsResponse>('/mlx/models')
+      llmModels.value = (data.models || []).filter(m => m.downloaded)
+    } catch {
+      llmModels.value = []
+    } finally {
+      llmLoading.value = false
+    }
+  }
+}
+
+async function deleteModel(model: MLXModel) {
+  if (!confirm(`Delete model ${model.name}? This cannot be undone.`)) return
+  deletingModel.value = model.id
+  try {
+    await $api(`/mlx/models/${encodeURIComponent(model.id)}`, { method: 'DELETE' })
+    llmModels.value = llmModels.value.filter(m => m.id !== model.id)
+    toast.add({ title: `${model.name} deleted`, color: 'success' })
+    await refreshSystemStorage()
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to delete model', description: err.data?.error, color: 'error' })
+  } finally {
+    deletingModel.value = null
+  }
+}
+
+// Expandable categories
+const expandableCategories = ['volumes', 'podman', 'llm']
+
+function toggleCategory(catId: string) {
+  if (catId === 'volumes') toggleVolumes()
+  else if (catId === 'podman') togglePodman()
+  else if (catId === 'llm') toggleLLM()
+}
+
+function isCategoryExpanded(catId: string): boolean {
+  if (catId === 'volumes') return volumesExpanded.value
+  if (catId === 'podman') return podmanExpanded.value
+  if (catId === 'llm') return llmExpanded.value
+  return false
+}
+
 // Color maps — explicit classes (no dynamic Tailwind interpolation)
 const bgColorMap: Record<string, string> = {
   blue: 'bg-blue-500',
@@ -255,10 +379,10 @@ async function clearCategory(catId: string) {
           class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3 border-l-4 transition-colors"
           :class="[
             borderColorMap[cat.color] || 'border-l-gray-400',
-            cat.id === 'volumes' && volumesExpanded ? 'ring-2 ring-cyan-500/30' : '',
-            cat.id === 'volumes' ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50' : ''
+            isCategoryExpanded(cat.id) ? 'ring-2 ring-primary-500/30' : '',
+            expandableCategories.includes(cat.id) ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50' : ''
           ]"
-          @click="cat.id === 'volumes' ? toggleVolumes() : undefined"
+          @click="expandableCategories.includes(cat.id) ? toggleCategory(cat.id) : undefined"
         >
           <div
             class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
@@ -276,8 +400,8 @@ async function clearCategory(catId: string) {
             <div class="text-right">
               <div class="font-semibold">{{ cat.formatted }}</div>
               <UIcon
-                v-if="cat.id === 'volumes'"
-                :name="volumesExpanded ? 'i-heroicons-chevron-up' : 'i-heroicons-chevron-down'"
+                v-if="expandableCategories.includes(cat.id)"
+                :name="isCategoryExpanded(cat.id) ? 'i-heroicons-chevron-up' : 'i-heroicons-chevron-down'"
                 class="w-4 h-4 text-gray-400 mt-1"
               />
             </div>
@@ -335,6 +459,104 @@ async function clearCategory(catId: string) {
               {{ vol.created_at }}
             </span>
             <span class="text-sm font-semibold min-w-[70px] text-right">{{ vol.formatted }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Podman Images Drill-down -->
+    <div v-if="podmanExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
+        <h3 class="font-semibold flex items-center gap-2">
+          <UIcon name="i-heroicons-cube" class="w-5 h-5 text-indigo-500" />
+          Podman Images
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          {{ podmanImages.length }} {{ podmanImages.length === 1 ? 'image' : 'images' }}
+        </p>
+      </div>
+
+      <div v-if="podmanLoading" class="p-8 text-center">
+        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+      </div>
+
+      <div v-else-if="podmanImages.length === 0" class="p-8 text-center text-sm text-gray-500">
+        No images found
+      </div>
+
+      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+        <div
+          v-for="img in podmanImages"
+          :key="img.Id"
+          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        >
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            <UIcon name="i-heroicons-cube" class="w-4 h-4 text-indigo-500 shrink-0" />
+            <div class="min-w-0">
+              <div class="font-medium text-sm truncate">{{ getImageName(img) }}</div>
+              <div class="text-xs text-gray-500 font-mono">{{ img.Id.replace('sha256:', '').substring(0, 12) }}</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="text-sm font-semibold min-w-[70px] text-right">{{ formatSize(img.Size) }}</span>
+            <UButton
+              icon="i-heroicons-trash"
+              variant="ghost"
+              color="error"
+              size="xs"
+              :loading="deletingImage === img.Id"
+              @click.stop="deleteImage(img)"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 5: LLM Models Drill-down -->
+    <div v-if="llmExpanded" class="mb-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+      <div class="p-4 border-b border-gray-200 dark:border-gray-700">
+        <h3 class="font-semibold flex items-center gap-2">
+          <UIcon name="i-heroicons-cpu-chip" class="w-5 h-5 text-pink-500" />
+          Downloaded LLM Models
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          {{ llmModels.length }} {{ llmModels.length === 1 ? 'model' : 'models' }}
+        </p>
+      </div>
+
+      <div v-if="llmLoading" class="p-8 text-center">
+        <UIcon name="i-heroicons-arrow-path" class="w-6 h-6 animate-spin text-gray-400" />
+      </div>
+
+      <div v-else-if="llmModels.length === 0" class="p-8 text-center text-sm text-gray-500">
+        No downloaded models found
+      </div>
+
+      <div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
+        <div
+          v-for="model in llmModels"
+          :key="model.id"
+          class="px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        >
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            <UIcon name="i-heroicons-cpu-chip" class="w-4 h-4 text-pink-500 shrink-0" />
+            <div class="min-w-0">
+              <div class="font-medium text-sm truncate">{{ model.name }}</div>
+              <div v-if="model.downloaded_at" class="text-xs text-gray-500">
+                Downloaded {{ new Date(model.downloaded_at).toLocaleDateString() }}
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="text-sm font-semibold min-w-[70px] text-right">{{ model.size }}</span>
+            <UButton
+              icon="i-heroicons-trash"
+              variant="ghost"
+              color="error"
+              size="xs"
+              :loading="deletingModel === model.id"
+              @click.stop="deleteModel(model)"
+            />
           </div>
         </div>
       </div>
