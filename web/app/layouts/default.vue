@@ -54,11 +54,6 @@ const navigation = [
     label: 'Chat',
     icon: 'i-heroicons-chat-bubble-left-right',
     to: '/chat'
-  },
-  {
-    label: 'Assistant',
-    icon: 'i-heroicons-sparkles',
-    to: '/chat?mode=assistant'
   }
 ]
 
@@ -120,6 +115,25 @@ const logout = async () => {
   }
   navigateTo('/login')
 }
+
+// Global assistant panel
+const assistantOpen = ref(false)
+
+// Double-Shift shortcut to toggle assistant
+let lastShiftTime = 0
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Shift' && !e.repeat) {
+    const now = Date.now()
+    if (now - lastShiftTime < 400) {
+      assistantOpen.value = !assistantOpen.value
+      lastShiftTime = 0
+    } else {
+      lastShiftTime = now
+    }
+  }
+}
+onMounted(() => document.addEventListener('keydown', handleKeydown))
+onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
@@ -154,23 +168,32 @@ const logout = async () => {
       <template #footer="{ collapsed = false }">
         <div class="flex items-center" :class="collapsed ? 'justify-center' : 'justify-between'">
           <span v-if="!collapsed" class="text-sm text-muted">{{ systemInfo?.version || 'v0.0.0' }}</span>
-          <ClientOnly>
+          <div class="flex items-center gap-1">
             <UButton
-              :icon="colorMode.value === 'dark' ? 'i-heroicons-sun' : 'i-heroicons-moon'"
+              icon="i-heroicons-sparkles"
               variant="ghost"
               color="neutral"
               size="sm"
-              @click="colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'"
+              @click="assistantOpen = !assistantOpen"
             />
-            <template #fallback>
+            <ClientOnly>
               <UButton
-                icon="i-heroicons-moon"
+                :icon="colorMode.value === 'dark' ? 'i-heroicons-sun' : 'i-heroicons-moon'"
                 variant="ghost"
                 color="neutral"
                 size="sm"
+                @click="colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'"
               />
-            </template>
-          </ClientOnly>
+              <template #fallback>
+                <UButton
+                  icon="i-heroicons-moon"
+                  variant="ghost"
+                  color="neutral"
+                  size="sm"
+                />
+              </template>
+            </ClientOnly>
+          </div>
         </div>
       </template>
     </UDashboardSidebar>
@@ -232,4 +255,6 @@ const logout = async () => {
       </template>
     </UDashboardPanel>
   </UDashboardGroup>
+
+  <AssistantPanel v-model="assistantOpen" />
 </template>

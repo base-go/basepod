@@ -6939,6 +6939,7 @@ func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAIAsk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
+		Context string `json:"context"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request")
@@ -6959,7 +6960,7 @@ func (s *Server) handleAIAsk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := s.assistant.Ask(req.Message, caller)
+	result, err := s.assistant.Ask(req.Message, caller, req.Context)
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, err.Error())
 		return

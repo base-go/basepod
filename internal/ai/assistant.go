@@ -79,7 +79,7 @@ func New(store *storage.Storage, pm podman.Client) *Assistant {
 	return &Assistant{
 		storage: store,
 		podman:  pm,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  &http.Client{Timeout: 120 * time.Second},
 		port:    AssistantPort,
 	}
 }
@@ -122,7 +122,7 @@ var assistantFunctions = []AssistantFunc{
 
 // buildPrompt constructs the FunctionGemma prompt.
 // FunctionGemma expects function declarations as JSON objects listed in the user turn.
-func (a *Assistant) buildPrompt(userMessage string) string {
+func (a *Assistant) buildPrompt(userMessage string, pageContext string) string {
 	var sb strings.Builder
 
 	sb.WriteString("<start_of_turn>user\n")
@@ -150,6 +150,9 @@ func (a *Assistant) buildPrompt(userMessage string) string {
 
 	sb.WriteString("\nTo call a function, respond with JSON: {\"name\": \"function_name\", \"arguments\": {\"param\": \"value\"}}\n")
 	sb.WriteString("If no function is needed, respond with plain text.\n\n")
+	if pageContext != "" {
+		sb.WriteString(fmt.Sprintf("The user is currently on the %s page.\n\n", pageContext))
+	}
 	sb.WriteString(userMessage)
 	sb.WriteString("<end_of_turn>\n")
 	sb.WriteString("<start_of_turn>model\n")
@@ -251,7 +254,25 @@ func (a *Assistant) EnsureRunning() error {
 		return nil
 	}
 
-	return svc.RunOnPort(AssistantModelID, a.port)
+	if err := svc.RunOnPort(AssistantModelID, a.port); err != nil {
+		return err
+	}
+
+	// Warmup: pre-load model weights so first real request isn't slow
+	a.warmup()
+	return nil
+}
+
+// warmup sends a trivial request to pre-load model weights after starting.
+func (a *Assistant) warmup() {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("http://localhost:%d/v1/completions", a.port)
+	body := map[string]any{"model": AssistantModelID, "prompt": "hi", "max_tokens": 1}
+	data, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	a.client.Do(req) // Ignore result, just warm up
 }
 
 // isAssistantRunning checks if the assistant MLX server is responding.
@@ -271,13 +292,14 @@ func (a *Assistant) isAssistantRunning() bool {
 
 // Ask processes a natural language message and returns a result.
 // The caller parameter enforces role-based and per-app access control.
-func (a *Assistant) Ask(message string, caller *Caller) (*AskResult, error) {
+// pageContext is the current page the user is on (e.g. "Apps", "Dashboard").
+func (a *Assistant) Ask(message string, caller *Caller, pageContext string) (*AskResult, error) {
 	if err := a.EnsureRunning(); err != nil {
 		return nil, err
 	}
 
 	// Build prompt and call FunctionGemma
-	prompt := a.buildPrompt(message)
+	prompt := a.buildPrompt(message, pageContext)
 	modelResponse, err := a.callMLX(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get AI response: %w", err)
@@ -339,7 +361,7 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 	}
 
 	data, _ := json.Marshal(reqBody)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))

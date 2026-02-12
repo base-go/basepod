@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "2.0.13"
+	version = "2.0.14"
 )
 
 // ServerConfig holds configuration for a single server
@@ -3578,6 +3578,21 @@ You can ask things like:
 		resp, err := apiRequest("POST", "/api/ai/ask", map[string]string{"message": input})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			resp.Body.Close()
+			fmt.Fprintln(os.Stderr, "Session expired. Please re-login with: bp login <server-url>")
+			os.Exit(1)
+		}
+		if resp.StatusCode != http.StatusOK {
+			var errResp struct {
+				Error string `json:"error"`
+			}
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			resp.Body.Close()
+			fmt.Fprintf(os.Stderr, "Error: %s\n", errResp.Error)
 			continue
 		}
 
