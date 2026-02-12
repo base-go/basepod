@@ -89,9 +89,7 @@ async function saveMessageToDb(role: string, content: string) {
   }
 }
 
-// Mode: 'chat' or 'assistant'
-const mode = ref<'chat' | 'assistant'>('chat')
-const assistantMessages = ref<ChatMessage[]>([])
+// Chat messages only (assistant is now in global AssistantPanel)
 
 // Model selector state
 const showModelSelector = ref(false)
@@ -110,7 +108,6 @@ const settingUpModel = ref(false)
 const modelSetupProgress = ref(0)
 const modelSetupStatus = ref('')
 const downloadingModelId = ref('')
-const ASSISTANT_MODEL_ID = 'mlx-community/functiongemma-270m-it-4bit'
 const DEFAULT_CHAT_MODEL = 'mlx-community/SmolLM3-3B-4bit'
 
 // Voice input state
@@ -148,20 +145,12 @@ const hasTTSModel = computed(() =>
   )
 )
 
-// Active messages list based on mode
-const activeMessages = computed(() =>
-  mode.value === 'assistant' ? assistantMessages.value : messages.value
-)
-
-const hasActiveMessages = computed(() => activeMessages.value.length > 0)
+const hasActiveMessages = computed(() => messages.value.length > 0)
 
 const hasDownloadedModel = computed(() =>
   mlxData.value?.models?.some(m => m.downloaded) ?? false
 )
 
-const isAssistantModelReady = computed(() =>
-  mlxData.value?.models?.some(m => m.id === ASSISTANT_MODEL_ID && m.downloaded) ?? false
-)
 
 // Auto-scroll to bottom
 function scrollToBottom() {
@@ -513,57 +502,9 @@ async function sendMessage(deepAnalysis = false) {
   }
 }
 
-// Send message in assistant mode
-async function sendAssistantMessage() {
-  if (!input.value.trim() || loading.value) return
-
-  const userMessage = input.value.trim()
-  assistantMessages.value.push({ role: 'user', content: userMessage })
-  input.value = ''
-  loading.value = true
-  loadingStatus.value = 'Thinking...'
-  scrollToBottom()
-
-  try {
-    const result = await $api<{
-      response: string
-      action?: { function: string; parameters: Record<string, unknown>; success: boolean }
-    }>('/ai/ask', {
-      method: 'POST',
-      body: { message: userMessage }
-    })
-
-    let content = result.response
-    if (result.action) {
-      const badge = result.action.success ? `[${result.action.function}]` : `[${result.action.function} FAILED]`
-      content = `${badge} ${content}`
-    }
-
-    assistantMessages.value.push({ role: 'assistant', content })
-    scrollToBottom()
-  } catch (error: any) {
-    const errorMsg = error?.data?.error || error?.message || 'Failed to get response'
-    assistantMessages.value.pop() // Remove failed user message
-    // If model not downloaded, trigger setup instead of showing error
-    if (errorMsg.includes('not downloaded') || errorMsg.includes('not available')) {
-      await refreshStatus()
-      toast.add({ title: 'Assistant not ready', description: 'Click "Setup Assistant" to get started', color: 'warning' })
-    } else {
-      toast.add({ title: 'Error', description: errorMsg, color: 'error' })
-    }
-  } finally {
-    loading.value = false
-    loadingStatus.value = ''
-  }
-}
-
-// Handle send based on mode
+// Handle send
 function handleSend() {
-  if (mode.value === 'assistant') {
-    sendAssistantMessage()
-  } else {
-    sendMessage()
-  }
+  sendMessage()
 }
 
 // Setup model: download + run from chat page (works for both chat and assistant)
@@ -645,21 +586,11 @@ async function setupModel(modelId?: string) {
     modelSetupStatus.value = `Starting ${modelName}...`
     modelSetupProgress.value = 100
 
-    if (targetModel === ASSISTANT_MODEL_ID) {
-      // Assistant model auto-starts on its dedicated port when first used
-      // Just send a warmup message to trigger it
-      try {
-        await $api('/ai/ask', { method: 'POST', body: { message: 'hello' } })
-      } catch {
-        // First call may be slow, that's ok
-      }
-    } else {
-      // Chat model runs on the main MLX port
-      await $api('/mlx/run', {
-        method: 'POST',
-        body: { model: targetModel }
-      })
-    }
+    // Start the chat model on the main MLX port
+    await $api('/mlx/run', {
+      method: 'POST',
+      body: { model: targetModel }
+    })
 
     await refreshStatus()
     modelSetupStatus.value = ''
@@ -694,11 +625,6 @@ async function cancelDownload() {
 
 // Clear chat
 async function clearChat() {
-  if (mode.value === 'assistant') {
-    assistantMessages.value = []
-    return
-  }
-
   messages.value = []
   uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
   uploadedImages.value = []
@@ -757,15 +683,9 @@ function getMessageImages(content: string | MessageContent[]): string[] {
     .map(c => c.image_url.url)
 }
 
-// Read mode from query parameter
-const route = useRoute()
-
-// Setup paste listener and query param handling
+// Setup paste listener
 onMounted(() => {
   document.addEventListener('paste', handlePaste)
-  if (route.query.mode === 'assistant') {
-    mode.value = 'assistant'
-  }
 })
 onUnmounted(() => {
   if (loadingTimer) clearInterval(loadingTimer)
@@ -868,24 +788,7 @@ async function speakText(text: string, idx: number) {
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <!-- Mode Toggle -->
-        <div class="flex items-center bg-(--ui-bg-muted) rounded-lg p-0.5">
-          <button
-            :class="[
-              'px-3 py-1 text-xs font-medium rounded-md transition-colors',
-              mode === 'chat' ? 'bg-white dark:bg-gray-800 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            ]"
-            @click="mode = 'chat'"
-          >Chat</button>
-          <button
-            :class="[
-              'px-3 py-1 text-xs font-medium rounded-md transition-colors',
-              mode === 'assistant' ? 'bg-white dark:bg-gray-800 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            ]"
-            @click="mode = 'assistant'"
-          >Assistant</button>
-        </div>
-        <UBadge v-if="isVisionModel && mode === 'chat'" color="secondary" variant="soft" size="sm">
+        <UBadge v-if="isVisionModel" color="secondary" variant="soft" size="sm">
           <UIcon name="i-heroicons-eye" class="w-3 h-3 mr-1" />
           Vision
         </UBadge>
@@ -899,8 +802,8 @@ async function speakText(text: string, idx: number) {
       </div>
     </div>
 
-    <!-- Chat mode: not running state -->
-    <div v-if="mode === 'chat' && !mlxData?.running && !settingUpModel" class="flex-1 flex items-center justify-center">
+    <!-- Not running state -->
+    <div v-if="!mlxData?.running && !settingUpModel" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <UIcon name="i-heroicons-cpu-chip" class="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
         <h3 class="text-lg font-medium mb-2">No Model Running</h3>
@@ -937,63 +840,24 @@ async function speakText(text: string, idx: number) {
       </div>
     </div>
 
-    <!-- Chat / Assistant interface -->
-    <template v-else-if="mlxData?.running || mode === 'assistant'">
+    <!-- Chat interface -->
+    <template v-else-if="mlxData?.running">
       <!-- Messages -->
       <div ref="messagesContainer" class="flex-1 overflow-y-auto py-4 space-y-4">
-        <div v-if="!activeMessages.length" class="h-full flex items-center justify-center text-gray-400">
+        <div v-if="!messages.length" class="h-full flex items-center justify-center text-gray-400">
           <div class="text-center">
-            <UIcon :name="mode === 'assistant' ? 'i-heroicons-sparkles' : 'i-heroicons-chat-bubble-left-right'" class="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <template v-if="mode === 'assistant'">
-              <p class="text-lg">AI Assistant</p>
-              <!-- Setup needed: model not downloaded -->
-              <template v-if="!isAssistantModelReady && !settingUpModel">
-                <p class="text-sm mt-1 text-gray-500">FunctionGemma is required for the assistant</p>
-                <UButton class="mt-4" size="lg" @click="setupModel(ASSISTANT_MODEL_ID)">
-                  <UIcon name="i-heroicons-arrow-down-tray" class="w-4 h-4 mr-2" />
-                  Setup Assistant
-                  <span class="text-xs opacity-70 ml-1">(150MB)</span>
-                </UButton>
-              </template>
-              <!-- Setting up: show progress -->
-              <template v-else-if="settingUpModel">
-                <p class="text-sm mt-2 text-gray-500">{{ modelSetupStatus }}</p>
-                <div class="mt-3 w-64 mx-auto">
-                  <div class="h-2 bg-(--ui-bg-muted) rounded-full overflow-hidden">
-                    <div
-                      class="h-full bg-primary-500 rounded-full transition-all duration-500"
-                      :style="{ width: `${Math.max(modelSetupProgress, 2)}%` }"
-                    />
-                  </div>
-                  <p class="text-xs text-gray-400 mt-1">{{ modelSetupProgress.toFixed(1) }}%</p>
-                </div>
-                <UButton variant="ghost" color="error" size="sm" class="mt-3" @click="cancelDownload">Cancel</UButton>
-              </template>
-              <!-- Ready: show quick hints -->
-              <template v-else>
-                <p class="text-sm mt-1">Ask me to manage your apps, check status, or view logs</p>
-                <div class="mt-3 flex flex-wrap gap-2 justify-center">
-                  <button v-for="hint in ['list my apps', 'storage info', 'system info']" :key="hint"
-                    class="px-3 py-1 text-xs bg-(--ui-bg-muted) rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                    @click="input = hint; sendAssistantMessage()">
-                    {{ hint }}
-                  </button>
-                </div>
-              </template>
-            </template>
-            <template v-else>
-              <p class="text-lg">Start a conversation</p>
-              <p class="text-sm mt-1">Send a message to chat with {{ modelName }}</p>
-              <p v-if="isVisionModel" class="text-xs mt-2 text-purple-500">
-                <UIcon name="i-heroicons-photo" class="w-4 h-4 inline" />
-                This model supports image input
-              </p>
-            </template>
+            <UIcon name="i-heroicons-chat-bubble-left-right" class="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <p class="text-lg">Start a conversation</p>
+            <p class="text-sm mt-1">Send a message to chat with {{ modelName }}</p>
+            <p v-if="isVisionModel" class="text-xs mt-2 text-purple-500">
+              <UIcon name="i-heroicons-photo" class="w-4 h-4 inline" />
+              This model supports image input
+            </p>
           </div>
         </div>
 
         <div
-          v-for="(msg, idx) in activeMessages"
+          v-for="(msg, idx) in messages"
           :key="idx"
           :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
         >
@@ -1064,7 +928,7 @@ async function speakText(text: string, idx: number) {
       <!-- Input area -->
       <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
         <!-- Image upload area (only for vision models in chat mode) -->
-        <div v-if="isVisionModel && mode === 'chat'" class="mb-3">
+        <div v-if="isVisionModel" class="mb-3">
           <!-- Image Previews -->
           <div v-if="uploadedImages.length" class="flex flex-wrap gap-2 mb-2">
             <div v-for="(img, idx) in uploadedImages" :key="idx"
@@ -1098,45 +962,43 @@ async function speakText(text: string, idx: number) {
 
         <!-- Input form -->
         <form @submit.prevent="handleSend" class="flex gap-2 items-end">
-          <!-- Voice input button (chat mode only) -->
-          <template v-if="mode === 'chat'">
-            <div v-if="hasWhisperModel">
-              <UButton
-                v-if="isRecording"
-                icon="i-heroicons-stop"
-                color="error"
-                variant="soft"
-                @click="stopRecording"
-              />
-              <UButton
-                v-else-if="transcribing"
-                icon="i-heroicons-arrow-path"
-                variant="ghost"
-                color="neutral"
-                loading
-              />
-              <UButton
-                v-else
-                icon="i-heroicons-microphone"
-                variant="ghost"
-                color="neutral"
-                :disabled="loading"
-                @click="startRecording"
-              />
-            </div>
-            <UTooltip v-else-if="!hasWhisperModel" text="Download a Whisper model for voice input">
-              <UButton
-                icon="i-heroicons-microphone"
-                variant="ghost"
-                color="neutral"
-                disabled
-              />
-            </UTooltip>
-          </template>
+          <!-- Voice input button -->
+          <div v-if="hasWhisperModel">
+            <UButton
+              v-if="isRecording"
+              icon="i-heroicons-stop"
+              color="error"
+              variant="soft"
+              @click="stopRecording"
+            />
+            <UButton
+              v-else-if="transcribing"
+              icon="i-heroicons-arrow-path"
+              variant="ghost"
+              color="neutral"
+              loading
+            />
+            <UButton
+              v-else
+              icon="i-heroicons-microphone"
+              variant="ghost"
+              color="neutral"
+              :disabled="loading"
+              @click="startRecording"
+            />
+          </div>
+          <UTooltip v-else text="Download a Whisper model for voice input">
+            <UButton
+              icon="i-heroicons-microphone"
+              variant="ghost"
+              color="neutral"
+              disabled
+            />
+          </UTooltip>
 
           <UTextarea
             v-model="input"
-            :placeholder="mode === 'assistant' ? 'Ask me anything... (e.g. list apps, stop myapp)' : isVisionModel ? 'Describe the image or ask a question...' : 'Type a message...'"
+            :placeholder="isVisionModel ? 'Describe the image or ask a question...' : 'Type a message...'"
             class="flex-1"
             :rows="1"
             autoresize
@@ -1147,7 +1009,7 @@ async function speakText(text: string, idx: number) {
 
           <!-- Image upload button (only for vision models in chat mode) -->
           <UButton
-            v-if="isVisionModel && mode === 'chat'"
+            v-if="isVisionModel"
             icon="i-heroicons-photo"
             variant="ghost"
             color="neutral"
@@ -1156,17 +1018,12 @@ async function speakText(text: string, idx: number) {
           />
 
           <UButton type="submit" size="lg" :loading="loading"
-            :disabled="!input.trim() && (mode === 'assistant' || !uploadedImages.length)">
+            :disabled="!input.trim() && !uploadedImages.length">
             <UIcon name="i-heroicons-paper-airplane" class="w-5 h-5" />
           </UButton>
         </form>
         <p class="text-xs text-gray-400 mt-2 text-center">
-          <template v-if="mode === 'assistant'">
-            AI Assistant powered by FunctionGemma
-          </template>
-          <template v-else>
-            {{ modelName }} may produce inaccurate information
-          </template>
+          {{ modelName }} may produce inaccurate information
         </p>
       </div>
     </template>

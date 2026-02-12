@@ -23,6 +23,7 @@ type Route struct {
 	Upstream    string // e.g., "localhost:8080" or container IP
 	EnableSSL   bool
 	ForceHTTPS  bool
+	CORS        bool   // Add CORS headers (Access-Control-Allow-Origin: *)
 }
 
 // NewClient creates a new Caddy client
@@ -57,30 +58,80 @@ func (c *Client) AddRoute(route Route) error {
 	// Remove existing route with same ID first (ignore errors - route may not exist)
 	c.RemoveRoute(route.ID)
 
-	// Build the route configuration with proper headers for reverse proxy
+	// Build the reverse proxy handler with proper headers
+	proxyHandler := map[string]interface{}{
+		"handler": "reverse_proxy",
+		"upstreams": []map[string]string{
+			{"dial": route.Upstream},
+		},
+		"headers": map[string]interface{}{
+			"request": map[string]interface{}{
+				"set": map[string][]string{
+					"Host":              {"{http.request.host}"},
+					"X-Forwarded-Host":  {"{http.request.host}"},
+					"X-Forwarded-Proto": {"{http.request.scheme}"},
+					"X-Real-IP":         {"{http.request.remote.host}"},
+				},
+			},
+		},
+	}
+
+	// If CORS is enabled, add response headers to the reverse proxy
+	if route.CORS {
+		headers := proxyHandler["headers"].(map[string]interface{})
+		headers["response"] = map[string]interface{}{
+			"set": map[string][]string{
+				"Access-Control-Allow-Origin":  {"*"},
+				"Access-Control-Allow-Methods": {"GET, POST, PUT, DELETE, OPTIONS"},
+				"Access-Control-Allow-Headers": {"Content-Type, Authorization"},
+			},
+		}
+	}
+
+	var handlers []map[string]interface{}
+
+	// If CORS is enabled, add an OPTIONS preflight handler before the proxy
+	if route.CORS {
+		handlers = append(handlers, map[string]interface{}{
+			"handler": "subroute",
+			"routes": []map[string]interface{}{
+				{
+					"match": []map[string]interface{}{
+						{"method": []string{"OPTIONS"}},
+					},
+					"handle": []map[string]interface{}{
+						{
+							"handler": "headers",
+							"response": map[string]interface{}{
+								"set": map[string][]string{
+									"Access-Control-Allow-Origin":  {"*"},
+									"Access-Control-Allow-Methods": {"GET, POST, PUT, DELETE, OPTIONS"},
+									"Access-Control-Allow-Headers": {"Content-Type, Authorization"},
+								},
+							},
+						},
+						{
+							"handler":     "static_response",
+							"status_code": "204",
+						},
+					},
+				},
+				{
+					"handle": []map[string]interface{}{proxyHandler},
+				},
+			},
+		})
+	} else {
+		handlers = append(handlers, proxyHandler)
+	}
+
+	// Build the route configuration
 	routeConfig := map[string]interface{}{
 		"@id": route.ID,
 		"match": []map[string]interface{}{
 			{"host": []string{route.Domain}},
 		},
-		"handle": []map[string]interface{}{
-			{
-				"handler": "reverse_proxy",
-				"upstreams": []map[string]string{
-					{"dial": route.Upstream},
-				},
-				"headers": map[string]interface{}{
-					"request": map[string]interface{}{
-						"set": map[string][]string{
-							"Host":             {"{http.request.host}"},
-							"X-Forwarded-Host": {"{http.request.host}"},
-							"X-Forwarded-Proto": {"{http.request.scheme}"},
-							"X-Real-IP":        {"{http.request.remote.host}"},
-						},
-					},
-				},
-			},
-		},
+		"handle": handlers,
 	}
 
 	body, err := json.Marshal(routeConfig)

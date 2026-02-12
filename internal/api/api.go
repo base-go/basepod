@@ -4424,6 +4424,7 @@ func (s *Server) handleMLXRun(w http.ResponseWriter, r *http.Request) {
 			ID:       "mlx-llm",
 			Domain:   llmDomain,
 			Upstream: fmt.Sprintf("localhost:%d", status.Port),
+			CORS:     true,
 		}
 		if err := s.caddy.AddRoute(route); err != nil {
 			log.Printf("Warning: failed to add Caddy route for MLX: %v", err)
