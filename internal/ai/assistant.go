@@ -412,10 +412,58 @@ func (a *Assistant) isAssistantRunning() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// greetingResponse handles greetings and help requests without hitting the model.
+// FunctionGemma is a function-calling model, not a chatbot — it gives robotic text
+// responses to greetings. We handle those in code for a better UX.
+func greetingResponse(message string) string {
+	lower := strings.ToLower(strings.TrimSpace(message))
+
+	// Greetings
+	greetings := []string{"hi", "hello", "hey", "yo", "sup", "howdy", "hola", "greetings"}
+	for _, g := range greetings {
+		if lower == g || strings.HasPrefix(lower, g+" ") || strings.HasPrefix(lower, g+"!") || strings.HasPrefix(lower, g+",") {
+			return "Hey! I'm your Basepod assistant. Here's what I can help with:\n\n" +
+				"- **List apps** — see all your deployed applications\n" +
+				"- **Start/stop/restart** an app by name\n" +
+				"- **Deploy** an app to pull the latest image\n" +
+				"- **View logs** for any app\n" +
+				"- **Create** a new app from a container image\n" +
+				"- **Storage info** — check disk usage\n" +
+				"- **System info** — containers, images, MLX status\n" +
+				"- **List models** — see downloaded LLM models\n" +
+				"- **Prune images** — clean up unused container images\n\n" +
+				"Just ask in plain English!"
+		}
+	}
+
+	// Help requests
+	helpPhrases := []string{"help", "what can you do", "what do you do", "capabilities", "commands", "functions", "what are you"}
+	for _, h := range helpPhrases {
+		if lower == h || strings.Contains(lower, h) {
+			return "I can manage your Basepod apps. Try:\n\n" +
+				"- \"list my apps\"\n" +
+				"- \"start myapp\" / \"stop myapp\" / \"restart myapp\"\n" +
+				"- \"deploy myapp\"\n" +
+				"- \"show logs for myapp\"\n" +
+				"- \"create an app called myapp with image nginx\"\n" +
+				"- \"storage info\" or \"system info\"\n" +
+				"- \"list models\"\n" +
+				"- \"prune images\""
+		}
+	}
+
+	return ""
+}
+
 // Ask processes a natural language message and returns a result.
 // The caller parameter enforces role-based and per-app access control.
 // pageContext is the current page the user is on (e.g. "Apps", "Dashboard").
 func (a *Assistant) Ask(message string, caller *Caller, pageContext string) (*AskResult, error) {
+	// Handle greetings and help without calling the model
+	if greeting := greetingResponse(message); greeting != "" {
+		return &AskResult{Response: greeting}, nil
+	}
+
 	if err := a.EnsureRunning(); err != nil {
 		return nil, err
 	}

@@ -496,7 +496,7 @@ func (s *Service) runDownload(ctx context.Context, dp *DownloadProgress) {
 		dp.Message = "Creating Python environment..."
 		dp.mu.Unlock()
 
-		cmd := exec.CommandContext(ctx, "python3", "-m", "venv", venvPath)
+		cmd := exec.CommandContext(ctx, findPython(), "-m", "venv", venvPath)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			dp.mu.Lock()
 			dp.Status = "failed"
@@ -1467,4 +1467,23 @@ func GetModelCatalog() []ModelInfo {
 // Legacy compatibility - returns same catalog
 func ListModels() []ModelInfo {
 	return GetModelCatalog()
+}
+
+// findPython returns the best available Python 3 interpreter.
+// Prefers Homebrew Python 3.12+ over system Python 3.9 because
+// newer mlx-lm versions require Python 3.10+ and transformers 5.x.
+func findPython() string {
+	// Prefer Homebrew Python versions (newest first)
+	candidates := []string{
+		"/opt/homebrew/bin/python3.13",
+		"/opt/homebrew/bin/python3.12",
+		"/opt/homebrew/bin/python3.11",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Fall back to system python3
+	return "python3"
 }
