@@ -70,7 +70,8 @@ type Assistant struct {
 }
 
 // AssistantModelID is the FunctionGemma model used by the assistant.
-const AssistantModelID = "mlx-community/functiongemma-270m-it-4bit"
+// Must use bf16 (full precision) — 4-bit quantization destroys function calling accuracy.
+const AssistantModelID = "mlx-community/functiongemma-270m-it-bf16"
 
 // AssistantPort is the dedicated MLX port for the assistant (separate from chat).
 const AssistantPort = 11435
@@ -119,63 +120,6 @@ var assistantFunctions = []AssistantFunc{
 	{Name: "system_info", Description: "Show system info including version, containers, and images", Parameters: nil},
 	{Name: "list_models", Description: "List available LLM models", Parameters: nil},
 	{Name: "prune_images", Description: "Clean up unused container images to free space", Parameters: nil},
-}
-
-// buildPrompt constructs the FunctionGemma prompt using the model's native control tokens.
-// FunctionGemma requires: developer turn with <start_function_declaration> blocks,
-// user turn with the query, then model turn for the response.
-// See: https://ai.google.dev/gemma/docs/functiongemma/formatting-and-best-practices
-func (a *Assistant) buildPrompt(userMessage string, pageContext string) string {
-	var sb strings.Builder
-
-	// Developer turn: declare available functions
-	sb.WriteString("<start_of_turn>developer\n")
-	sb.WriteString("You are a model that can do function calling with the following functions\n")
-
-	for _, fn := range assistantFunctions {
-		sb.WriteString("<start_function_declaration>")
-		sb.WriteString(fmt.Sprintf("declaration:%s{description:<escape>%s<escape>,parameters:{", fn.Name, fn.Description))
-
-		if fn.Parameters != nil {
-			sb.WriteString("properties:{")
-			first := true
-			var required []string
-			for name, p := range fn.Parameters {
-				if !first {
-					sb.WriteString(",")
-				}
-				sb.WriteString(fmt.Sprintf("%s:{description:<escape>%s<escape>,type:<escape>%s<escape>}", name, p.Description, p.Type))
-				required = append(required, name)
-				first = false
-			}
-			sb.WriteString("},required:[")
-			for i, r := range required {
-				if i > 0 {
-					sb.WriteString(",")
-				}
-				sb.WriteString(fmt.Sprintf("<escape>%s<escape>", r))
-			}
-			sb.WriteString("],type:<escape>OBJECT<escape>")
-		}
-
-		sb.WriteString("}}")
-		sb.WriteString("<end_function_declaration>\n")
-	}
-
-	sb.WriteString("<end_of_turn>\n")
-
-	// User turn
-	sb.WriteString("<start_of_turn>user\n")
-	if pageContext != "" {
-		sb.WriteString(fmt.Sprintf("(I'm on the %s page) ", pageContext))
-	}
-	sb.WriteString(userMessage)
-	sb.WriteString("\n<end_of_turn>\n")
-
-	// Model turn (prompt for response)
-	sb.WriteString("<start_of_turn>model\n")
-
-	return sb.String()
 }
 
 // parseFunctionCall extracts a function call from the model response.
@@ -468,9 +412,8 @@ func (a *Assistant) Ask(message string, caller *Caller, pageContext string) (*As
 		return nil, err
 	}
 
-	// Build prompt and call FunctionGemma
-	prompt := a.buildPrompt(message, pageContext)
-	modelResponse, err := a.callMLX(prompt)
+	// Call FunctionGemma via chat/completions with tools
+	modelResponse, err := a.callMLX(message, pageContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get AI response: %w", err)
 	}
@@ -516,18 +459,61 @@ func (a *Assistant) Ask(message string, caller *Caller, pageContext string) (*As
 	}, nil
 }
 
-// callMLX sends a raw prompt to the FunctionGemma MLX server on the dedicated port.
-// Uses /v1/completions (not chat/completions) because we build the full prompt ourselves.
-func (a *Assistant) callMLX(prompt string) (string, error) {
-	url := fmt.Sprintf("http://localhost:%d/v1/completions", a.port)
+// buildToolDefs converts our assistantFunctions into OpenAI-style tool definitions
+// for the /v1/chat/completions API.
+func buildToolDefs() []map[string]any {
+	tools := make([]map[string]any, 0, len(assistantFunctions))
+	for _, fn := range assistantFunctions {
+		params := map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+		if fn.Parameters != nil {
+			props := map[string]any{}
+			required := []string{}
+			for name, p := range fn.Parameters {
+				props[name] = map[string]string{
+					"type":        p.Type,
+					"description": p.Description,
+				}
+				required = append(required, name)
+			}
+			params["properties"] = props
+			params["required"] = required
+		}
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        fn.Name,
+				"description": fn.Description,
+				"parameters":  params,
+			},
+		})
+	}
+	return tools
+}
+
+// callMLX sends a chat completion request to the FunctionGemma MLX server.
+// Uses /v1/chat/completions with tools so the chat template properly formats
+// function declarations with FunctionGemma's control tokens.
+// The developer message "You are a model that can do function calling with the
+// following functions" is the prompt-based trigger that activates function calling mode.
+func (a *Assistant) callMLX(message string, pageContext string) (string, error) {
+	url := fmt.Sprintf("http://localhost:%d/v1/chat/completions", a.port)
+
+	userMsg := message
+	if pageContext != "" {
+		userMsg = fmt.Sprintf("(I'm on the %s page) %s", pageContext, message)
+	}
 
 	reqBody := map[string]any{
-		"model":             AssistantModelID,
-		"prompt":            prompt,
-		"max_tokens":        256,
-		"temperature":       0.1,
-		"repetition_penalty": 1.2,
-		"stop":              []string{"<end_of_turn>", "<end_function_call>"},
+		"model": AssistantModelID,
+		"messages": []map[string]any{
+			{"role": "developer", "content": "You are a model that can do function calling with the following functions"},
+			{"role": "user", "content": userMsg},
+		},
+		"tools":      buildToolDefs(),
+		"max_tokens": 128,
 	}
 
 	data, _ := json.Marshal(reqBody)
@@ -557,7 +543,16 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 
 	var result struct {
 		Choices []struct {
-			Text string `json:"text"`
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -568,7 +563,18 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 		return "", fmt.Errorf("empty response from model")
 	}
 
-	return result.Choices[0].Text, nil
+	choice := result.Choices[0]
+
+	// If the model returned tool calls via the API, use those
+	if len(choice.Message.ToolCalls) > 0 {
+		tc := choice.Message.ToolCalls[0]
+		// Reconstruct as parseable format
+		return fmt.Sprintf("<start_function_call>call:%s{%s}<end_function_call>",
+			tc.Function.Name, tc.Function.Arguments), nil
+	}
+
+	// Return content (may contain function call tokens or plain text)
+	return choice.Message.Content, nil
 }
 
 // cleanResponse removes special tokens from output but preserves function call tokens for parsing.

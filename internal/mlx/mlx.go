@@ -1441,7 +1441,7 @@ func GetModelCatalog() []ModelInfo {
 		{ID: "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit", Name: "DeepSeek R1 Llama 8B", Size: "5GB", Category: "reasoning", Description: "Reasoning on Llama base"},
 
 		// === Agent / Tool Use Models ===
-		{ID: "mlx-community/functiongemma-270m-it-4bit", Name: "FunctionGemma 270M", Size: "0.15GB", Category: "agent", Description: "Google, function calling / tool use router"},
+		{ID: "mlx-community/functiongemma-270m-it-bf16", Name: "FunctionGemma 270M", Size: "0.54GB", Category: "agent", Description: "Google, function calling / tool use router (full precision)"},
 		{ID: "mlx-community/Orchestrator-8B-4bit", Name: "Orchestrator 8B", Size: "5GB", Category: "agent", Description: "Agent orchestration and planning"},
 
 		// === Embedding Models ===

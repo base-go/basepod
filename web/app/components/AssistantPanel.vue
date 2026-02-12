@@ -25,7 +25,7 @@ interface AssistantMessage {
   content: string
 }
 
-const ASSISTANT_MODEL_ID = 'mlx-community/functiongemma-270m-it-4bit'
+const ASSISTANT_MODEL_ID = 'mlx-community/functiongemma-270m-it-bf16'
 
 const messages = ref<AssistantMessage[]>([])
 const input = ref('')
