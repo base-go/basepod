@@ -105,11 +105,13 @@ const maxImages = 4
 const analysisMode = ref<'quick' | 'deep'>('quick')
 const lastImageMessageIndex = ref<number | null>(null) // Track last image message for "analyze deeper"
 
-// Assistant setup state
+// Model setup state (pull + run from chat page)
+const settingUpModel = ref(false)
+const modelSetupProgress = ref(0)
+const modelSetupStatus = ref('')
+const downloadingModelId = ref('')
 const ASSISTANT_MODEL_ID = 'mlx-community/functiongemma-270m-it-4bit'
-const settingUpAssistant = ref(false)
-const assistantSetupProgress = ref(0)
-const assistantSetupStatus = ref('')
+const DEFAULT_CHAT_MODEL = 'mlx-community/SmolLM3-3B-4bit'
 
 // Voice input state
 const isRecording = ref(false)
@@ -135,7 +137,15 @@ const currentModel = computed(() =>
 const isVisionModel = computed(() => currentModel.value?.category === 'vision')
 
 const hasWhisperModel = computed(() =>
-  mlxData.value?.models?.some(m => m.category === 'speech' && m.downloaded)
+  mlxData.value?.models?.some(m => m.category === 'speech' && m.downloaded && m.id.toLowerCase().includes('whisper'))
+)
+
+const hasTTSModel = computed(() =>
+  mlxData.value?.models?.some(m =>
+    m.category === 'speech' && m.downloaded &&
+    !m.id.toLowerCase().includes('whisper') &&
+    !m.id.toLowerCase().includes('asr')
+  )
 )
 
 // Active messages list based on mode
@@ -144,6 +154,10 @@ const activeMessages = computed(() =>
 )
 
 const hasActiveMessages = computed(() => activeMessages.value.length > 0)
+
+const hasDownloadedModel = computed(() =>
+  mlxData.value?.models?.some(m => m.downloaded) ?? false
+)
 
 const isAssistantModelReady = computed(() =>
   mlxData.value?.models?.some(m => m.id === ASSISTANT_MODEL_ID && m.downloaded) ?? false
@@ -552,96 +566,130 @@ function handleSend() {
   }
 }
 
-// Setup assistant: download FunctionGemma + auto-start
-async function setupAssistant() {
-  if (settingUpAssistant.value) return
+// Setup model: download + run from chat page (works for both chat and assistant)
+async function setupModel(modelId?: string) {
+  if (settingUpModel.value) return
 
-  settingUpAssistant.value = true
-  assistantSetupStatus.value = 'Starting download...'
-  assistantSetupProgress.value = 0
+  const targetModel = modelId || DEFAULT_CHAT_MODEL
+  const modelName = targetModel.split('/').pop() || targetModel
+
+  settingUpModel.value = true
+  downloadingModelId.value = targetModel
+  modelSetupStatus.value = 'Starting download...'
+  modelSetupProgress.value = 0
 
   try {
-    // Start pull
-    await $api('/mlx/pull', {
-      method: 'POST',
-      body: { model: ASSISTANT_MODEL_ID }
-    })
+    // Check if already downloaded
+    const alreadyDownloaded = mlxData.value?.models?.some(m => m.id === targetModel && m.downloaded)
 
-    assistantSetupStatus.value = 'Downloading FunctionGemma (150MB)...'
-
-    // Poll for progress
-    await new Promise<void>((resolve, reject) => {
-      const pollInterval = setInterval(async () => {
-        try {
-          const progress = await $api<{
-            status: string
-            progress: number
-            bytes_total: number
-            bytes_done: number
-            speed: number
-            eta: number
-            message: string
-          }>(`/mlx/pull/progress?model=${encodeURIComponent(ASSISTANT_MODEL_ID)}`)
-
-          if (progress) {
-            assistantSetupProgress.value = progress.progress || 0
-
-            if (progress.speed > 0) {
-              const speedMB = (progress.speed / 1024 / 1024).toFixed(1)
-              assistantSetupStatus.value = `Downloading... ${Math.round(progress.progress)}% (${speedMB} MB/s)`
-            }
-
-            if (progress.status === 'completed') {
-              clearInterval(pollInterval)
-              resolve()
-            } else if (progress.status === 'error' || progress.status === 'cancelled') {
-              clearInterval(pollInterval)
-              reject(new Error(progress.message || 'Download failed'))
-            }
-          }
-        } catch {
-          // Progress endpoint might not have data yet
-        }
-      }, 1000)
-
-      // Timeout after 10 minutes
-      setTimeout(() => {
-        clearInterval(pollInterval)
-        reject(new Error('Download timed out'))
-      }, 10 * 60 * 1000)
-    })
-
-    // Download complete, start the assistant via a warmup call
-    assistantSetupStatus.value = 'Starting assistant model...'
-    assistantSetupProgress.value = 100
-
-    await refreshStatus()
-
-    // Send a warmup message to trigger model auto-start
-    try {
-      await $api('/ai/ask', {
+    if (!alreadyDownloaded) {
+      // Start pull
+      await $api('/mlx/pull', {
         method: 'POST',
-        body: { message: 'hello' }
+        body: { model: targetModel }
       })
-    } catch {
-      // Warmup may timeout on first load, that's ok - model will start on next request
+
+      modelSetupStatus.value = `Downloading ${modelName}...`
+
+      // Poll for progress
+      await new Promise<void>((resolve, reject) => {
+        const pollInterval = setInterval(async () => {
+          try {
+            const progress = await $api<{
+              status: string
+              progress: number
+              bytes_total: number
+              bytes_done: number
+              speed: number
+              eta: number
+              message: string
+            }>(`/mlx/pull/progress?model=${encodeURIComponent(targetModel)}`)
+
+            if (progress) {
+              const pct = progress.bytes_total > 0
+                ? (progress.bytes_done / progress.bytes_total) * 100
+                : (progress.progress || 0)
+              modelSetupProgress.value = pct
+
+              const doneMB = (progress.bytes_done / 1024 / 1024).toFixed(1)
+              const totalMB = (progress.bytes_total / 1024 / 1024).toFixed(0)
+              if (progress.speed > 0) {
+                const speedMB = (progress.speed / 1024 / 1024).toFixed(1)
+                modelSetupStatus.value = `Downloading ${modelName}... ${doneMB}/${totalMB} MB (${speedMB} MB/s)`
+              } else {
+                modelSetupStatus.value = `Downloading ${modelName}... ${doneMB}/${totalMB} MB`
+              }
+
+              if (progress.status === 'completed') {
+                clearInterval(pollInterval)
+                resolve()
+              } else if (progress.status === 'error' || progress.status === 'cancelled') {
+                clearInterval(pollInterval)
+                reject(new Error(progress.message || 'Download failed'))
+              }
+            }
+          } catch {
+            // Progress endpoint might not have data yet
+          }
+        }, 1000)
+
+        // Timeout after 60 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          reject(new Error('Download timed out'))
+        }, 60 * 60 * 1000)
+      })
+    }
+
+    // Download complete (or already downloaded), start the model
+    modelSetupStatus.value = `Starting ${modelName}...`
+    modelSetupProgress.value = 100
+
+    if (targetModel === ASSISTANT_MODEL_ID) {
+      // Assistant model auto-starts on its dedicated port when first used
+      // Just send a warmup message to trigger it
+      try {
+        await $api('/ai/ask', { method: 'POST', body: { message: 'hello' } })
+      } catch {
+        // First call may be slow, that's ok
+      }
+    } else {
+      // Chat model runs on the main MLX port
+      await $api('/mlx/run', {
+        method: 'POST',
+        body: { model: targetModel }
+      })
     }
 
     await refreshStatus()
-    assistantSetupStatus.value = ''
+    modelSetupStatus.value = ''
     toast.add({
-      title: 'Assistant ready',
-      description: 'FunctionGemma is ready to use',
+      title: 'Model ready',
+      description: `${modelName} is running`,
       color: 'success'
     })
   } catch (error: any) {
     const errorMsg = error?.message || error?.data?.error || 'Setup failed'
     toast.add({ title: 'Setup failed', description: errorMsg, color: 'error' })
-    assistantSetupStatus.value = ''
+    modelSetupStatus.value = ''
   } finally {
-    settingUpAssistant.value = false
-    assistantSetupProgress.value = 0
+    settingUpModel.value = false
+    modelSetupProgress.value = 0
   }
+}
+
+// Cancel download
+async function cancelDownload() {
+  if (!downloadingModelId.value) return
+  try {
+    await $api('/mlx/pull/cancel', { method: 'POST', body: { model: downloadingModelId.value } })
+  } catch {
+    // Ignore cancel errors
+  }
+  settingUpModel.value = false
+  modelSetupProgress.value = 0
+  modelSetupStatus.value = ''
+  downloadingModelId.value = ''
 }
 
 // Clear chat
@@ -709,9 +757,15 @@ function getMessageImages(content: string | MessageContent[]): string[] {
     .map(c => c.image_url.url)
 }
 
-// Setup paste listener (no auto-refresh - use manual refresh button)
+// Read mode from query parameter
+const route = useRoute()
+
+// Setup paste listener and query param handling
 onMounted(() => {
   document.addEventListener('paste', handlePaste)
+  if (route.query.mode === 'assistant') {
+    mode.value = 'assistant'
+  }
 })
 onUnmounted(() => {
   if (loadingTimer) clearInterval(loadingTimer)
@@ -725,6 +779,30 @@ async function manualRefresh() {
   refreshing.value = true
   await refreshStatus()
   refreshing.value = false
+}
+
+// TTS playback
+const speakingIdx = ref<number | null>(null)
+async function speakText(text: string, idx: number) {
+  if (speakingIdx.value === idx) return // Already playing this one
+  speakingIdx.value = idx
+  try {
+    const response = await fetch('/api/mlx/synthesize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      credentials: 'include'
+    })
+    if (!response.ok) throw new Error('TTS failed')
+    const blob = await response.blob()
+    const audio = new Audio(URL.createObjectURL(blob))
+    audio.onended = () => { speakingIdx.value = null }
+    audio.onerror = () => { speakingIdx.value = null }
+    audio.play()
+  } catch {
+    toast.add({ title: 'Error', description: 'Text-to-speech failed', color: 'error' })
+    speakingIdx.value = null
+  }
 }
 </script>
 
@@ -821,15 +899,41 @@ async function manualRefresh() {
       </div>
     </div>
 
-    <!-- Not running state (only for chat mode) -->
-    <div v-if="!mlxData?.running && mode === 'chat'" class="flex-1 flex items-center justify-center">
+    <!-- Chat mode: not running state -->
+    <div v-if="mode === 'chat' && !mlxData?.running && !settingUpModel" class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <UIcon name="i-heroicons-cpu-chip" class="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
         <h3 class="text-lg font-medium mb-2">No Model Running</h3>
         <p class="text-gray-500 mb-4">Start a model to begin chatting</p>
-        <NuxtLink to="/llms">
-          <UButton>Go to LLMs</UButton>
-        </NuxtLink>
+        <div class="flex flex-col items-center gap-3">
+          <UButton size="lg" @click="setupModel()">
+            <UIcon name="i-heroicons-arrow-down-tray" class="w-4 h-4 mr-2" />
+            {{ hasDownloadedModel ? 'Start Model' : 'Download & Start SmolLM3 3B' }}
+            <span v-if="!hasDownloadedModel" class="text-xs opacity-70 ml-1">(2GB)</span>
+          </UButton>
+          <NuxtLink to="/llms" class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+            or choose a different model
+          </NuxtLink>
+        </div>
+      </div>
+    </div>
+
+    <!-- Setting up model (download progress) -->
+    <div v-else-if="settingUpModel" class="flex-1 flex items-center justify-center">
+      <div class="text-center">
+        <UIcon name="i-heroicons-arrow-down-tray" class="w-12 h-12 mx-auto mb-4 text-primary-500 animate-pulse" />
+        <h3 class="text-lg font-medium mb-2">Setting up model</h3>
+        <p class="text-sm text-gray-500 mb-3">{{ modelSetupStatus }}</p>
+        <div class="w-64 mx-auto">
+          <div class="h-2 bg-(--ui-bg-muted) rounded-full overflow-hidden">
+            <div
+              class="h-full bg-primary-500 rounded-full transition-all duration-500"
+              :style="{ width: `${Math.max(modelSetupProgress, 2)}%` }"
+            />
+          </div>
+          <p class="text-xs text-gray-400 mt-1">{{ modelSetupProgress.toFixed(1) }}%</p>
+        </div>
+        <UButton variant="ghost" color="error" size="sm" class="mt-3" @click="cancelDownload">Cancel</UButton>
       </div>
     </div>
 
@@ -843,26 +947,27 @@ async function manualRefresh() {
             <template v-if="mode === 'assistant'">
               <p class="text-lg">AI Assistant</p>
               <!-- Setup needed: model not downloaded -->
-              <template v-if="!isAssistantModelReady && !settingUpAssistant">
+              <template v-if="!isAssistantModelReady && !settingUpModel">
                 <p class="text-sm mt-1 text-gray-500">FunctionGemma is required for the assistant</p>
-                <UButton class="mt-4" size="lg" @click="setupAssistant">
+                <UButton class="mt-4" size="lg" @click="setupModel(ASSISTANT_MODEL_ID)">
                   <UIcon name="i-heroicons-arrow-down-tray" class="w-4 h-4 mr-2" />
                   Setup Assistant
                   <span class="text-xs opacity-70 ml-1">(150MB)</span>
                 </UButton>
               </template>
               <!-- Setting up: show progress -->
-              <template v-else-if="settingUpAssistant">
-                <p class="text-sm mt-2 text-gray-500">{{ assistantSetupStatus }}</p>
+              <template v-else-if="settingUpModel">
+                <p class="text-sm mt-2 text-gray-500">{{ modelSetupStatus }}</p>
                 <div class="mt-3 w-64 mx-auto">
                   <div class="h-2 bg-(--ui-bg-muted) rounded-full overflow-hidden">
                     <div
-                      class="h-full bg-primary-500 rounded-full transition-all duration-300"
-                      :style="{ width: `${assistantSetupProgress}%` }"
+                      class="h-full bg-primary-500 rounded-full transition-all duration-500"
+                      :style="{ width: `${Math.max(modelSetupProgress, 2)}%` }"
                     />
                   </div>
-                  <p class="text-xs text-gray-400 mt-1">{{ Math.round(assistantSetupProgress) }}%</p>
+                  <p class="text-xs text-gray-400 mt-1">{{ modelSetupProgress.toFixed(1) }}%</p>
                 </div>
+                <UButton variant="ghost" color="error" size="sm" class="mt-3" @click="cancelDownload">Cancel</UButton>
               </template>
               <!-- Ready: show quick hints -->
               <template v-else>
@@ -911,6 +1016,19 @@ async function manualRefresh() {
             </div>
             <!-- Text content -->
             <p class="px-4 py-3 whitespace-pre-wrap">{{ getMessageText(msg.content) }}</p>
+            <!-- TTS speaker button for assistant messages -->
+            <div v-if="hasTTSModel && msg.role === 'assistant'" class="px-4 pb-2 flex justify-end">
+              <button
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                :disabled="speakingIdx === idx"
+                @click="speakText(getMessageText(msg.content), idx)"
+              >
+                <UIcon
+                  :name="speakingIdx === idx ? 'i-heroicons-speaker-wave' : 'i-heroicons-speaker-wave'"
+                  :class="['w-4 h-4', speakingIdx === idx ? 'animate-pulse text-primary-500' : '']"
+                />
+              </button>
+            </div>
           </div>
         </div>
 

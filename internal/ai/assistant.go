@@ -1,5 +1,6 @@
 // Package ai provides the AI assistant engine for basepod.
-// It uses FunctionGemma to parse natural language into basepod operations.
+// It uses FunctionGemma on a dedicated port to parse natural language into basepod operations.
+// The assistant model runs independently from the user's chat model.
 package ai
 
 import (
@@ -36,21 +37,21 @@ type ParamDef struct {
 
 // FunctionCall represents a parsed function call from the model.
 type FunctionCall struct {
-	Name       string                 `json:"name"`
-	Parameters map[string]interface{} `json:"parameters"`
+	Name       string         `json:"name"`
+	Parameters map[string]any `json:"parameters"`
 }
 
 // AskResult is the response from the assistant.
 type AskResult struct {
-	Response string       `json:"response"`
-	Action   *ActionInfo  `json:"action,omitempty"`
+	Response string      `json:"response"`
+	Action   *ActionInfo `json:"action,omitempty"`
 }
 
 // ActionInfo describes what action was executed.
 type ActionInfo struct {
-	Function   string                 `json:"function"`
-	Parameters map[string]interface{} `json:"parameters"`
-	Success    bool                   `json:"success"`
+	Function   string         `json:"function"`
+	Parameters map[string]any `json:"parameters"`
+	Success    bool           `json:"success"`
 }
 
 // Caller represents the user making a request, used for access control.
@@ -64,13 +65,13 @@ type Assistant struct {
 	storage *storage.Storage
 	podman  podman.Client
 	client  *http.Client
-	port    int // MLX assistant port
+	port    int
 }
 
-// The FunctionGemma model ID used for the assistant.
+// AssistantModelID is the FunctionGemma model used by the assistant.
 const AssistantModelID = "mlx-community/functiongemma-270m-it-4bit"
 
-// Default assistant MLX port (separate from primary chat model).
+// AssistantPort is the dedicated MLX port for the assistant (separate from chat).
 const AssistantPort = 11435
 
 // New creates a new Assistant instance.
@@ -119,48 +120,38 @@ var assistantFunctions = []AssistantFunc{
 	{Name: "prune_images", Description: "Clean up unused container images to free space", Parameters: nil},
 }
 
-// buildPrompt constructs the FunctionGemma prompt with function declarations.
+// buildPrompt constructs the FunctionGemma prompt.
+// FunctionGemma expects function declarations as JSON objects listed in the user turn.
 func (a *Assistant) buildPrompt(userMessage string) string {
 	var sb strings.Builder
 
 	sb.WriteString("<start_of_turn>user\n")
+	sb.WriteString("You are a helpful assistant with access to the following functions:\n\n")
 
-	// Add function declarations
 	for _, fn := range assistantFunctions {
-		sb.WriteString("<start_function_declaration>\n")
-
-		params := map[string]interface{}{}
-		required := []string{}
+		decl := map[string]any{
+			"name":        fn.Name,
+			"description": fn.Description,
+		}
 		if fn.Parameters != nil {
-			props := map[string]map[string]string{}
+			params := map[string]any{}
 			for name, p := range fn.Parameters {
-				props[name] = map[string]string{
+				params[name] = map[string]string{
 					"type":        p.Type,
 					"description": p.Description,
 				}
-				required = append(required, name)
 			}
-			params["type"] = "object"
-			params["properties"] = props
-			params["required"] = required
-		} else {
-			params["type"] = "object"
-			params["properties"] = map[string]interface{}{}
-		}
-
-		decl := map[string]interface{}{
-			"name":        fn.Name,
-			"description": fn.Description,
-			"parameters":  params,
+			decl["parameters"] = params
 		}
 		data, _ := json.Marshal(decl)
 		sb.Write(data)
-		sb.WriteString("\n<end_function_declaration>\n")
+		sb.WriteString("\n")
 	}
 
-	sb.WriteString("\n")
+	sb.WriteString("\nTo call a function, respond with JSON: {\"name\": \"function_name\", \"arguments\": {\"param\": \"value\"}}\n")
+	sb.WriteString("If no function is needed, respond with plain text.\n\n")
 	sb.WriteString(userMessage)
-	sb.WriteString("\n<end_of_turn>\n")
+	sb.WriteString("<end_of_turn>\n")
 	sb.WriteString("<start_of_turn>model\n")
 
 	return sb.String()
@@ -168,32 +159,76 @@ func (a *Assistant) buildPrompt(userMessage string) string {
 
 // parseFunctionCall extracts a function call from the model response.
 func parseFunctionCall(response string) (*FunctionCall, string) {
-	startTag := "<start_function_call>"
-	endTag := "<end_function_call>"
+	response = strings.TrimSpace(response)
 
-	startIdx := strings.Index(response, startTag)
+	// Find a JSON object in the response
+	startIdx := strings.Index(response, "{")
 	if startIdx == -1 {
 		return nil, response
 	}
 
-	endIdx := strings.Index(response, endTag)
+	// Find matching closing brace
+	depth := 0
+	endIdx := -1
+	for i := startIdx; i < len(response); i++ {
+		switch response[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				endIdx = i + 1
+			}
+		}
+		if endIdx != -1 {
+			break
+		}
+	}
+
 	if endIdx == -1 {
 		return nil, response
 	}
 
-	jsonStr := strings.TrimSpace(response[startIdx+len(startTag) : endIdx])
+	jsonStr := response[startIdx:endIdx]
 
-	var call FunctionCall
-	if err := json.Unmarshal([]byte(jsonStr), &call); err != nil {
+	// Try parsing as FunctionCall (name + arguments or parameters)
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
 		return nil, response
 	}
 
-	// Extract any text before the function call
+	name, _ := raw["name"].(string)
+	if name == "" {
+		return nil, response
+	}
+
+	// FunctionGemma uses "arguments", normalize to Parameters
+	params, _ := raw["arguments"].(map[string]any)
+	if params == nil {
+		params, _ = raw["parameters"].(map[string]any)
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+
+	// Validate it's a known function
+	known := false
+	for _, fn := range assistantFunctions {
+		if fn.Name == name {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, response
+	}
+
+	call := &FunctionCall{Name: name, Parameters: params}
 	textBefore := strings.TrimSpace(response[:startIdx])
-	return &call, textBefore
+	return call, textBefore
 }
 
-// EnsureRunning makes sure the assistant model is downloaded and running.
+// EnsureRunning makes sure FunctionGemma is downloaded and running on its dedicated port.
 func (a *Assistant) EnsureRunning() error {
 	svc := mlx.GetService()
 
@@ -211,12 +246,11 @@ func (a *Assistant) EnsureRunning() error {
 		return fmt.Errorf("assistant model not downloaded. Download it first: the model %s (150MB) is required", AssistantModelID)
 	}
 
-	// Check if assistant is already running on its port
+	// Check if assistant is already running
 	if a.isAssistantRunning() {
 		return nil
 	}
 
-	// Start the assistant model on the dedicated port
 	return svc.RunOnPort(AssistantModelID, a.port)
 }
 
@@ -242,26 +276,25 @@ func (a *Assistant) Ask(message string, caller *Caller) (*AskResult, error) {
 		return nil, err
 	}
 
-	// Build the prompt
+	// Build prompt and call FunctionGemma
 	prompt := a.buildPrompt(message)
-
-	// Call the MLX server
 	modelResponse, err := a.callMLX(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get AI response: %w", err)
 	}
 
+	// Clean up special tokens from response
+	modelResponse = cleanResponse(modelResponse)
+
 	// Parse the response for function calls
 	call, textResponse := parseFunctionCall(modelResponse)
 
 	if call == nil {
-		// No function call — return text as-is (conversational response)
 		resp := textResponse
 		if resp == "" {
 			resp = modelResponse
 		}
-		// Clean up any trailing special tokens
-		resp = cleanResponse(resp)
+		resp = strings.TrimSpace(resp)
 		if resp == "" {
 			resp = "I can help you manage your apps, check system status, view logs, and more. Try asking me to list your apps or check storage usage."
 		}
@@ -291,17 +324,18 @@ func (a *Assistant) Ask(message string, caller *Caller) (*AskResult, error) {
 	}, nil
 }
 
-// callMLX sends a prompt to the assistant's MLX server and returns the response.
+// callMLX sends a raw prompt to the FunctionGemma MLX server on the dedicated port.
+// Uses /v1/completions (not chat/completions) because we build the full prompt ourselves.
 func (a *Assistant) callMLX(prompt string) (string, error) {
-	url := fmt.Sprintf("http://localhost:%d/v1/chat/completions", a.port)
+	url := fmt.Sprintf("http://localhost:%d/v1/completions", a.port)
 
-	reqBody := map[string]interface{}{
-		"model": AssistantModelID,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"max_tokens":  512,
-		"temperature": 0.1,
+	reqBody := map[string]any{
+		"model":             AssistantModelID,
+		"prompt":            prompt,
+		"max_tokens":        256,
+		"temperature":       0.1,
+		"repetition_penalty": 1.2,
+		"stop":              []string{"<end_of_turn>"},
 	}
 
 	data, _ := json.Marshal(reqBody)
@@ -331,9 +365,7 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 
 	var result struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
+			Text string `json:"text"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -344,7 +376,14 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 		return "", fmt.Errorf("empty response from model")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	return result.Choices[0].Text, nil
+}
+
+// cleanResponse removes special tokens from output.
+func cleanResponse(s string) string {
+	s = strings.ReplaceAll(s, "<end_of_turn>", "")
+	s = strings.ReplaceAll(s, "<start_of_turn>", "")
+	return strings.TrimSpace(s)
 }
 
 // executeFunction runs a parsed function call against basepod internals.
@@ -916,13 +955,3 @@ func stripPodmanHeaders(data []byte) string {
 	return sb.String()
 }
 
-// cleanResponse removes FunctionGemma special tokens from text output.
-func cleanResponse(s string) string {
-	s = strings.ReplaceAll(s, "<end_of_turn>", "")
-	s = strings.ReplaceAll(s, "<start_of_turn>", "")
-	s = strings.ReplaceAll(s, "<start_function_call>", "")
-	s = strings.ReplaceAll(s, "<end_function_call>", "")
-	s = strings.ReplaceAll(s, "<start_function_declaration>", "")
-	s = strings.ReplaceAll(s, "<end_function_declaration>", "")
-	return strings.TrimSpace(s)
-}

@@ -222,6 +222,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.handleMLXRun))
 	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.handleMLXStop))
 	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.handleMLXTranscribe))
+	s.router.HandleFunc("POST /api/mlx/synthesize", s.requireAuth(s.handleMLXSynthesize))
 	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
 
 	// Chat messages (auth required)
@@ -4476,18 +4477,18 @@ func (s *Server) handleMLXTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	svc := mlx.GetService()
 
-	// Find a downloaded Whisper model
+	// Find a downloaded Whisper model (must contain "whisper" in the ID)
 	models := svc.ListModels()
 	var whisperModel string
 	for _, m := range models {
-		if m.Category == "speech" && !m.DownloadedAt.IsZero() {
+		if m.Category == "speech" && !m.DownloadedAt.IsZero() && strings.Contains(strings.ToLower(m.ID), "whisper") {
 			whisperModel = m.ID
 			break
 		}
 	}
 
 	if whisperModel == "" {
-		errorResponse(w, http.StatusBadRequest, "No Whisper model downloaded. Please download a Whisper model first.")
+		errorResponse(w, http.StatusBadRequest, "No Whisper model downloaded. Download a Whisper model from the LLMs page for voice transcription.")
 		return
 	}
 
@@ -4516,6 +4517,50 @@ func (s *Server) handleMLXTranscribe(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"text": text,
 	})
+}
+
+// handleMLXSynthesize generates speech audio from text using a TTS model
+func (s *Server) handleMLXSynthesize(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if req.Text == "" {
+		errorResponse(w, http.StatusBadRequest, "Text is required")
+		return
+	}
+
+	svc := mlx.GetService()
+
+	// Find a downloaded TTS model (speech models that are NOT whisper/ASR)
+	models := svc.ListModels()
+	var ttsModel string
+	for _, m := range models {
+		if m.Category == "speech" && !m.DownloadedAt.IsZero() &&
+			!strings.Contains(strings.ToLower(m.ID), "whisper") &&
+			!strings.Contains(strings.ToLower(m.ID), "asr") {
+			ttsModel = m.ID
+			break
+		}
+	}
+
+	if ttsModel == "" {
+		errorResponse(w, http.StatusBadRequest, "No TTS model downloaded. Download a TTS model (e.g. Kokoro 82M) from the LLMs page.")
+		return
+	}
+
+	audioData, err := svc.Synthesize(req.Text, ttsModel)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "TTS failed: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(audioData)))
+	w.Write(audioData)
 }
 
 // handleMLXDeleteModel removes a downloaded model

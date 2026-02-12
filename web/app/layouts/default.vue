@@ -54,6 +54,11 @@ const navigation = [
     label: 'Chat',
     icon: 'i-heroicons-chat-bubble-left-right',
     to: '/chat'
+  },
+  {
+    label: 'Assistant',
+    icon: 'i-heroicons-sparkles',
+    to: '/chat?mode=assistant'
   }
 ]
 

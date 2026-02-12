@@ -810,9 +810,19 @@ func (s *Service) Transcribe(audioPath, modelID string) (string, error) {
 	}
 
 	// Use mlx-whisper for transcription
+	// Patch: monkey-patch ModelDimensions to ignore unknown kwargs (e.g. acoustic_tokenizer_config)
 	transcribeScript := fmt.Sprintf(`
 import mlx_whisper
+import mlx_whisper.load_models as lm
 import json
+
+# Patch ModelDimensions to accept unknown kwargs from newer model configs
+_orig_init = lm.whisper.ModelDimensions.__init__
+def _patched_init(self, **kwargs):
+    known = _orig_init.__code__.co_varnames[1:_orig_init.__code__.co_argcount]
+    filtered = {k: v for k, v in kwargs.items() if k in known}
+    _orig_init(self, **filtered)
+lm.whisper.ModelDimensions.__init__ = _patched_init
 
 result = mlx_whisper.transcribe(
     %q,
@@ -835,6 +845,55 @@ print(result.get("text", ""))
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+// Synthesize generates speech audio from text using a TTS model
+func (s *Service) Synthesize(text, modelID string) ([]byte, error) {
+	venvPath := filepath.Join(s.baseDir, "venv")
+	pythonPath := filepath.Join(venvPath, "bin", "python")
+
+	// Check if mlx-audio is installed, install if not
+	checkCmd := exec.Command(pythonPath, "-c", "import mlx_audio")
+	if err := checkCmd.Run(); err != nil {
+		installCmd := exec.Command(filepath.Join(venvPath, "bin", "pip"), "install", "mlx-audio")
+		installCmd.Env = append(os.Environ(), "HF_HOME="+filepath.Join(s.baseDir, "cache"))
+		if output, err := installCmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("failed to install mlx-audio: %s", string(output))
+		}
+	}
+
+	// Generate speech to temp WAV file
+	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("tts-output-%d.wav", time.Now().UnixNano()))
+
+	ttsScript := fmt.Sprintf(`
+import numpy as np
+from mlx_audio.tts.utils import load_model
+import soundfile as sf
+
+model = load_model(%q)
+for result in model.generate(text=%q, voice="af_heart", speed=1.0, lang_code="a"):
+    audio = np.array(result.audio)
+    sf.write(%q, audio, 24000)
+    break
+`, modelID, text, outFile)
+
+	cmd := exec.Command(pythonPath, "-c", ttsScript)
+	cmd.Env = append(os.Environ(),
+		"HF_HOME="+filepath.Join(s.baseDir, "cache"),
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("TTS failed: %s", string(output))
+	}
+
+	data, err := os.ReadFile(outFile)
+	os.Remove(outFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read TTS output: %w", err)
+	}
+
+	return data, nil
 }
 
 // Run starts the MLX server with the specified model
