@@ -568,9 +568,12 @@ func (a *Assistant) callMLX(message string, pageContext string) (string, error) 
 	// If the model returned tool calls via the API, use those
 	if len(choice.Message.ToolCalls) > 0 {
 		tc := choice.Message.ToolCalls[0]
-		// Reconstruct as parseable format
-		return fmt.Sprintf("<start_function_call>call:%s{%s}<end_function_call>",
-			tc.Function.Name, tc.Function.Arguments), nil
+		// Return as JSON function call format for parseFunctionCallJSON
+		args := tc.Function.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		return fmt.Sprintf(`{"name":"%s","arguments":%s}`, tc.Function.Name, args), nil
 	}
 
 	// Return content (may contain function call tokens or plain text)
@@ -924,7 +927,11 @@ func (a *Assistant) execGetLogs(params map[string]any, caller *Caller) (string, 
 }
 
 func (a *Assistant) execCreateApp(params map[string]any) (string, error) {
-	name, err := getStringParam(params, "name")
+	rawName, err := getStringParam(params, "name")
+	if err != nil {
+		return "", err
+	}
+	name, err := sanitizeAppName(rawName)
 	if err != nil {
 		return "", err
 	}
@@ -998,10 +1005,7 @@ func (a *Assistant) execStorageInfo() (string, error) {
 
 	// Build a visual usage bar
 	barLen := 20
-	filled := int(du.Percent / 100 * float64(barLen))
-	if filled > barLen {
-		filled = barLen
-	}
+	filled := min(int(du.Percent/100*float64(barLen)), barLen)
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barLen-filled)
 
 	var sb strings.Builder
@@ -1131,6 +1135,20 @@ func (a *Assistant) execPruneImages() (string, error) {
 }
 
 // --- Helpers ---
+
+// sanitizeAppName ensures app names are safe (alphanumeric, hyphens, underscores only).
+func sanitizeAppName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("app name cannot be empty")
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return "", fmt.Errorf("invalid app name '%s': only letters, numbers, hyphens, and underscores allowed", name)
+		}
+	}
+	return strings.ToLower(name), nil
+}
 
 func getStringParam(params map[string]any, key string) (string, error) {
 	v, ok := params[key]
