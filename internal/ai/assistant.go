@@ -121,57 +121,114 @@ var assistantFunctions = []AssistantFunc{
 	{Name: "prune_images", Description: "Clean up unused container images to free space", Parameters: nil},
 }
 
-// buildPrompt constructs the FunctionGemma prompt.
-// FunctionGemma expects function declarations as JSON objects listed in the user turn.
+// buildPrompt constructs the FunctionGemma prompt using the model's native control tokens.
+// FunctionGemma requires: developer turn with <start_function_declaration> blocks,
+// user turn with the query, then model turn for the response.
+// See: https://ai.google.dev/gemma/docs/functiongemma/formatting-and-best-practices
 func (a *Assistant) buildPrompt(userMessage string, pageContext string) string {
 	var sb strings.Builder
 
-	sb.WriteString("<start_of_turn>user\n")
-	sb.WriteString("You are a helpful assistant with access to the following functions:\n\n")
+	// Developer turn: declare available functions
+	sb.WriteString("<start_of_turn>developer\n")
+	sb.WriteString("You are a model that can do function calling with the following functions\n")
 
 	for _, fn := range assistantFunctions {
-		decl := map[string]any{
-			"name":        fn.Name,
-			"description": fn.Description,
-		}
+		sb.WriteString("<start_function_declaration>")
+		sb.WriteString(fmt.Sprintf("declaration:%s{description:<escape>%s<escape>,parameters:{", fn.Name, fn.Description))
+
 		if fn.Parameters != nil {
-			params := map[string]any{}
+			sb.WriteString("properties:{")
+			first := true
+			var required []string
 			for name, p := range fn.Parameters {
-				params[name] = map[string]string{
-					"type":        p.Type,
-					"description": p.Description,
+				if !first {
+					sb.WriteString(",")
 				}
+				sb.WriteString(fmt.Sprintf("%s:{description:<escape>%s<escape>,type:<escape>%s<escape>}", name, p.Description, p.Type))
+				required = append(required, name)
+				first = false
 			}
-			decl["parameters"] = params
+			sb.WriteString("},required:[")
+			for i, r := range required {
+				if i > 0 {
+					sb.WriteString(",")
+				}
+				sb.WriteString(fmt.Sprintf("<escape>%s<escape>", r))
+			}
+			sb.WriteString("],type:<escape>OBJECT<escape>")
 		}
-		data, _ := json.Marshal(decl)
-		sb.Write(data)
-		sb.WriteString("\n")
+
+		sb.WriteString("}}")
+		sb.WriteString("<end_function_declaration>\n")
 	}
 
-	sb.WriteString("\nTo call a function, respond with JSON: {\"name\": \"function_name\", \"arguments\": {\"param\": \"value\"}}\n")
-	sb.WriteString("If no function is needed, respond with plain text.\n\n")
+	sb.WriteString("<end_of_turn>\n")
+
+	// User turn
+	sb.WriteString("<start_of_turn>user\n")
 	if pageContext != "" {
-		sb.WriteString(fmt.Sprintf("The user is currently on the %s page.\n\n", pageContext))
+		sb.WriteString(fmt.Sprintf("(I'm on the %s page) ", pageContext))
 	}
 	sb.WriteString(userMessage)
-	sb.WriteString("<end_of_turn>\n")
+	sb.WriteString("\n<end_of_turn>\n")
+
+	// Model turn (prompt for response)
 	sb.WriteString("<start_of_turn>model\n")
 
 	return sb.String()
 }
 
 // parseFunctionCall extracts a function call from the model response.
+// FunctionGemma outputs: <start_function_call>call:FUNC_NAME{key:<escape>value<escape>}<end_function_call>
+// Falls back to JSON parsing if native format not found.
 func parseFunctionCall(response string) (*FunctionCall, string) {
 	response = strings.TrimSpace(response)
 
-	// Find a JSON object in the response
+	// Try FunctionGemma native format first
+	startTag := "<start_function_call>"
+	endTag := "<end_function_call>"
+
+	startIdx := strings.Index(response, startTag)
+	endIdx := strings.Index(response, endTag)
+
+	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+		callStr := strings.TrimSpace(response[startIdx+len(startTag) : endIdx])
+
+		// Parse "call:FUNC_NAME{param:<escape>value<escape>,...}"
+		if strings.HasPrefix(callStr, "call:") {
+			callStr = callStr[5:] // Remove "call:"
+
+			braceIdx := strings.Index(callStr, "{")
+			if braceIdx != -1 {
+				funcName := callStr[:braceIdx]
+				paramsStr := callStr[braceIdx+1:]
+
+				// Remove trailing }
+				if strings.HasSuffix(paramsStr, "}") {
+					paramsStr = paramsStr[:len(paramsStr)-1]
+				}
+
+				// Validate function name
+				if isKnownFunction(funcName) {
+					params := parseFunctionParams(paramsStr)
+					textBefore := strings.TrimSpace(response[:startIdx])
+					return &FunctionCall{Name: funcName, Parameters: params}, textBefore
+				}
+			}
+		}
+	}
+
+	// Fallback: try JSON format {"name": "...", "arguments": {...}}
+	return parseFunctionCallJSON(response)
+}
+
+// parseFunctionCallJSON is a fallback parser for JSON-formatted function calls.
+func parseFunctionCallJSON(response string) (*FunctionCall, string) {
 	startIdx := strings.Index(response, "{")
 	if startIdx == -1 {
 		return nil, response
 	}
 
-	// Find matching closing brace
 	depth := 0
 	endIdx := -1
 	for i := startIdx; i < len(response); i++ {
@@ -193,11 +250,8 @@ func parseFunctionCall(response string) (*FunctionCall, string) {
 		return nil, response
 	}
 
-	jsonStr := response[startIdx:endIdx]
-
-	// Try parsing as FunctionCall (name + arguments or parameters)
 	var raw map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+	if err := json.Unmarshal([]byte(response[startIdx:endIdx]), &raw); err != nil {
 		return nil, response
 	}
 
@@ -206,7 +260,6 @@ func parseFunctionCall(response string) (*FunctionCall, string) {
 		return nil, response
 	}
 
-	// FunctionGemma uses "arguments", normalize to Parameters
 	params, _ := raw["arguments"].(map[string]any)
 	if params == nil {
 		params, _ = raw["parameters"].(map[string]any)
@@ -215,21 +268,70 @@ func parseFunctionCall(response string) (*FunctionCall, string) {
 		params = map[string]any{}
 	}
 
-	// Validate it's a known function
-	known := false
-	for _, fn := range assistantFunctions {
-		if fn.Name == name {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if !isKnownFunction(name) {
 		return nil, response
 	}
 
-	call := &FunctionCall{Name: name, Parameters: params}
 	textBefore := strings.TrimSpace(response[:startIdx])
-	return call, textBefore
+	return &FunctionCall{Name: name, Parameters: params}, textBefore
+}
+
+// parseFunctionParams parses FunctionGemma-style parameters: key:<escape>value<escape>,key2:<escape>value2<escape>
+func parseFunctionParams(s string) map[string]any {
+	params := map[string]any{}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return params
+	}
+
+	// Split by comma but respect <escape> boundaries
+	var parts []string
+	var current strings.Builder
+	inEscape := false
+
+	for i := 0; i < len(s); i++ {
+		if strings.HasPrefix(s[i:], "<escape>") {
+			inEscape = !inEscape
+			current.WriteString("<escape>")
+			i += len("<escape>") - 1
+			continue
+		}
+		if s[i] == ',' && !inEscape {
+			parts = append(parts, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteByte(s[i])
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		colonIdx := strings.Index(part, ":")
+		if colonIdx == -1 {
+			continue
+		}
+		key := strings.TrimSpace(part[:colonIdx])
+		value := strings.TrimSpace(part[colonIdx+1:])
+		// Remove <escape> tags
+		value = strings.ReplaceAll(value, "<escape>", "")
+		value = strings.TrimSpace(value)
+		params[key] = value
+	}
+
+	return params
+}
+
+// isKnownFunction checks if a function name is in our registry.
+func isKnownFunction(name string) bool {
+	for _, fn := range assistantFunctions {
+		if fn.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureRunning makes sure FunctionGemma is downloaded and running on its dedicated port.
@@ -377,7 +479,7 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 		"max_tokens":        256,
 		"temperature":       0.1,
 		"repetition_penalty": 1.2,
-		"stop":              []string{"<end_of_turn>"},
+		"stop":              []string{"<end_of_turn>", "<end_function_call>"},
 	}
 
 	data, _ := json.Marshal(reqBody)
@@ -421,7 +523,7 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 	return result.Choices[0].Text, nil
 }
 
-// cleanResponse removes special tokens from output.
+// cleanResponse removes special tokens from output but preserves function call tokens for parsing.
 func cleanResponse(s string) string {
 	s = strings.ReplaceAll(s, "<end_of_turn>", "")
 	s = strings.ReplaceAll(s, "<start_of_turn>", "")
