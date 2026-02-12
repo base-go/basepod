@@ -62,10 +62,11 @@ type Caller struct {
 
 // Assistant is the AI assistant engine.
 type Assistant struct {
-	storage *storage.Storage
-	podman  podman.Client
-	client  *http.Client
-	port    int
+	storage  *storage.Storage
+	podman   podman.Client
+	client   *http.Client
+	port     int
+	warmedUp bool // true after first successful completions call
 }
 
 // AssistantModelID is the FunctionGemma model used by the assistant.
@@ -250,16 +251,18 @@ func (a *Assistant) EnsureRunning() error {
 	}
 
 	// Check if assistant is already running
-	if a.isAssistantRunning() {
-		return nil
+	if !a.isAssistantRunning() {
+		if err := svc.RunOnPort(AssistantModelID, a.port); err != nil {
+			return err
+		}
 	}
 
-	if err := svc.RunOnPort(AssistantModelID, a.port); err != nil {
-		return err
+	// Warmup: pre-load model weights so first real request isn't slow.
+	// This is needed even if the server was already running (e.g. after basepod restart)
+	// because model weights load lazily on first inference.
+	if !a.warmedUp {
+		a.warmup()
 	}
-
-	// Warmup: pre-load model weights so first real request isn't slow
-	a.warmup()
 	return nil
 }
 
@@ -272,7 +275,11 @@ func (a *Assistant) warmup() {
 	data, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
-	a.client.Do(req) // Ignore result, just warm up
+	resp, err := a.client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		a.warmedUp = true
+	}
 }
 
 // isAssistantRunning checks if the assistant MLX server is responding.
@@ -361,7 +368,7 @@ func (a *Assistant) callMLX(prompt string) (string, error) {
 	}
 
 	data, _ := json.Marshal(reqBody)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
