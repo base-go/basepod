@@ -261,14 +261,25 @@ func (a *Assistant) EnsureRunning() error {
 	// This is needed even if the server was already running (e.g. after basepod restart)
 	// because model weights load lazily on first inference.
 	if !a.warmedUp {
-		a.warmup()
+		if err := a.warmup(); err != nil {
+			// Warmup failed (stuck process). Kill and restart.
+			svc.StopAssistant()
+			if err := svc.RunOnPort(AssistantModelID, a.port); err != nil {
+				return fmt.Errorf("failed to restart assistant after stuck process: %w", err)
+			}
+			// Try warmup once more after restart
+			if err := a.warmup(); err != nil {
+				return fmt.Errorf("assistant warmup failed after restart: %w", err)
+			}
+		}
 	}
 	return nil
 }
 
 // warmup sends a trivial request to pre-load model weights after starting.
-func (a *Assistant) warmup() {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+// Returns an error if the completions endpoint doesn't respond within 60s (stuck process).
+func (a *Assistant) warmup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	url := fmt.Sprintf("http://localhost:%d/v1/completions", a.port)
 	body := map[string]any{"model": AssistantModelID, "prompt": "hi", "max_tokens": 1}
@@ -276,10 +287,12 @@ func (a *Assistant) warmup() {
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
-	if err == nil {
-		resp.Body.Close()
-		a.warmedUp = true
+	if err != nil {
+		return fmt.Errorf("warmup failed (process may be stuck): %w", err)
 	}
+	resp.Body.Close()
+	a.warmedUp = true
+	return nil
 }
 
 // isAssistantRunning checks if the assistant MLX server is responding.
