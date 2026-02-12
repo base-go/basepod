@@ -22,7 +22,7 @@ import (
 // Service manages the MLX LLM server (singleton pattern like Ollama)
 type Service struct {
 	baseDir     string // Base directory for models and data
-	port        int    // Server port (default 11434 like Ollama)
+	port        int    // Server port (default 11436, avoids Ollama 11434)
 	process     *exec.Cmd
 	pid         int
 	activeModel string
@@ -96,7 +96,7 @@ func GetService() *Service {
 
 		instance = &Service{
 			baseDir: baseDir,
-			port:    11434, // Same as Ollama default
+			port:    11436, // Avoids conflict with Ollama (11434) and assistant (11435)
 			client:  &http.Client{Timeout: 30 * time.Second},
 		}
 
