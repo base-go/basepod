@@ -669,18 +669,22 @@ func (a *Assistant) execListApps(caller *Caller) (string, error) {
 		return "", err
 	}
 	if len(apps) == 0 {
-		return "No apps deployed yet.", nil
+		return "No apps deployed yet. Create one from the Apps page or ask me to create one.", nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d app(s):\n", len(apps)))
+	fmt.Fprintf(&sb, "**%d app(s)**\n\n", len(apps))
 	for _, ap := range apps {
-		sb.WriteString(fmt.Sprintf("  %-20s %-10s %s\n", ap.Name, ap.Status, ap.Image))
+		icon := "🔴"
+		if ap.Status == "running" {
+			icon = "🟢"
+		}
+		fmt.Fprintf(&sb, "%s **%s** — %s `%s`\n", icon, ap.Name, ap.Status, ap.Image)
 	}
 	return sb.String(), nil
 }
 
-func (a *Assistant) execGetApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execGetApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -694,11 +698,24 @@ func (a *Assistant) execGetApp(params map[string]interface{}, caller *Caller) (s
 		return fmt.Sprintf("App '%s' not found.", name), nil
 	}
 
-	return fmt.Sprintf("App: %s\n  Status: %s\n  Image: %s\n  Domain: %s\n  Type: %s\n  Created: %s",
-		ap.Name, ap.Status, ap.Image, ap.Domain, ap.Type, ap.CreatedAt.Format("2006-01-02 15:04")), nil
+	icon := "🔴"
+	if ap.Status == "running" {
+		icon = "🟢"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s **%s**\n\n", icon, ap.Name)
+	fmt.Fprintf(&sb, "- **Status:** %s\n", ap.Status)
+	fmt.Fprintf(&sb, "- **Image:** `%s`\n", ap.Image)
+	if ap.Domain != "" {
+		fmt.Fprintf(&sb, "- **Domain:** %s\n", ap.Domain)
+	}
+	fmt.Fprintf(&sb, "- **Type:** %s\n", ap.Type)
+	fmt.Fprintf(&sb, "- **Created:** %s\n", ap.CreatedAt.Format("2006-01-02 15:04"))
+	return sb.String(), nil
 }
 
-func (a *Assistant) execStartApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execStartApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -724,10 +741,10 @@ func (a *Assistant) execStartApp(params map[string]interface{}, caller *Caller) 
 	ap.Status = app.StatusRunning
 	a.storage.UpdateApp(ap)
 
-	return fmt.Sprintf("Started app %s.", name), nil
+	return fmt.Sprintf("🟢 **%s** started.", name), nil
 }
 
-func (a *Assistant) execStopApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execStopApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -753,10 +770,10 @@ func (a *Assistant) execStopApp(params map[string]interface{}, caller *Caller) (
 	ap.Status = app.StatusStopped
 	a.storage.UpdateApp(ap)
 
-	return fmt.Sprintf("Stopped app %s.", name), nil
+	return fmt.Sprintf("🔴 **%s** stopped.", name), nil
 }
 
-func (a *Assistant) execRestartApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execRestartApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -785,10 +802,10 @@ func (a *Assistant) execRestartApp(params map[string]interface{}, caller *Caller
 	ap.Status = app.StatusRunning
 	a.storage.UpdateApp(ap)
 
-	return fmt.Sprintf("Restarted app %s.", name), nil
+	return fmt.Sprintf("🟢 **%s** restarted.", name), nil
 }
 
-func (a *Assistant) execDeployApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execDeployApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -848,10 +865,10 @@ func (a *Assistant) execDeployApp(params map[string]interface{}, caller *Caller)
 	ap.Status = app.StatusRunning
 	a.storage.UpdateApp(ap)
 
-	return fmt.Sprintf("Deployed app %s successfully.", name), nil
+	return fmt.Sprintf("🟢 **%s** deployed successfully.", name), nil
 }
 
-func (a *Assistant) execGetLogs(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execGetLogs(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -903,10 +920,10 @@ func (a *Assistant) execGetLogs(params map[string]interface{}, caller *Caller) (
 		logStr = "...(truncated)\n" + logStr
 	}
 
-	return fmt.Sprintf("Logs for %s (last %d lines):\n%s", name, lines, logStr), nil
+	return fmt.Sprintf("**Logs for %s** (last %d lines)\n\n```\n%s\n```", name, lines, logStr), nil
 }
 
-func (a *Assistant) execCreateApp(params map[string]interface{}) (string, error) {
+func (a *Assistant) execCreateApp(params map[string]any) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -945,10 +962,10 @@ func (a *Assistant) execCreateApp(params map[string]interface{}) (string, error)
 		return "", fmt.Errorf("failed to create app: %w", err)
 	}
 
-	return fmt.Sprintf("Created app '%s' with image %s on port %d.", name, image, port), nil
+	return fmt.Sprintf("**%s** created with image `%s` on port %d.", name, image, port), nil
 }
 
-func (a *Assistant) execDeleteApp(params map[string]interface{}, caller *Caller) (string, error) {
+func (a *Assistant) execDeleteApp(params map[string]any, caller *Caller) (string, error) {
 	name, err := getStringParam(params, "name")
 	if err != nil {
 		return "", err
@@ -979,11 +996,18 @@ func (a *Assistant) execStorageInfo() (string, error) {
 		return "", err
 	}
 
+	// Build a visual usage bar
+	barLen := 20
+	filled := int(du.Percent / 100 * float64(barLen))
+	if filled > barLen {
+		filled = barLen
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barLen-filled)
+
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Disk: %s of %s used (%.0f%%)\n",
-		diskutil.FormatBytes(int64(du.Used)),
-		diskutil.FormatBytes(int64(du.Total)),
-		du.Percent))
+	fmt.Fprintf(&sb, "**Storage Overview**\n\n")
+	fmt.Fprintf(&sb, "**Disk:** %s / %s (%.0f%%)\n", diskutil.FormatBytes(int64(du.Used)), diskutil.FormatBytes(int64(du.Total)), du.Percent)
+	fmt.Fprintf(&sb, "`%s`\n\n", bar)
 
 	// Container images
 	images, err := a.podman.ListImages(ctx)
@@ -992,8 +1016,7 @@ func (a *Assistant) execStorageInfo() (string, error) {
 		for _, img := range images {
 			total += img.Size
 		}
-		sb.WriteString(fmt.Sprintf("  Container Images:   %s (%d images)\n",
-			diskutil.FormatBytes(total), len(images)))
+		fmt.Fprintf(&sb, "- **Images:** %s (%d images)\n", diskutil.FormatBytes(total), len(images))
 	}
 
 	// Volumes
@@ -1005,8 +1028,7 @@ func (a *Assistant) execStorageInfo() (string, error) {
 				total += diskutil.DirSize(vol.Mountpoint)
 			}
 		}
-		sb.WriteString(fmt.Sprintf("  Volumes:            %s (%d volumes)\n",
-			diskutil.FormatBytes(total), len(volumes)))
+		fmt.Fprintf(&sb, "- **Volumes:** %s (%d volumes)\n", diskutil.FormatBytes(total), len(volumes))
 	}
 
 	return sb.String(), nil
@@ -1016,6 +1038,7 @@ func (a *Assistant) execSystemInfo() (string, error) {
 	ctx := context.Background()
 
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "**System Info**\n\n")
 
 	containers, err := a.podman.ListContainers(ctx, true)
 	if err == nil {
@@ -1025,20 +1048,24 @@ func (a *Assistant) execSystemInfo() (string, error) {
 				running++
 			}
 		}
-		sb.WriteString(fmt.Sprintf("Containers: %d total, %d running\n", len(containers), running))
+		fmt.Fprintf(&sb, "- **Containers:** %d total, %d running\n", len(containers), running)
 	}
 
 	images, err := a.podman.ListImages(ctx)
 	if err == nil {
-		sb.WriteString(fmt.Sprintf("Images: %d\n", len(images)))
+		var total int64
+		for _, img := range images {
+			total += img.Size
+		}
+		fmt.Fprintf(&sb, "- **Images:** %d (%s)\n", len(images), diskutil.FormatBytes(total))
 	}
 
 	svc := mlx.GetService()
 	status := svc.GetStatus()
 	if status.Running {
-		sb.WriteString(fmt.Sprintf("MLX: running (%s)\n", status.ActiveModel))
+		fmt.Fprintf(&sb, "- **MLX:** 🟢 running — `%s`\n", status.ActiveModel)
 	} else {
-		sb.WriteString("MLX: stopped\n")
+		fmt.Fprintf(&sb, "- **MLX:** 🔴 stopped\n")
 	}
 
 	return sb.String(), nil
@@ -1060,14 +1087,14 @@ func (a *Assistant) execListModels() (string, error) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Downloaded models (%d):\n", len(downloaded)))
+	fmt.Fprintf(&sb, "**Downloaded Models** (%d)\n\n", len(downloaded))
 	for _, m := range downloaded {
-		sb.WriteString(fmt.Sprintf("  %-30s %s (%s)\n", m.Name, m.Size, m.Category))
+		fmt.Fprintf(&sb, "- **%s** — %s `%s`\n", m.Name, m.Size, m.Category)
 	}
 
 	status := svc.GetStatus()
 	if status.Running {
-		sb.WriteString(fmt.Sprintf("\nActive: %s", status.ActiveModel))
+		fmt.Fprintf(&sb, "\n🟢 **Active:** `%s`", status.ActiveModel)
 	}
 
 	return sb.String(), nil
@@ -1105,7 +1132,7 @@ func (a *Assistant) execPruneImages() (string, error) {
 
 // --- Helpers ---
 
-func getStringParam(params map[string]interface{}, key string) (string, error) {
+func getStringParam(params map[string]any, key string) (string, error) {
 	v, ok := params[key]
 	if !ok {
 		return "", fmt.Errorf("missing required parameter: %s", key)
@@ -1143,10 +1170,7 @@ func stripPodmanHeaders(data []byte) string {
 			break
 		}
 		pos += 8
-		end := pos + frameSize
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(pos+frameSize, len(data))
 		sb.Write(data[pos:end])
 		pos = end
 	}

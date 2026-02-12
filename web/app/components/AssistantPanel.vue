@@ -204,6 +204,56 @@ function handleKeydown(e: KeyboardEvent) {
     send()
   }
 }
+
+// Simple markdown renderer for assistant messages
+function renderMarkdown(text: string): string {
+  // Escape HTML first
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Code blocks: ```...```
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="bg-gray-950 text-gray-300 p-2 rounded text-xs my-1 overflow-x-auto"><code>$2</code></pre>')
+
+  // Inline code: `...`
+  html = html.replace(/`([^`]+)`/g, '<code class="bg-gray-200 dark:bg-gray-700 px-1 rounded text-xs">$1</code>')
+
+  // Bold: **...**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+
+  // Process lines for lists and paragraphs
+  const lines = html.split('\n')
+  const result: string[] = []
+  let inList = false
+
+  for (const line of lines) {
+    // Skip lines inside pre blocks (already handled)
+    if (line.includes('<pre') || line.includes('</pre>')) {
+      if (inList) { result.push('</ul>'); inList = false }
+      result.push(line)
+      continue
+    }
+    // Bullet list items: - ...
+    if (/^- /.test(line.trim())) {
+      if (!inList) { result.push('<ul class="list-disc list-inside space-y-0.5">'); inList = true }
+      result.push(`<li>${line.trim().slice(2)}</li>`)
+    } else {
+      if (inList) { result.push('</ul>'); inList = false }
+      if (line.trim() === '') {
+        result.push('<br/>')
+      } else {
+        result.push(`<span>${line}</span><br/>`)
+      }
+    }
+  }
+  if (inList) result.push('</ul>')
+
+  // Clean up trailing <br/>
+  let final = result.join('\n')
+  final = final.replace(/(<br\/>\s*)+$/, '')
+  return final
+}
 </script>
 
 <template>
@@ -280,7 +330,8 @@ function handleKeydown(e: KeyboardEvent) {
                   : 'bg-(--ui-bg-muted) rounded-bl-md'
               ]"
             >
-              <p class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
+              <p v-if="msg.role === 'user'" class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
+              <div v-else class="text-sm assistant-content" v-html="renderMarkdown(msg.content)" />
             </div>
           </div>
 
