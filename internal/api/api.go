@@ -297,6 +297,10 @@ func (s *Server) setupRoutes() {
 	// Source deploy endpoint (auth required)
 	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
 
+	// Construct OAuth deploy endpoints (for Construct app users)
+	s.router.HandleFunc("POST /api/construct/deploy", s.requireConstructAuth(s.handleSourceDeploy))
+	s.router.HandleFunc("GET /api/construct/apps", s.requireConstructAuth(s.handleConstructListApps))
+
 	// Backup endpoints (auth required)
 	s.router.HandleFunc("GET /api/backups", s.requireAuth(s.handleListBackups))
 	s.router.HandleFunc("POST /api/backups", s.requireAuth(s.handleCreateBackup))
@@ -325,13 +329,131 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 			token = strings.TrimPrefix(token, "Bearer ")
 		}
 
-		if !s.auth.ValidateSession(token) {
-			errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+		// Try session auth first
+		if s.auth.ValidateSession(token) {
+			handler(w, r)
 			return
 		}
 
-		handler(w, r)
+		// Try deploy token auth
+		if token != "" {
+			h := sha256.New()
+			h.Write([]byte(token))
+			tokenHash := hex.EncodeToString(h.Sum(nil))
+			if dt, err := s.storage.GetDeployTokenByHash(tokenHash); err == nil && dt != nil {
+				// Check expiry
+				if dt.ExpiresAt != nil && time.Now().After(*dt.ExpiresAt) {
+					errorResponse(w, http.StatusUnauthorized, "Deploy token expired")
+					return
+				}
+				// Update last used
+				s.storage.UpdateDeployTokenLastUsed(dt.ID)
+				handler(w, r)
+				return
+			}
+		}
+
+		errorResponse(w, http.StatusUnauthorized, "Unauthorized")
 	}
+}
+
+// constructUserKey is the context key for authenticated Construct user info
+type constructUserKey struct{}
+
+// ConstructUser holds verified Construct user info from OAuth
+type ConstructUser struct {
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+}
+
+// requireConstructAuth verifies the request has a valid Construct OAuth token
+func (s *Server) requireConstructAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		accountsURL := s.config.Construct.AccountsURL
+		if accountsURL == "" {
+			accountsURL = "https://accounts.construct.space"
+		}
+
+		token := r.Header.Get("Authorization")
+		token = strings.TrimPrefix(token, "Bearer ")
+		if token == "" {
+			errorResponse(w, http.StatusUnauthorized, "Missing authorization token")
+			return
+		}
+
+		// Verify token against Construct accounts service
+		req, err := http.NewRequest("GET", accountsURL+"/api/me", nil)
+		if err != nil {
+			errorResponse(w, http.StatusInternalServerError, "Failed to create verification request")
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			errorResponse(w, http.StatusBadGateway, "Failed to verify token with accounts service")
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			errorResponse(w, http.StatusUnauthorized, "Invalid or expired Construct token")
+			return
+		}
+
+		var profile struct {
+			ID       any    `json:"id"` // Can be number or string
+			Email    string `json:"email"`
+			Username string `json:"username"`
+			Name     string `json:"name"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+			errorResponse(w, http.StatusBadGateway, "Failed to decode user profile")
+			return
+		}
+
+		user := ConstructUser{
+			ID:       fmt.Sprintf("%v", profile.ID),
+			Email:    profile.Email,
+			Username: profile.Username,
+			Name:     profile.Name,
+		}
+
+		// Store user in request context
+		ctx := context.WithValue(r.Context(), constructUserKey{}, &user)
+		handler(w, r.WithContext(ctx))
+	}
+}
+
+// getConstructUser extracts the authenticated Construct user from context
+func getConstructUser(r *http.Request) *ConstructUser {
+	if user, ok := r.Context().Value(constructUserKey{}).(*ConstructUser); ok {
+		return user
+	}
+	return nil
+}
+
+// handleConstructListApps returns apps owned by the authenticated Construct user
+func (s *Server) handleConstructListApps(w http.ResponseWriter, r *http.Request) {
+	user := getConstructUser(r)
+	if user == nil {
+		errorResponse(w, http.StatusUnauthorized, "Not authenticated")
+		return
+	}
+
+	apps, err := s.storage.ListAppsByOwner(user.ID)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if apps == nil {
+		apps = []app.App{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{"apps": apps})
 }
 
 // getSessionToken extracts the auth token from request
@@ -3043,15 +3165,18 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get base domain from config
+	// Get base domain from config (check Root, then Suffix)
 	baseDomain := s.config.Domain.Root
+	if baseDomain == "" {
+		baseDomain = s.config.Domain.Suffix
+	}
 	if baseDomain == "" {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
-	// Allow dashboard subdomain
-	if domain == "d."+baseDomain {
+	// Allow dashboard subdomain (bp.domain.com)
+	if domain == "bp."+baseDomain {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -3160,6 +3285,15 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 
 	// Check if app exists, create if not
 	a, _ := s.storage.GetAppByName(deployConfig.Name)
+
+	// If Construct user, verify ownership of existing app
+	if a != nil {
+		if cu := getConstructUser(r); cu != nil && a.OwnerID != "" && a.OwnerID != cu.ID {
+			errorResponse(w, http.StatusForbidden, "App belongs to another user")
+			return
+		}
+	}
+
 	if a == nil {
 		writeLine("Creating new app: " + deployConfig.Name)
 
@@ -3192,9 +3326,16 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			appType = app.AppTypeStatic
 		}
 
+		// Set owner ID from Construct user context (if present)
+		ownerID := ""
+		if cu := getConstructUser(r); cu != nil {
+			ownerID = cu.ID
+		}
+
 		a = &app.App{
 			ID:      uuid.New().String(),
 			Name:    deployConfig.Name,
+			OwnerID: ownerID,
 			Type:    appType,
 			Domain:  domain,
 			Status:  app.StatusPending,

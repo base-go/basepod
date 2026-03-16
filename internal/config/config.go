@@ -41,11 +41,20 @@ type Config struct {
 
 	// Email settings (for invite emails)
 	Email EmailConfig `yaml:"email"`
+
+	// Construct integration (OAuth-based deploy for Construct users)
+	Construct ConstructConfig `yaml:"construct"`
 }
 
 // AIConfig holds AI-related configuration
 type AIConfig struct {
 	HuggingFaceToken string `yaml:"huggingface_token"` // HuggingFace API token for gated models
+}
+
+// ConstructConfig holds Construct OAuth integration settings
+type ConstructConfig struct {
+	AccountsURL string `yaml:"accounts_url"` // e.g. "https://accounts.construct.space"
+	Enabled     bool   `yaml:"enabled"`      // Enable Construct OAuth deploy
 }
 
 // EmailConfig holds email provider configuration for invite emails

@@ -3,7 +3,7 @@ set -e
 
 # Basepod Server Install Script
 # Usage: curl -fsSL https://pod.base.al/install | sudo bash
-# Or with domain: BASEPOD_DOMAIN=example.com curl -fsSL ... | sudo bash
+# Or with domain: curl -fsSL https://pod.base.al/install | sudo BASEPOD_DOMAIN=example.com bash
 
 BASEPOD_VERSION="${BASEPOD_VERSION:-latest}"
 BASEPOD_DIR="${BASEPOD_DIR:-/opt/basepod}"

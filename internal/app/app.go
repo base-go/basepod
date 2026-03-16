@@ -18,6 +18,7 @@ const (
 type App struct {
 	ID          string             `json:"id"`
 	Name        string             `json:"name"`
+	OwnerID     string             `json:"owner_id,omitempty"` // Construct user ID (empty = admin-owned)
 	Type        AppType            `json:"type"`        // container or mlx
 	Domain      string             `json:"domain"`      // e.g., myapp.basepod.example.com
 	Aliases     []string           `json:"aliases"`     // Additional domains (e.g., ["duxt.dev", "blog.example.com"])
