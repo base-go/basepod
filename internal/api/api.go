@@ -3225,9 +3225,22 @@ type BuildConfig struct {
 func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Parse multipart form
-	if err := r.ParseMultipartForm(500 << 20); err != nil { // 500MB max
-		errorResponse(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+	// Determine upload limits based on auth type
+	// Construct users: 50MB max upload, 5 apps max
+	// Admin: 500MB, unlimited apps
+	isConstructUser := getConstructUser(r) != nil
+	maxUploadBytes := int64(500 << 20) // 500MB default
+	if isConstructUser {
+		maxUploadBytes = 50 << 20 // 50MB for Construct users
+	}
+
+	// Parse multipart form with size limit
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		if isConstructUser {
+			errorResponse(w, http.StatusRequestEntityTooLarge, "Upload too large (max 50MB for free hosting)")
+		} else {
+			errorResponse(w, http.StatusBadRequest, "Failed to parse form: "+err.Error())
+		}
 		return
 	}
 
@@ -3295,6 +3308,15 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a == nil {
+		// Enforce per-user app limit for Construct users
+		if cu := getConstructUser(r); cu != nil {
+			userApps, _ := s.storage.ListAppsByOwner(cu.ID)
+			if len(userApps) >= 5 {
+				errorResponse(w, http.StatusForbidden, "Free hosting limit reached (5 apps). Delete an existing app to deploy a new one.")
+				return
+			}
+		}
+
 		writeLine("Creating new app: " + deployConfig.Name)
 
 		// Auto-assign domain from config if not specified
