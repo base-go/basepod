@@ -3488,6 +3488,54 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Auto-detect static site: has index.html or package.json with no Dockerfile
+	if deployConfig.Type == "" && a.Type != app.AppTypeStatic {
+		_, hasDockerfile := os.Stat(sourceDir + "/Dockerfile")
+		_, hasIndexHTML := os.Stat(sourceDir + "/index.html")
+		_, hasPackageJSON := os.Stat(sourceDir + "/package.json")
+
+		if hasDockerfile != nil && (hasIndexHTML == nil || hasPackageJSON == nil) {
+			deployConfig.Type = "static"
+			writeLine("Auto-detected static site (no Dockerfile found)")
+
+			// If it's a Node.js project, build it first
+			if hasPackageJSON == nil {
+				writeLine("Building Node.js project...")
+
+				// Install dependencies
+				npmCmd := "npm"
+				if _, err := os.Stat(sourceDir + "/bun.lock"); err == nil {
+					npmCmd = "bun"
+				} else if _, err := os.Stat(sourceDir + "/yarn.lock"); err == nil {
+					npmCmd = "yarn"
+				} else if _, err := os.Stat(sourceDir + "/pnpm-lock.yaml"); err == nil {
+					npmCmd = "pnpm"
+				}
+
+				writeLine(fmt.Sprintf("Installing dependencies with %s...", npmCmd))
+				installArgs := "install"
+				if npmCmd == "npm" {
+					installArgs = "ci --no-audit --no-fund 2>&1 || npm install --no-audit --no-fund"
+				}
+				if output, err := execCommand(ctx, "sh", "-c", fmt.Sprintf("cd %s && %s %s 2>&1", sourceDir, npmCmd, installArgs)); err != nil {
+					writeLine("WARNING: Dependency install had issues: " + err.Error())
+					writeLine(output)
+				} else {
+					writeLine("Dependencies installed")
+				}
+
+				// Run build
+				writeLine("Running build...")
+				if output, err := execCommand(ctx, "sh", "-c", fmt.Sprintf("cd %s && %s run build 2>&1", sourceDir, npmCmd)); err != nil {
+					writeLine("WARNING: Build had issues: " + err.Error())
+					writeLine(output)
+				} else {
+					writeLine("Build complete")
+				}
+			}
+		}
+	}
+
 	// Handle static site deployment
 	if deployConfig.Type == "static" || a.Type == app.AppTypeStatic {
 		writeLine("Deploying static site...")
