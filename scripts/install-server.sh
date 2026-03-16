@@ -604,8 +604,9 @@ set_permissions() {
     else
         chown -R "$BASEPOD_USER:$BASEPOD_USER" "$BASEPOD_DIR"
     fi
-    chmod 750 "$BASEPOD_DIR"
-    chmod 755 "$BASEPOD_DIR/data/caddy"
+    chmod 755 "$BASEPOD_DIR"
+    chmod 755 "$BASEPOD_DIR/data" "$BASEPOD_DIR/data/caddy"
+    mkdir -p "$BASEPOD_DIR/data/apps" && chmod 755 "$BASEPOD_DIR/data/apps"
     chmod 640 "$BASEPOD_DIR/config/"* 2>/dev/null || true
     chmod 750 "$BASEPOD_DIR/builds"
 }
