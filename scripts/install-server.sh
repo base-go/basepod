@@ -381,6 +381,10 @@ bp.$BASEPOD_DOMAIN {
     }
     reverse_proxy localhost:3000
 }
+
+:80 {
+    reverse_proxy localhost:3000
+}
 EOF
     else
         cat > "$BASEPOD_DIR/config/Caddyfile" <<EOF

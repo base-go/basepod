@@ -889,15 +889,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host = host[:idx]
 	}
 
-	// Check if it's an app domain (not the dashboard)
+	// Determine known domains
 	dashboardDomain := "d." + s.config.Domain.Root
-	if host != dashboardDomain && s.config.Domain.Root != "" && strings.HasSuffix(host, "."+s.config.Domain.Root) {
+	bpDomain := "bp." + s.config.Domain.Root
+	rootDomain := s.config.Domain.Root
+	isDashboard := host == bpDomain || host == dashboardDomain
+	isRootDomain := host == rootDomain
+
+	// Check if it's an app domain (not the dashboard)
+	if !isDashboard && rootDomain != "" && strings.HasSuffix(host, "."+rootDomain) {
 		// Look up app by domain
 		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
-			// Proxy to the app
 			s.proxyToApp(w, r, a)
 			return
 		}
+	}
+
+	// Check if it's a custom domain (not a subdomain of root) mapped to an app
+	if !isDashboard && !isRootDomain && rootDomain != "" && !strings.HasSuffix(host, "."+rootDomain) {
+		// Look up by domain (alias)
+		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
+			s.proxyToApp(w, r, a)
+			return
+		}
+		// Unknown domain/IP pointing at this server — serve parked page
+		s.serveParkedPage(w, r, host)
+		return
 	}
 
 	// Serve API routes
@@ -907,9 +924,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Serve custom landing page at root domain if enabled
-	// Skip for dashboard subdomain (bp.domain.com) so the UI is always accessible
-	bpDomain := "bp." + s.config.Domain.Root
-	if r.URL.Path == "/" && s.config.LandingPage.Enabled && s.config.LandingPage.HTML != "" && host != bpDomain && host != dashboardDomain {
+	if r.URL.Path == "/" && s.config.LandingPage.Enabled && s.config.LandingPage.HTML != "" && !isDashboard {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Write([]byte(s.config.LandingPage.HTML))
@@ -972,6 +987,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"version": "0.1.0",
 		"message": "Web UI not available. Use API endpoints at /api/*",
 	})
+}
+
+// serveParkedPage serves a branded parked domain page for unknown domains/IPs
+func (s *Server) serveParkedPage(w http.ResponseWriter, r *http.Request, host string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	html := `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>` + host + `</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0a0a;color:#fafafa}
+.c{text-align:center;max-width:480px;padding:2rem}
+.icon{width:64px;height:64px;margin:0 auto 1.5rem;border-radius:16px;background:linear-gradient(135deg,#22d3ee20,#a78bfa20);display:flex;align-items:center;justify-content:center;border:1px solid #ffffff10}
+.icon svg{width:32px;height:32px;color:#22d3ee}
+h1{font-size:1.5rem;font-weight:600;margin-bottom:.5rem}
+.domain{font-family:monospace;font-size:1rem;color:#22d3ee;background:#22d3ee10;padding:.25rem .75rem;border-radius:.375rem;display:inline-block;margin-bottom:1.5rem}
+p{font-size:.9rem;color:#71717a;line-height:1.6}
+.footer{margin-top:3rem;font-size:.75rem;color:#3f3f46}
+.footer a{color:#52525b;text-decoration:none}
+.footer a:hover{color:#a1a1aa}
+</style>
+</head>
+<body>
+<div class="c">
+<div class="icon"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5a17.92 17.92 0 01-8.716-2.247m0 0A8.966 8.966 0 013 12c0-1.264.26-2.467.729-3.56"/></svg></div>
+<h1>Domain Parked</h1>
+<div class="domain">` + host + `</div>
+<p>This domain is pointed at this server but has not been configured yet.</p>
+<div class="footer">Powered by <a href="https://github.com/base-go/basepod">Basepod</a></div>
+</div>
+</body>
+</html>`
+	w.Write([]byte(html))
 }
 
 // Response helpers
@@ -3238,23 +3290,28 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if it's a valid subdomain of our base domain
-	if !strings.HasSuffix(domain, "."+baseDomain) {
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	// Check if an app exists with this domain
+	// Check if an app exists with this domain or alias
 	apps, _ := s.storage.ListApps()
 	for _, a := range apps {
 		if a.Domain == domain {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		for _, alias := range a.Aliases {
+			if alias == domain {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		}
 	}
 
-	// Also allow any subdomain of our base domain (for future apps)
-	w.WriteHeader(http.StatusOK)
+	// Allow any subdomain of our base domain (for future apps)
+	if strings.HasSuffix(domain, "."+baseDomain) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.WriteHeader(http.StatusForbidden)
 }
 
 // SourceDeployConfig represents the config sent by the CLI
