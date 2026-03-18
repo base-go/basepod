@@ -3674,9 +3674,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build image using Podman — unique tag for rollback support
+	// Use localhost/ prefix so Podman can resolve locally-built images
 	deployTag := fmt.Sprintf("%d", time.Now().Unix())
-	imageName := fmt.Sprintf("basepod/%s:%s", a.Name, deployTag)
-	imageLatest := fmt.Sprintf("basepod/%s:latest", a.Name)
+	imageName := fmt.Sprintf("localhost/basepod/%s:%s", a.Name, deployTag)
+	imageLatest := fmt.Sprintf("localhost/basepod/%s:latest", a.Name)
 	writeLine("Building image: " + imageName)
 
 	a.Status = app.StatusDeploying
@@ -5652,8 +5653,8 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 
 	// Build image — unique tag for rollback support
 	deployTag := fmt.Sprintf("%d", time.Now().Unix())
-	imageName := fmt.Sprintf("basepod/%s:%s", a.Name, deployTag)
-	imageLatest := fmt.Sprintf("basepod/%s:latest", a.Name)
+	imageName := fmt.Sprintf("localhost/basepod/%s:%s", a.Name, deployTag)
+	imageLatest := fmt.Sprintf("localhost/basepod/%s:latest", a.Name)
 	log.Printf("Webhook deploy %s: building image %s", a.Name, imageName)
 
 	a.Status = app.StatusDeploying
