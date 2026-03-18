@@ -168,14 +168,39 @@ const savingLandingPage = ref(false)
 const landingPageLoaded = ref(false)
 const showLandingPreview = ref(false)
 
+const defaultLandingHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0a0a0a; color: #fafafa; }
+    .container { text-align: center; max-width: 600px; padding: 2rem; }
+    h1 { font-size: 3rem; font-weight: 700; margin-bottom: 1rem; background: linear-gradient(135deg, #22d3ee, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    p { font-size: 1.125rem; color: #a1a1aa; line-height: 1.6; margin-bottom: 2rem; }
+    .btn { display: inline-block; padding: 0.75rem 2rem; border-radius: 0.5rem; background: #22d3ee; color: #0a0a0a; text-decoration: none; font-weight: 600; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.85; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Welcome</h1>
+    <p>This site is powered by Basepod.</p>
+    <a href="/login" class="btn">Dashboard</a>
+  </div>
+</body>
+</html>`
+
 const loadLandingPage = async () => {
   try {
     const data = await $api<{ enabled: boolean; html: string }>('/system/landing-page')
     landingPageEnabled.value = data.enabled
-    landingPageHTML.value = data.html || ''
+    landingPageHTML.value = data.html || defaultLandingHTML
     landingPageLoaded.value = true
   } catch {
-    // ignore - will use defaults
+    landingPageHTML.value = defaultLandingHTML
   }
 }
 

@@ -3226,6 +3226,12 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Allow the root domain itself (e.g., construct.ninja)
+	if domain == baseDomain {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Allow dashboard subdomain (bp.domain.com)
 	if domain == "bp."+baseDomain {
 		w.WriteHeader(http.StatusOK)
