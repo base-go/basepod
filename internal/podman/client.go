@@ -535,6 +535,12 @@ func (c *client) ContainerLogs(ctx context.Context, id string, opts LogOpts) (io
 
 // PullImage pulls an image from a registry
 func (c *client) PullImage(ctx context.Context, image string) error {
+	// Podman requires fully-qualified image names — add docker.io/library/ for short names
+	if !strings.Contains(image, "/") {
+		image = "docker.io/library/" + image
+	} else if !strings.Contains(image, ".") && strings.Count(image, "/") == 1 {
+		image = "docker.io/" + image
+	}
 	path := fmt.Sprintf("/images/pull?reference=%s", image)
 	resp, err := c.request(ctx, "POST", path, nil)
 	if err != nil {
