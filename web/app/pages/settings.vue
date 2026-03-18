@@ -47,6 +47,7 @@ const isAdmin = computed(() => !currentUser.value || currentUser.value.role === 
 const route = useRoute()
 const allTabs = [
   { label: 'General', value: 'general', slot: 'general', icon: 'i-heroicons-cog-6-tooth', adminOnly: true },
+  { label: 'Landing Page', value: 'landing', slot: 'landing', icon: 'i-heroicons-document-text', adminOnly: true },
   { label: 'Users', value: 'users', slot: 'users', icon: 'i-heroicons-users', adminOnly: true },
   { label: 'Security', value: 'security', slot: 'security', icon: 'i-heroicons-shield-check', adminOnly: false },
   { label: 'Notifications', value: 'notifications', slot: 'notifications', icon: 'i-heroicons-bell', adminOnly: true },
@@ -160,6 +161,43 @@ const emailSettings = ref({
   from_address: configData.value?.email?.from_address || '',
 })
 
+// Landing page settings
+const landingPageEnabled = ref(false)
+const landingPageHTML = ref('')
+const savingLandingPage = ref(false)
+const landingPageLoaded = ref(false)
+const showLandingPreview = ref(false)
+
+const loadLandingPage = async () => {
+  try {
+    const data = await $api<{ enabled: boolean; html: string }>('/system/landing-page')
+    landingPageEnabled.value = data.enabled
+    landingPageHTML.value = data.html || ''
+    landingPageLoaded.value = true
+  } catch {
+    // ignore - will use defaults
+  }
+}
+
+const saveLandingPage = async () => {
+  savingLandingPage.value = true
+  try {
+    await $api('/system/landing-page', {
+      method: 'PUT',
+      body: {
+        enabled: landingPageEnabled.value,
+        html: landingPageHTML.value
+      }
+    })
+    toast.add({ title: 'Landing page saved', color: 'success' })
+  } catch (e: unknown) {
+    const err = e as { data?: { error?: string } }
+    toast.add({ title: 'Failed to save landing page', description: err.data?.error || 'Unknown error', color: 'error' })
+  } finally {
+    savingLandingPage.value = false
+  }
+}
+
 // Check version on load
 onMounted(() => {
   checkVersion()
@@ -167,6 +205,7 @@ onMounted(() => {
   loadUsers()
   loadNotifications()
   loadDeployTokens()
+  loadLandingPage()
 })
 
 // Watch for configData changes
@@ -934,6 +973,91 @@ const formatDate = (dateStr: string) => {
             </form>
           </UCard>
 
+        </div>
+      </template>
+
+      <!-- Landing Page Tab -->
+      <template #landing>
+        <div class="space-y-6 py-4">
+          <UCard>
+            <template #header>
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-lg font-semibold">Landing Page</h3>
+                  <p class="text-sm text-gray-500 mt-1">Custom HTML page served at your root domain ({{ settings.domain || 'not configured' }})</p>
+                </div>
+                <div class="flex items-center gap-3">
+                  <UButton
+                    v-if="landingPageHTML"
+                    variant="ghost"
+                    size="sm"
+                    :icon="showLandingPreview ? 'i-heroicons-code-bracket' : 'i-heroicons-eye'"
+                    @click="showLandingPreview = !showLandingPreview"
+                  >
+                    {{ showLandingPreview ? 'Editor' : 'Preview' }}
+                  </UButton>
+                  <UButton :loading="savingLandingPage" size="sm" @click="saveLandingPage">
+                    Save
+                  </UButton>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-sm">Enable Landing Page</label>
+                  <p class="text-xs text-gray-500">When enabled, visitors to your root domain see this page instead of the dashboard</p>
+                </div>
+                <UToggle v-model="landingPageEnabled" />
+              </div>
+
+              <div v-if="!landingPageEnabled" class="p-4 bg-(--ui-bg-muted) rounded-lg text-center text-sm text-gray-500">
+                <UIcon name="i-heroicons-information-circle" class="w-5 h-5 mb-1" />
+                <p>Landing page is disabled. Visitors to your root domain will see the basepod dashboard login.</p>
+                <p class="text-xs mt-1">The dashboard is always accessible at <span class="font-mono">bp.{{ settings.domain || 'yourdomain.com' }}</span></p>
+              </div>
+
+              <template v-if="landingPageEnabled">
+                <!-- Preview -->
+                <div v-if="showLandingPreview" class="border border-(--ui-border) rounded-lg overflow-hidden">
+                  <div class="bg-(--ui-bg-muted) px-3 py-2 text-xs text-gray-500 border-b border-(--ui-border) flex items-center justify-between">
+                    <span>Preview</span>
+                    <span class="font-mono">{{ settings.domain || 'yourdomain.com' }}</span>
+                  </div>
+                  <iframe
+                    :srcdoc="landingPageHTML"
+                    class="w-full bg-white"
+                    style="height: 500px; border: none;"
+                    sandbox="allow-scripts allow-same-origin"
+                  />
+                </div>
+
+                <!-- Editor -->
+                <div v-else>
+                  <label class="font-medium text-sm mb-2 block">HTML Content</label>
+                  <textarea
+                    v-model="landingPageHTML"
+                    class="w-full font-mono text-sm bg-(--ui-bg-muted) border border-(--ui-border) rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    style="min-height: 400px; resize: vertical;"
+                    placeholder="<!DOCTYPE html>
+<html>
+<head>
+  <title>My Site</title>
+</head>
+<body>
+  <h1>Welcome</h1>
+</body>
+</html>"
+                    spellcheck="false"
+                  />
+                  <p class="text-xs text-gray-500 mt-2">
+                    Enter full HTML including &lt;html&gt;, &lt;head&gt;, and &lt;body&gt; tags. You can use inline CSS and JavaScript.
+                  </p>
+                </div>
+              </template>
+            </div>
+          </UCard>
         </div>
       </template>
 

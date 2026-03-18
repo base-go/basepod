@@ -209,6 +209,10 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
 	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
 
+	// Landing page
+	s.router.HandleFunc("GET /api/system/landing-page", s.requireAuth(s.handleGetLandingPage))
+	s.router.HandleFunc("PUT /api/system/landing-page", s.requireAuth(s.handleUpdateLandingPage))
+
 	// Templates (auth required)
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
 	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.handleDeployTemplate))
@@ -899,6 +903,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Serve API routes
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
 		s.router.ServeHTTP(w, r)
+		return
+	}
+
+	// Serve custom landing page at root domain if enabled
+	// Skip for dashboard subdomain (bp.domain.com) so the UI is always accessible
+	bpDomain := "bp." + s.config.Domain.Root
+	if r.URL.Path == "/" && s.config.LandingPage.Enabled && s.config.LandingPage.HTML != "" && host != bpDomain && host != dashboardDomain {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Write([]byte(s.config.LandingPage.HTML))
 		return
 	}
 
@@ -2419,6 +2433,43 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			"root":     s.config.Domain.Root,
 			"wildcard": s.config.Domain.Wildcard,
 		},
+	})
+}
+
+// handleGetLandingPage returns the landing page config
+func (s *Server) handleGetLandingPage(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"enabled": s.config.LandingPage.Enabled,
+		"html":    s.config.LandingPage.HTML,
+	})
+}
+
+// handleUpdateLandingPage updates the landing page config
+func (s *Server) handleUpdateLandingPage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled *bool   `json:"enabled"`
+		HTML    *string `json:"html"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Enabled != nil {
+		s.config.LandingPage.Enabled = *req.Enabled
+	}
+	if req.HTML != nil {
+		s.config.LandingPage.HTML = *req.HTML
+	}
+
+	if err := s.config.Save(); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to save config: "+err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"enabled": s.config.LandingPage.Enabled,
+		"html":    s.config.LandingPage.HTML,
 	})
 }
 

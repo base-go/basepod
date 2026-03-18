@@ -44,6 +44,9 @@ type Config struct {
 
 	// Construct integration (OAuth-based deploy for Construct users)
 	Construct ConstructConfig `yaml:"construct"`
+
+	// Landing page settings (custom HTML served at root domain /)
+	LandingPage LandingPageConfig `yaml:"landing_page"`
 }
 
 // AIConfig holds AI-related configuration
@@ -63,6 +66,12 @@ type EmailConfig struct {
 	PostmarkToken string `yaml:"postmark_token"` // X-Postmark-Server-Token
 	ResendKey     string `yaml:"resend_key"`     // Resend API key
 	FromAddress   string `yaml:"from_address"`   // e.g. "info@base.al"
+}
+
+// LandingPageConfig holds the custom landing page settings
+type LandingPageConfig struct {
+	Enabled bool   `yaml:"enabled"` // Show custom landing page at root domain /
+	HTML    string `yaml:"html"`    // Custom HTML content
 }
 
 // DNSConfig holds DNS server configuration

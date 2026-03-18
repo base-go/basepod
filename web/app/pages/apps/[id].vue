@@ -332,14 +332,21 @@ function removeAlias(index: number) {
 }
 
 async function saveAliases() {
+  // Add any pending alias from the input field before saving
+  const pending = newAlias.value.trim().toLowerCase()
+  if (pending && !aliases.value.includes(pending)) {
+    aliases.value.push(pending)
+    newAlias.value = ''
+  }
   savingAliases.value = true
   try {
     await $api(`/apps/${appId}`, {
       method: 'PUT',
-      body: { aliases: aliases.value }
+      body: { aliases: [...aliases.value] }
     })
     toast.add({ title: 'Domain aliases saved', color: 'success' })
-    refresh()
+    aliasesInitialized.value = false
+    await refresh()
   } catch (error) {
     toast.add({ title: 'Failed to save aliases', description: getErrorMessage(error), color: 'error' })
   } finally {
