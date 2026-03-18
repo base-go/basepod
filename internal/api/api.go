@@ -3731,10 +3731,10 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		writeLine(fmt.Sprintf("Volume: %s -> %s", volumeName, v.ContainerPath))
 	}
 
-	// Create new container with network
+	// Create new container with network — use latest tag (more reliable with Podman API)
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
 		Name:     containerName,
-		Image:    imageName,
+		Image:    imageLatest,
 		Env:      a.Env,
 		Networks: []string{"basepod"},
 		Volumes:  volumeMounts,
