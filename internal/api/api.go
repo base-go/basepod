@@ -923,12 +923,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serve custom landing page at root domain if enabled
-	if r.URL.Path == "/" && s.config.LandingPage.Enabled && s.config.LandingPage.HTML != "" && !isDashboard {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Write([]byte(s.config.LandingPage.HTML))
-		return
+	// Serve landing page at root domain if no app is configured for it
+	if r.URL.Path == "/" && !isDashboard && isRootDomain {
+		if html := s.readLandingPageFile(); html != "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Write([]byte(strings.ReplaceAll(html, "{{domain}}", host)))
+			return
+		}
 	}
 
 	// Serve static files for everything else
@@ -989,16 +991,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// serveParkedPage serves a branded parked domain page for unknown domains/IPs
-func (s *Server) serveParkedPage(w http.ResponseWriter, r *http.Request, host string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	html := `<!DOCTYPE html>
+// defaultLandingHTML is the built-in landing page (use {{domain}} placeholder)
+const defaultLandingHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>` + host + `</title>
+<title>{{domain}}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0a0a;color:#fafafa}
@@ -1016,13 +1015,23 @@ p{font-size:.9rem;color:#71717a;line-height:1.6}
 <body>
 <div class="c">
 <div class="icon"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5a17.92 17.92 0 01-8.716-2.247m0 0A8.966 8.966 0 013 12c0-1.264.26-2.467.729-3.56"/></svg></div>
-<h1>Domain Parked</h1>
-<div class="domain">` + host + `</div>
+<h1>Welcome</h1>
+<div class="domain">{{domain}}</div>
 <p>This domain is pointed at this server but has not been configured yet.</p>
 <div class="footer">Powered by <a href="https://github.com/base-go/basepod">Basepod</a></div>
 </div>
 </body>
 </html>`
+
+// serveParkedPage serves the landing page for unknown domains/IPs
+func (s *Server) serveParkedPage(w http.ResponseWriter, r *http.Request, host string) {
+	html := s.readLandingPageFile()
+	if html == "" {
+		html = defaultLandingHTML
+	}
+	html = strings.ReplaceAll(html, "{{domain}}", host)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Write([]byte(html))
 }
 
@@ -1344,6 +1353,9 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.Aliases != nil {
 		a.Aliases = *req.Aliases
 		aliasesChanged = true
+		log.Printf("[ALIASES] App %s: updating aliases from %v to %v", a.Name, oldAliases, a.Aliases)
+	} else {
+		log.Printf("[ALIASES] App %s: req.Aliases is nil (not sent in request)", a.Name)
 	}
 
 	if err := s.storage.UpdateApp(a); err != nil {
@@ -2488,40 +2500,65 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetLandingPage returns the landing page config
+// landingPageFilePath returns the path to the landing page HTML file
+func (s *Server) landingPageFilePath() string {
+	paths, err := config.GetPaths()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(paths.Data, "landing.html")
+}
+
+// readLandingPageFile reads the landing page HTML from disk
+func (s *Server) readLandingPageFile() string {
+	path := s.landingPageFilePath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// handleGetLandingPage returns the landing page HTML
 func (s *Server) handleGetLandingPage(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"enabled": s.config.LandingPage.Enabled,
-		"html":    s.config.LandingPage.HTML,
+		"html": s.readLandingPageFile(),
 	})
 }
 
-// handleUpdateLandingPage updates the landing page config
+// handleUpdateLandingPage saves the landing page HTML to disk
 func (s *Server) handleUpdateLandingPage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled *bool   `json:"enabled"`
-		HTML    *string `json:"html"`
+		HTML *string `json:"html"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if req.Enabled != nil {
-		s.config.LandingPage.Enabled = *req.Enabled
-	}
-	if req.HTML != nil {
-		s.config.LandingPage.HTML = *req.HTML
-	}
-
-	if err := s.config.Save(); err != nil {
-		errorResponse(w, http.StatusInternalServerError, "Failed to save config: "+err.Error())
+	path := s.landingPageFilePath()
+	if path == "" {
+		errorResponse(w, http.StatusInternalServerError, "Cannot determine data path")
 		return
 	}
 
+	if req.HTML != nil {
+		if *req.HTML == "" {
+			// Delete the file if HTML is empty
+			os.Remove(path)
+		} else {
+			if err := os.WriteFile(path, []byte(*req.HTML), 0644); err != nil {
+				errorResponse(w, http.StatusInternalServerError, "Failed to save: "+err.Error())
+				return
+			}
+		}
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"enabled": s.config.LandingPage.Enabled,
-		"html":    s.config.LandingPage.HTML,
+		"html": s.readLandingPageFile(),
 	})
 }
 

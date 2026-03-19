@@ -162,45 +162,16 @@ const emailSettings = ref({
 })
 
 // Landing page settings
-const landingPageEnabled = ref(false)
 const landingPageHTML = ref('')
 const savingLandingPage = ref(false)
-const landingPageLoaded = ref(false)
 const showLandingPreview = ref(false)
-
-const defaultLandingHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Welcome</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0a0a0a; color: #fafafa; }
-    .container { text-align: center; max-width: 600px; padding: 2rem; }
-    h1 { font-size: 3rem; font-weight: 700; margin-bottom: 1rem; background: linear-gradient(135deg, #22d3ee, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    p { font-size: 1.125rem; color: #a1a1aa; line-height: 1.6; margin-bottom: 2rem; }
-    .btn { display: inline-block; padding: 0.75rem 2rem; border-radius: 0.5rem; background: #22d3ee; color: #0a0a0a; text-decoration: none; font-weight: 600; transition: opacity 0.2s; }
-    .btn:hover { opacity: 0.85; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Welcome</h1>
-    <p>This site is powered by Basepod.</p>
-    <a href="/login" class="btn">Dashboard</a>
-  </div>
-</body>
-</html>`
 
 const loadLandingPage = async () => {
   try {
-    const data = await $api<{ enabled: boolean; html: string }>('/system/landing-page')
-    landingPageEnabled.value = data.enabled
-    landingPageHTML.value = data.html || defaultLandingHTML
-    landingPageLoaded.value = true
+    const data = await $api<{ html: string }>('/system/landing-page')
+    landingPageHTML.value = data.html || ''
   } catch {
-    landingPageHTML.value = defaultLandingHTML
+    // will use empty
   }
 }
 
@@ -209,18 +180,20 @@ const saveLandingPage = async () => {
   try {
     await $api('/system/landing-page', {
       method: 'PUT',
-      body: {
-        enabled: landingPageEnabled.value,
-        html: landingPageHTML.value
-      }
+      body: { html: landingPageHTML.value }
     })
     toast.add({ title: 'Landing page saved', color: 'success' })
   } catch (e: unknown) {
     const err = e as { data?: { error?: string } }
-    toast.add({ title: 'Failed to save landing page', description: err.data?.error || 'Unknown error', color: 'error' })
+    toast.add({ title: 'Failed to save', description: err.data?.error || 'Unknown error', color: 'error' })
   } finally {
     savingLandingPage.value = false
   }
+}
+
+const resetLandingPage = async () => {
+  landingPageHTML.value = ''
+  await saveLandingPage()
 }
 
 // Check version on load
@@ -1009,9 +982,18 @@ const formatDate = (dateStr: string) => {
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-lg font-semibold">Landing Page</h3>
-                  <p class="text-sm text-gray-500 mt-1">Custom HTML page served at your root domain ({{ settings.domain || 'not configured' }})</p>
+                  <p class="text-sm text-gray-500 mt-1">Shown for domains/IPs with no app configured. Use <code class="text-xs bg-(--ui-bg-muted) px-1 rounded">&#123;&#123;domain&#125;&#125;</code> as placeholder.</p>
                 </div>
                 <div class="flex items-center gap-3">
+                  <UButton
+                    v-if="landingPageHTML"
+                    variant="ghost"
+                    size="xs"
+                    color="error"
+                    @click="resetLandingPage"
+                  >
+                    Reset to default
+                  </UButton>
                   <UButton
                     v-if="landingPageHTML"
                     variant="ghost"
@@ -1029,58 +1011,32 @@ const formatDate = (dateStr: string) => {
             </template>
 
             <div class="space-y-4">
-              <div class="flex items-center justify-between">
-                <div>
-                  <label class="font-medium text-sm">Enable Landing Page</label>
-                  <p class="text-xs text-gray-500">When enabled, visitors to your root domain see this page instead of the dashboard</p>
+              <!-- Preview -->
+              <div v-if="showLandingPreview && landingPageHTML" class="border border-(--ui-border) rounded-lg overflow-hidden">
+                <div class="bg-(--ui-bg-muted) px-3 py-2 text-xs text-gray-500 border-b border-(--ui-border)">
+                  Preview
                 </div>
-                <UToggle v-model="landingPageEnabled" />
+                <iframe
+                  :srcdoc="landingPageHTML.replaceAll('{{domain}}', settings.domain || 'example.com')"
+                  class="w-full bg-white"
+                  style="height: 500px; border: none;"
+                  sandbox="allow-scripts allow-same-origin"
+                />
               </div>
 
-              <div v-if="!landingPageEnabled" class="p-4 bg-(--ui-bg-muted) rounded-lg text-center text-sm text-gray-500">
-                <UIcon name="i-heroicons-information-circle" class="w-5 h-5 mb-1" />
-                <p>Landing page is disabled. Visitors to your root domain will see the basepod dashboard login.</p>
-                <p class="text-xs mt-1">The dashboard is always accessible at <span class="font-mono">bp.{{ settings.domain || 'yourdomain.com' }}</span></p>
+              <!-- Editor -->
+              <div v-else>
+                <textarea
+                  v-model="landingPageHTML"
+                  class="w-full font-mono text-sm bg-(--ui-bg-muted) border border-(--ui-border) rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  style="min-height: 500px; resize: vertical;"
+                  placeholder="Paste your HTML here. Leave empty to use the default landing page."
+                  spellcheck="false"
+                />
+                <p class="text-xs text-gray-500 mt-2">
+                  Full HTML page. Leave empty to use the built-in default. Use <code class="bg-(--ui-bg-muted) px-1 rounded">&#123;&#123;domain&#125;&#125;</code> to show the visitor's domain.
+                </p>
               </div>
-
-              <template v-if="landingPageEnabled">
-                <!-- Preview -->
-                <div v-if="showLandingPreview" class="border border-(--ui-border) rounded-lg overflow-hidden">
-                  <div class="bg-(--ui-bg-muted) px-3 py-2 text-xs text-gray-500 border-b border-(--ui-border) flex items-center justify-between">
-                    <span>Preview</span>
-                    <span class="font-mono">{{ settings.domain || 'yourdomain.com' }}</span>
-                  </div>
-                  <iframe
-                    :srcdoc="landingPageHTML"
-                    class="w-full bg-white"
-                    style="height: 500px; border: none;"
-                    sandbox="allow-scripts allow-same-origin"
-                  />
-                </div>
-
-                <!-- Editor -->
-                <div v-else>
-                  <label class="font-medium text-sm mb-2 block">HTML Content</label>
-                  <textarea
-                    v-model="landingPageHTML"
-                    class="w-full font-mono text-sm bg-(--ui-bg-muted) border border-(--ui-border) rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    style="min-height: 400px; resize: vertical;"
-                    placeholder="<!DOCTYPE html>
-<html>
-<head>
-  <title>My Site</title>
-</head>
-<body>
-  <h1>Welcome</h1>
-</body>
-</html>"
-                    spellcheck="false"
-                  />
-                  <p class="text-xs text-gray-500 mt-2">
-                    Enter full HTML including &lt;html&gt;, &lt;head&gt;, and &lt;body&gt; tags. You can use inline CSS and JavaScript.
-                  </p>
-                </div>
-              </template>
             </div>
           </UCard>
         </div>
