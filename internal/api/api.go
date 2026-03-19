@@ -896,7 +896,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isDashboard := host == bpDomain || host == dashboardDomain
 	isRootDomain := host == rootDomain
 
-	// Check if it's an app domain (not the dashboard)
+	// Serve API routes first (always accessible regardless of host)
+	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
+		s.router.ServeHTTP(w, r)
+		return
+	}
+
+	// Check if it's an app domain (subdomain of root)
 	if !isDashboard && rootDomain != "" && strings.HasSuffix(host, "."+rootDomain) {
 		// Look up app by domain
 		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
@@ -905,8 +911,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if it's a custom domain (not a subdomain of root) mapped to an app
-	if !isDashboard && !isRootDomain && rootDomain != "" && !strings.HasSuffix(host, "."+rootDomain) {
+	// Check if it's a custom/alias domain (not a subdomain of root, not localhost)
+	if !isDashboard && !isRootDomain && rootDomain != "" && !strings.HasSuffix(host, "."+rootDomain) && host != "localhost" && host != "127.0.0.1" {
 		// Look up by domain (alias)
 		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
 			s.proxyToApp(w, r, a)
@@ -914,12 +920,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unknown domain/IP pointing at this server — serve parked page
 		s.serveParkedPage(w, r, host)
-		return
-	}
-
-	// Serve API routes
-	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
-		s.router.ServeHTTP(w, r)
 		return
 	}
 
