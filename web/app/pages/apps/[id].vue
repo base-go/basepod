@@ -319,16 +319,18 @@ watch(() => app.value, (appData) => {
   }
 }, { immediate: true })
 
-function addAlias() {
+async function addAlias() {
   const alias = newAlias.value.trim().toLowerCase()
   if (alias && !aliases.value.includes(alias)) {
     aliases.value.push(alias)
     newAlias.value = ''
+    await saveAliases()
   }
 }
 
-function removeAlias(index: number) {
+async function removeAlias(index: number) {
   aliases.value.splice(index, 1)
+  await saveAliases()
 }
 
 async function saveAliases() {
@@ -356,6 +358,12 @@ async function saveAliases() {
 
 async function saveSettings() {
   savingSettings.value = true
+  // Add any pending alias from input
+  const pending = newAlias.value.trim().toLowerCase()
+  if (pending && !aliases.value.includes(pending)) {
+    aliases.value.push(pending)
+    newAlias.value = ''
+  }
   const exposeExternalChanged = settingsForm.value.exposeExternal !== (app.value?.ports?.expose_external || false)
   try {
     await $api(`/apps/${appId}`, {
@@ -367,11 +375,13 @@ async function saveSettings() {
         port: settingsForm.value.port,
         memory: settingsForm.value.memory || null,
         cpus: settingsForm.value.cpus || null,
-        expose_external: settingsForm.value.exposeExternal
+        expose_external: settingsForm.value.exposeExternal,
+        aliases: [...aliases.value]
       }
     })
     toast.add({ title: 'Settings saved', color: 'success' })
-    refresh()
+    aliasesInitialized.value = false
+    await refresh()
     // Show restart reminder if external access setting changed
     if (exposeExternalChanged) {
       showRestartModal.value = true
@@ -1857,9 +1867,7 @@ onUnmounted(() => {
           <template #header>
             <div class="flex items-center justify-between">
               <h3 class="font-semibold">Domain Aliases</h3>
-              <UButton :loading="savingAliases" size="xs" @click="saveAliases">
-                Save
-              </UButton>
+              <UIcon v-if="savingAliases" name="i-heroicons-arrow-path" class="w-4 h-4 animate-spin text-gray-400" />
             </div>
           </template>
 
@@ -1968,9 +1976,7 @@ onUnmounted(() => {
           <template #header>
             <div class="flex items-center justify-between">
               <h3 class="font-semibold">Domain Aliases</h3>
-              <UButton :loading="savingAliases" size="xs" @click="saveAliases">
-                Save
-              </UButton>
+              <UIcon v-if="savingAliases" name="i-heroicons-arrow-path" class="w-4 h-4 animate-spin text-gray-400" />
             </div>
           </template>
 
