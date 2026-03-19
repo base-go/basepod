@@ -918,22 +918,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.proxyToApp(w, r, a)
 			return
 		}
-		// Unknown domain/IP pointing at this server — serve parked page
+		// Unknown domain/IP pointing at this server — serve landing page
 		s.serveParkedPage(w, r, host)
 		return
 	}
 
-	// Serve landing page at root domain if no app is configured for it
-	if r.URL.Path == "/" && !isDashboard && isRootDomain {
-		if html := s.readLandingPageFile(); html != "" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			w.Write([]byte(strings.ReplaceAll(html, "{{domain}}", host)))
-			return
-		}
+	// Root domain — always serve landing page (dashboard is at bp.domain only)
+	if !isDashboard && isRootDomain && rootDomain != "" {
+		s.serveParkedPage(w, r, host)
+		return
 	}
 
-	// Serve static files for everything else
+	// Serve static files for everything else (dashboard at bp.domain, localhost)
 	if s.staticFS != nil {
 		// Try to serve the exact file
 		path := r.URL.Path
