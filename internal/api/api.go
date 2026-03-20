@@ -3589,6 +3589,8 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	// Extract tarball
 	writeLine("Extracting source...")
 	sourceDir := buildDir + "/source"
+	// Remove old source directory to prevent stale files from previous deploys
+	os.RemoveAll(sourceDir)
 	if err := os.MkdirAll(sourceDir, 0755); err != nil {
 		writeLine("ERROR: Failed to create source directory: " + err.Error())
 		return
