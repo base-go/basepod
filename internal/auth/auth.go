@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Session represents an authenticated session
@@ -34,10 +36,30 @@ func NewManager(passwordHash string) *Manager {
 	}
 }
 
-// HashPassword hashes a password using SHA256
-func HashPassword(password string) string {
+// hashPasswordLegacy hashes a password using SHA-256 (legacy, kept for backward compatibility)
+func hashPasswordLegacy(password string) string {
 	hash := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(hash[:])
+}
+
+// HashPassword hashes a password using bcrypt
+func HashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+// CheckPassword verifies a password against a hash.
+// It tries bcrypt first, then falls back to legacy SHA-256 for backward compatibility.
+func CheckPassword(hash, password string) bool {
+	// Try bcrypt first
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err == nil {
+		return true
+	}
+	// Fall back to legacy SHA-256
+	return hash == hashPasswordLegacy(password)
 }
 
 // ValidatePassword checks if the password matches the stored hash
@@ -45,7 +67,7 @@ func (m *Manager) ValidatePassword(password string) bool {
 	if m.passwordHash == "" {
 		return false // No password configured - require setup first
 	}
-	return HashPassword(password) == m.passwordHash
+	return CheckPassword(m.passwordHash, password)
 }
 
 // IsAuthRequired returns true if authentication is configured
@@ -134,7 +156,11 @@ func (m *Manager) SetPassword(password string) bool {
 	if password == "" {
 		return false // Cannot set empty password
 	}
-	m.passwordHash = HashPassword(password)
+	hash, err := HashPassword(password)
+	if err != nil {
+		return false
+	}
+	m.passwordHash = hash
 	return true
 }
 
@@ -146,8 +172,13 @@ func (m *Manager) DeleteSession(token string) {
 }
 
 // UpdatePassword updates the password hash
-func (m *Manager) UpdatePassword(newPassword string) {
-	m.passwordHash = HashPassword(newPassword)
+func (m *Manager) UpdatePassword(newPassword string) error {
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	m.passwordHash = hash
+	return nil
 }
 
 // GetPasswordHash returns the current password hash

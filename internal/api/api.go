@@ -192,42 +192,42 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/apps/{id}/health", s.requireAuth(s.requireAppAccess(s.handleGetAppHealth)))
 	s.router.HandleFunc("POST /api/apps/{id}/health/check", s.requireAuth(s.requireAppAccess(s.handleTriggerHealthCheck)))
 
-	// System (auth required)
+	// System (auth required, session-only for mutating, admin-only for dangerous ops)
 	s.router.HandleFunc("GET /api/system/info", s.requireAuth(s.handleSystemInfo))
 	s.router.HandleFunc("GET /api/system/processes", s.requireAuth(s.handleSystemProcesses))
 	s.router.HandleFunc("GET /api/system/config", s.handleGetConfig) // No auth - needed for login page
-	s.router.HandleFunc("PUT /api/system/config", s.requireAuth(s.handleUpdateConfig))
+	s.router.HandleFunc("PUT /api/system/config", s.requireAdmin(s.handleUpdateConfig))
 	s.router.HandleFunc("GET /api/system/version", s.requireAuth(s.handleGetVersion))
-	s.router.HandleFunc("POST /api/system/update", s.requireAuth(s.handleSystemUpdate))
-	s.router.HandleFunc("POST /api/system/prune", s.requireAuth(s.handleSystemPrune))
+	s.router.HandleFunc("POST /api/system/update", s.requireAdmin(s.handleSystemUpdate))
+	s.router.HandleFunc("POST /api/system/prune", s.requireAdmin(s.handleSystemPrune))
 	s.router.HandleFunc("GET /api/system/storage", s.requireAuth(s.handleSystemStorage))
 	s.router.HandleFunc("GET /api/system/volumes", s.requireAuth(s.handleListVolumes))
-	s.router.HandleFunc("DELETE /api/system/storage/{id}", s.requireAuth(s.handleDeleteStorageCategory))
+	s.router.HandleFunc("DELETE /api/system/storage/{id}", s.requireAdmin(s.handleDeleteStorageCategory))
 	s.router.HandleFunc("GET /api/system/storage/llm", s.requireAuth(s.handleListLLMStorage))
-	s.router.HandleFunc("DELETE /api/system/storage/llm/{name}", s.requireAuth(s.handleDeleteLLMStorage))
-	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAuth(s.handleServiceRestart))
+	s.router.HandleFunc("DELETE /api/system/storage/llm/{name}", s.requireAdmin(s.handleDeleteLLMStorage))
+	s.router.HandleFunc("POST /api/system/restart/{service}", s.requireAdmin(s.handleServiceRestart))
 	s.router.HandleFunc("GET /api/containers", s.requireAuth(s.handleListContainers))
-	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAuth(s.handleImportContainer))
+	s.router.HandleFunc("POST /api/containers/{id}/import", s.requireAdmin(s.handleImportContainer))
 
 	// Landing page
 	s.router.HandleFunc("GET /api/system/landing-page", s.requireAuth(s.handleGetLandingPage))
-	s.router.HandleFunc("PUT /api/system/landing-page", s.requireAuth(s.handleUpdateLandingPage))
+	s.router.HandleFunc("PUT /api/system/landing-page", s.requireAdmin(s.handleUpdateLandingPage))
 
 	// Templates (auth required)
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
-	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.handleDeployTemplate))
+	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.requireSessionOnly(s.handleDeployTemplate)))
 
-	// MLX LLM service (auth required) - Ollama-like API
+	// MLX LLM service (auth required, session-only for mutating)
 	s.router.HandleFunc("GET /api/mlx/status", s.requireAuth(s.handleMLXStatus))
 	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
-	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.handleMLXPull))
+	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.requireSessionOnly(s.handleMLXPull)))
 	s.router.HandleFunc("GET /api/mlx/pull/progress", s.requireAuth(s.handleMLXPullProgress))
-	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.handleMLXPullCancel))
-	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.handleMLXRun))
-	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.handleMLXStop))
-	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.handleMLXTranscribe))
-	s.router.HandleFunc("POST /api/mlx/synthesize", s.requireAuth(s.handleMLXSynthesize))
-	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAuth(s.handleMLXDeleteModel))
+	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.requireSessionOnly(s.handleMLXPullCancel)))
+	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.requireSessionOnly(s.handleMLXRun)))
+	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.requireSessionOnly(s.handleMLXStop)))
+	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.requireSessionOnly(s.handleMLXTranscribe)))
+	s.router.HandleFunc("POST /api/mlx/synthesize", s.requireAuth(s.requireSessionOnly(s.handleMLXSynthesize)))
+	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAdmin(s.handleMLXDeleteModel))
 
 	// Chat messages (auth required)
 	s.router.HandleFunc("GET /api/chat/messages/{modelId}", s.requireAuth(s.handleGetChatMessages))
@@ -239,7 +239,7 @@ func (s *Server) setupRoutes() {
 
 	// Container images management (auth required)
 	s.router.HandleFunc("GET /api/container-images", s.requireAuth(s.handleListContainerImages))
-	s.router.HandleFunc("DELETE /api/container-images/{id}", s.requireAuth(s.handleDeleteContainerImage))
+	s.router.HandleFunc("DELETE /api/container-images/{id}", s.requireAdmin(s.handleDeleteContainerImage))
 
 	// Access logs (auth required, per-app access)
 	s.router.HandleFunc("GET /api/apps/{id}/access-logs", s.requireAuth(s.requireAppAccess(s.handleAppAccessLogs)))
@@ -270,17 +270,17 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/activity", s.requireAuth(s.handleListActivity))
 	s.router.HandleFunc("GET /api/apps/{id}/activity", s.requireAuth(s.requireAppAccess(s.handleListAppActivity)))
 
-	// Notification hooks (auth required)
-	s.router.HandleFunc("GET /api/notifications", s.requireAuth(s.handleListNotifications))
-	s.router.HandleFunc("POST /api/notifications", s.requireAuth(s.handleCreateNotification))
-	s.router.HandleFunc("PUT /api/notifications/{id}", s.requireAuth(s.handleUpdateNotification))
-	s.router.HandleFunc("DELETE /api/notifications/{id}", s.requireAuth(s.handleDeleteNotification))
-	s.router.HandleFunc("POST /api/notifications/{id}/test", s.requireAuth(s.handleTestNotification))
+	// Notification hooks (admin only)
+	s.router.HandleFunc("GET /api/notifications", s.requireAdmin(s.handleListNotifications))
+	s.router.HandleFunc("POST /api/notifications", s.requireAdmin(s.handleCreateNotification))
+	s.router.HandleFunc("PUT /api/notifications/{id}", s.requireAdmin(s.handleUpdateNotification))
+	s.router.HandleFunc("DELETE /api/notifications/{id}", s.requireAdmin(s.handleDeleteNotification))
+	s.router.HandleFunc("POST /api/notifications/{id}/test", s.requireAdmin(s.handleTestNotification))
 
-	// Deploy tokens (auth required)
-	s.router.HandleFunc("GET /api/deploy-tokens", s.requireAuth(s.handleListDeployTokens))
-	s.router.HandleFunc("POST /api/deploy-tokens", s.requireAuth(s.handleCreateDeployToken))
-	s.router.HandleFunc("DELETE /api/deploy-tokens/{id}", s.requireAuth(s.handleDeleteDeployToken))
+	// Deploy tokens (admin only)
+	s.router.HandleFunc("GET /api/deploy-tokens", s.requireAdmin(s.handleListDeployTokens))
+	s.router.HandleFunc("POST /api/deploy-tokens", s.requireAdmin(s.handleCreateDeployToken))
+	s.router.HandleFunc("DELETE /api/deploy-tokens/{id}", s.requireAdmin(s.handleDeleteDeployToken))
 
 	// App metrics (auth required, per-app access)
 	s.router.HandleFunc("GET /api/apps/{id}/metrics", s.requireAuth(s.requireAppAccess(s.handleAppMetrics)))
@@ -305,13 +305,30 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/construct/deploy", s.requireConstructAuth(s.handleSourceDeploy))
 	s.router.HandleFunc("GET /api/construct/apps", s.requireConstructAuth(s.handleConstructListApps))
 
-	// Backup endpoints (auth required)
-	s.router.HandleFunc("GET /api/backups", s.requireAuth(s.handleListBackups))
-	s.router.HandleFunc("POST /api/backups", s.requireAuth(s.handleCreateBackup))
-	s.router.HandleFunc("GET /api/backups/{id}", s.requireAuth(s.handleGetBackup))
-	s.router.HandleFunc("GET /api/backups/{id}/download", s.requireAuth(s.handleDownloadBackup))
-	s.router.HandleFunc("POST /api/backups/{id}/restore", s.requireAuth(s.handleRestoreBackup))
-	s.router.HandleFunc("DELETE /api/backups/{id}", s.requireAuth(s.handleDeleteBackup))
+	// Backup endpoints (admin only)
+	s.router.HandleFunc("GET /api/backups", s.requireAdmin(s.handleListBackups))
+	s.router.HandleFunc("POST /api/backups", s.requireAdmin(s.handleCreateBackup))
+	s.router.HandleFunc("GET /api/backups/{id}", s.requireAdmin(s.handleGetBackup))
+	s.router.HandleFunc("GET /api/backups/{id}/download", s.requireAdmin(s.handleDownloadBackup))
+	s.router.HandleFunc("POST /api/backups/{id}/restore", s.requireAdmin(s.handleRestoreBackup))
+	s.router.HandleFunc("DELETE /api/backups/{id}", s.requireAdmin(s.handleDeleteBackup))
+}
+
+// deployTokenKey is the context key for deploy token info
+type deployTokenKey struct{}
+
+// isDeployToken checks if the request was authenticated via a deploy token
+func isDeployToken(r *http.Request) bool {
+	_, ok := r.Context().Value(deployTokenKey{}).(*app.DeployToken)
+	return ok
+}
+
+// getDeployToken returns the deploy token from context, if any
+func getDeployTokenFromCtx(r *http.Request) *app.DeployToken {
+	if dt, ok := r.Context().Value(deployTokenKey{}).(*app.DeployToken); ok {
+		return dt
+	}
+	return nil
 }
 
 // requireAuth wraps a handler with authentication check
@@ -352,12 +369,38 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 				}
 				// Update last used
 				s.storage.UpdateDeployTokenLastUsed(dt.ID)
-				handler(w, r)
+				// Store deploy token in context for scope checking
+				ctx := context.WithValue(r.Context(), deployTokenKey{}, dt)
+				handler(w, r.WithContext(ctx))
 				return
 			}
 		}
 
 		errorResponse(w, http.StatusUnauthorized, "Unauthorized")
+	}
+}
+
+// requireSessionOnly rejects deploy tokens — only session auth is allowed
+func (s *Server) requireSessionOnly(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if isDeployToken(r) {
+			errorResponse(w, http.StatusForbidden, "Deploy tokens cannot access this endpoint")
+			return
+		}
+		handler(w, r)
+	}
+}
+
+// requireWriteAccess rejects viewer role users for mutating operations
+func (s *Server) requireWriteAccess(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := s.getSessionToken(r)
+		session := s.auth.GetSession(token)
+		if session != nil && session.UserRole == "viewer" {
+			errorResponse(w, http.StatusForbidden, "Viewers have read-only access")
+			return
+		}
+		handler(w, r)
 	}
 }
 
@@ -507,8 +550,18 @@ func (s *Server) requireAppAccess(handler http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Admin and viewer pass through (admin=full access, viewer=read-only to all)
-		if session.UserRole == "admin" || session.UserRole == "" || session.UserRole == "viewer" {
+		// Admin passes through with full access
+		if session.UserRole == "admin" || session.UserRole == "" {
+			handler(w, r)
+			return
+		}
+
+		// Viewer: read-only access (GET/HEAD only)
+		if session.UserRole == "viewer" {
+			if r.Method != "GET" && r.Method != "HEAD" {
+				errorResponse(w, http.StatusForbidden, "Viewers have read-only access")
+				return
+			}
 			handler(w, r)
 			return
 		}
@@ -664,7 +717,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, http.StatusUnauthorized, "Invalid email or password")
 			return
 		}
-		if auth.HashPassword(req.Password) != user.PasswordHash {
+		if !auth.CheckPassword(user.PasswordHash, req.Password) {
 			errorResponse(w, http.StatusUnauthorized, "Invalid email or password")
 			return
 		}
@@ -859,7 +912,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password in memory
-	s.auth.UpdatePassword(req.NewPassword)
+	if err := s.auth.UpdatePassword(req.NewPassword); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
 
 	// Update config file
 	s.config.Auth.PasswordHash = s.auth.GetPasswordHash()
@@ -1157,6 +1213,21 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate volume mounts - reject arbitrary host bind mounts
+	for _, v := range req.Volumes {
+		if v.HostPath != "" {
+			// Only allow host paths under the basepod data directory
+			paths, _ := config.GetPaths()
+			cleanPath := filepath.Clean(v.HostPath)
+			absPath, _ := filepath.Abs(cleanPath)
+			allowedBase, _ := filepath.Abs(paths.Apps)
+			if !strings.HasPrefix(absPath, allowedBase+string(filepath.Separator)) && absPath != allowedBase {
+				errorResponse(w, http.StatusBadRequest, fmt.Sprintf("Host path %q is not allowed; bind mounts must be under %s", v.HostPath, paths.Apps))
+				return
+			}
+		}
+	}
+
 	newApp := &app.App{
 		ID:        uuid.New().String(),
 		Name:      req.Name,
@@ -1334,6 +1405,19 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		a.Ports.ExposeExternal = *req.ExposeExternal
 	}
 	if req.Volumes != nil {
+		// Validate volume mounts - reject arbitrary host bind mounts
+		for _, v := range *req.Volumes {
+			if v.HostPath != "" {
+				paths, _ := config.GetPaths()
+				cleanPath := filepath.Clean(v.HostPath)
+				absPath, _ := filepath.Abs(cleanPath)
+				allowedBase, _ := filepath.Abs(paths.Apps)
+				if !strings.HasPrefix(absPath, allowedBase+string(filepath.Separator)) && absPath != allowedBase {
+					errorResponse(w, http.StatusBadRequest, fmt.Sprintf("Host path %q is not allowed; bind mounts must be under %s", v.HostPath, paths.Apps))
+					return
+				}
+			}
+		}
 		a.Volumes = *req.Volumes
 	}
 	if req.HealthCheck != nil {
@@ -3596,9 +3680,8 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use tar command to extract (simpler than Go tar library)
-	extractCmd := fmt.Sprintf("tar -xzf %s -C %s", tarballPath, sourceDir)
-	if output, err := execCommand(ctx, "sh", "-c", extractCmd); err != nil {
+	// Extract tarball
+	if output, err := execCommand(ctx, "tar", "-xzf", tarballPath, "-C", sourceDir); err != nil {
 		writeLine("ERROR: Failed to extract tarball: " + err.Error())
 		writeLine(output)
 		return
@@ -3684,23 +3767,37 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 				}
 
 				writeLine(fmt.Sprintf("Installing dependencies with %s...", npmCmd))
-				installArgs := "install"
 				if npmCmd == "npm" {
-					installArgs = "ci --no-audit --no-fund 2>&1 || npm install --no-audit --no-fund"
-				}
-				if output, err := execCommand(ctx, "sh", "-c", fmt.Sprintf("cd %s && %s %s 2>&1", sourceDir, npmCmd, installArgs)); err != nil {
-					writeLine("WARNING: Dependency install had issues: " + err.Error())
-					writeLine(output)
+					// Try npm ci first, fall back to npm install
+					if output, err := execCommandDir(ctx, sourceDir, "npm", "ci", "--no-audit", "--no-fund"); err != nil {
+						if output2, err2 := execCommandDir(ctx, sourceDir, "npm", "install", "--no-audit", "--no-fund"); err2 != nil {
+							writeLine("WARNING: Dependency install had issues: " + err2.Error())
+							writeLine(output2)
+						} else {
+							_ = output
+							writeLine("Dependencies installed")
+						}
+					} else {
+						_ = output
+						writeLine("Dependencies installed")
+					}
 				} else {
-					writeLine("Dependencies installed")
+					if output, err := execCommandDir(ctx, sourceDir, npmCmd, "install"); err != nil {
+						writeLine("WARNING: Dependency install had issues: " + err.Error())
+						writeLine(output)
+					} else {
+						_ = output
+						writeLine("Dependencies installed")
+					}
 				}
 
 				// Run build
 				writeLine("Running build...")
-				if output, err := execCommand(ctx, "sh", "-c", fmt.Sprintf("cd %s && %s run build 2>&1", sourceDir, npmCmd)); err != nil {
+				if output, err := execCommandDir(ctx, sourceDir, npmCmd, "run", "build"); err != nil {
 					writeLine("WARNING: Build had issues: " + err.Error())
 					writeLine(output)
 				} else {
+					_ = output
 					writeLine("Build complete")
 				}
 			}
@@ -3736,8 +3833,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Copy files using cp -r
-		copyCmd := fmt.Sprintf("cp -r %s/* %s/", publicPath, appDataDir)
-		if output, err := execCommand(ctx, "sh", "-c", copyCmd); err != nil {
+		if output, err := execCommandDir(ctx, publicPath, "cp", "-r", ".", appDataDir+"/"); err != nil {
 			writeLine("ERROR: Failed to copy static files: " + err.Error())
 			writeLine(output)
 			return
@@ -3843,8 +3939,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -t %s -f %s .", sourceDir, podmanPath, imageName, imageLatest, dockerfile)
-	output, err := execCommandStream(ctx, "sh", []string{"-c", buildCmd}, writeLine)
+	output, err := execCommandStreamDir(ctx, sourceDir, podmanPath, []string{"build", "-t", imageName, "-t", imageLatest, "-f", dockerfile, "."}, writeLine)
 	if err != nil {
 		writeLine("ERROR: Build failed: " + err.Error())
 		writeLine(output)
@@ -4084,6 +4179,67 @@ func execCommand(ctx context.Context, name string, args ...string) (string, erro
 	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// execCommandDir executes a command in a specific directory and returns output
+func execCommandDir(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// execCommandStreamDir executes a command in a directory and streams output
+func execCommandStreamDir(ctx context.Context, dir, name string, args []string, writeLine func(string)) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	var output strings.Builder
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, readErr := stdout.Read(buf)
+			if n > 0 {
+				line := string(buf[:n])
+				output.WriteString(line)
+				writeLine(strings.TrimRight(line, "\n"))
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				line := string(buf[:n])
+				output.WriteString(line)
+				writeLine(strings.TrimRight(line, "\n"))
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	err = cmd.Wait()
+	return output.String(), err
 }
 
 // execCommandStream executes a command and streams output
@@ -5744,9 +5900,8 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	gitURL := a.Deployment.GitURL
 	log.Printf("Webhook deploy %s: cloning %s branch %s", a.Name, gitURL, branch)
 
-	cloneCmd := fmt.Sprintf("git clone --depth 1 --branch %s %s %s", branch, gitURL, sourceDir)
-	output, err := execCommand(ctx, "sh", "-c", cloneCmd)
-	buildLog.WriteString("$ " + cloneCmd + "\n" + output + "\n")
+	output, err := execCommand(ctx, "git", "clone", "--depth", "1", "--branch", branch, gitURL, sourceDir)
+	buildLog.WriteString("$ git clone --depth 1 --branch " + branch + " " + gitURL + " " + sourceDir + "\n" + output + "\n")
 	if err != nil {
 		errMsg := fmt.Sprintf("Git clone failed: %v\n%s", err, output)
 		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
@@ -5819,9 +5974,8 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 		}
 	}
 
-	buildCmd := fmt.Sprintf("cd %s && %s build -t %s -t %s -f %s .", sourceDir, podmanPath, imageName, imageLatest, dockerfile)
-	output, err = execCommand(ctx, "sh", "-c", buildCmd)
-	buildLog.WriteString("$ " + buildCmd + "\n" + output + "\n")
+	output, err = execCommandDir(ctx, sourceDir, podmanPath, "build", "-t", imageName, "-t", imageLatest, "-f", dockerfile, ".")
+	buildLog.WriteString("$ " + podmanPath + " build -t " + imageName + " -t " + imageLatest + " -f " + dockerfile + " .\n" + output + "\n")
 	if err != nil {
 		errMsg := fmt.Sprintf("Build failed: %v\n%s", err, output)
 		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
@@ -6036,6 +6190,53 @@ func (s *Server) sendNotifications(event, appID, appName string, details map[str
 	}
 }
 
+// isPrivateIP checks if an IP address is in a private/loopback range
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []struct {
+		network string
+	}{
+		{"10.0.0.0/8"},
+		{"172.16.0.0/12"},
+		{"192.168.0.0/16"},
+		{"127.0.0.0/8"},
+		{"169.254.0.0/16"},
+		{"::1/128"},
+		{"fc00::/7"},
+		{"fe80::/10"},
+	}
+	for _, r := range privateRanges {
+		_, cidr, _ := net.ParseCIDR(r.network)
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// safeNotificationClient returns an HTTP client that blocks requests to private/internal IPs
+func safeNotificationClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address: %s", addr)
+			}
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+			}
+			for _, ip := range ips {
+				if isPrivateIP(ip) {
+					return nil, fmt.Errorf("requests to private/internal addresses are not allowed (%s -> %s)", host, ip)
+				}
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
+}
+
 func (s *Server) dispatchNotification(cfg *app.NotificationConfig, payload []byte) {
 	var targetURL string
 	switch cfg.Type {
@@ -6052,6 +6253,13 @@ func (s *Server) dispatchNotification(cfg *app.NotificationConfig, payload []byt
 		return
 	}
 
+	// Validate URL scheme
+	parsed, err := url.Parse(targetURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		log.Printf("Notification dispatch skipped for %s: invalid URL scheme", cfg.Name)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -6061,7 +6269,8 @@ func (s *Server) dispatchNotification(cfg *app.NotificationConfig, payload []byt
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Use safe client that blocks private/internal IPs
+	resp, err := safeNotificationClient().Do(req)
 	if err != nil {
 		log.Printf("Notification dispatch failed for %s: %v", cfg.Name, err)
 		return
@@ -7140,7 +7349,11 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set password and clear invite token
-	passwordHash := auth.HashPassword(req.Password)
+	passwordHash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
 	s.storage.UpdateUserPassword(user.ID, passwordHash)
 	s.storage.ClearInviteToken(user.ID)
 
@@ -7241,8 +7454,7 @@ func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	cloneCmd := fmt.Sprintf("git clone --depth 1 %s %s", req.RepoURL, tmpDir+"/repo")
-	if output, err := execCommand(ctx, "sh", "-c", cloneCmd); err != nil {
+	if output, err := execCommand(ctx, "git", "clone", "--depth", "1", req.RepoURL, tmpDir+"/repo"); err != nil {
 		errorResponse(w, http.StatusBadRequest, fmt.Sprintf("Failed to clone repo: %v\n%s", err, output))
 		return
 	}

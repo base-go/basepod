@@ -182,8 +182,43 @@ func (c *Client) InitializeServer(routes []Route) error {
 		return nil
 	}
 
-	// No server exists - this shouldn't happen if Caddyfile is loaded
-	// Return nil to avoid breaking startup, routes will be added as apps deploy
+	// No server exists - create one with HTTPS
+	caddyRoutes := make([]interface{}, 0, len(routes))
+	for _, route := range routes {
+		caddyRoutes = append(caddyRoutes, map[string]interface{}{
+			"@id": route.ID,
+			"match": []map[string]interface{}{
+				{"host": []string{route.Domain}},
+			},
+			"handle": []map[string]interface{}{
+				{
+					"handler": "reverse_proxy",
+					"upstreams": []map[string]string{
+						{"dial": route.Upstream},
+					},
+				},
+			},
+		})
+	}
+
+	serverConfig := map[string]interface{}{
+		"listen": []string{":443", ":80"},
+		"routes": caddyRoutes,
+	}
+
+	data, _ := json.Marshal(serverConfig)
+	req, err := http.NewRequest("POST", c.adminURL+"/config/apps/http/servers/srv0", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to create server: %w", err)
+	}
+	resp.Body.Close()
+
 	return nil
 }
 
@@ -386,6 +421,63 @@ func (c *Client) AddStaticRoute(domain, rootDir string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to add static route (status %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// EnsureBaseConfig ensures the base Caddy server (srv0) exists with HTTPS listeners.
+// If srv0 doesn't exist, it creates one with :80 and :443 listeners.
+// Also ensures TLS on-demand check endpoint is configured.
+func (c *Client) EnsureBaseConfig(apiPort int, domain string) error {
+	// Check if srv0 already exists
+	resp, err := c.httpClient.Get(c.adminURL + "/config/apps/http/servers/srv0")
+	if err != nil {
+		return fmt.Errorf("failed to check server config: %w", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// srv0 doesn't exist - create it with proper listeners
+		serverConfig := map[string]interface{}{
+			"listen": []string{":443", ":80"},
+			"routes": []interface{}{},
+		}
+
+		data, _ := json.Marshal(serverConfig)
+		req, err := http.NewRequest("POST", c.adminURL+"/config/apps/http/servers/srv0", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to create server: %w", err)
+		}
+		resp.Body.Close()
+	}
+
+	// Ensure TLS on-demand is configured (check endpoint)
+	if apiPort > 0 {
+		tlsConfig := map[string]interface{}{
+			"automation": map[string]interface{}{
+				"on_demand": map[string]interface{}{
+					"ask": fmt.Sprintf("http://localhost:%d/api/caddy/check", apiPort),
+				},
+			},
+		}
+		data, _ := json.Marshal(tlsConfig)
+		req, err := http.NewRequest("POST", c.adminURL+"/config/apps/tls", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		resp.Body.Close()
 	}
 
 	return nil

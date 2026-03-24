@@ -79,7 +79,7 @@ func (s *Service) Create(ctx context.Context, opts Options) (*Backup, error) {
 	}
 
 	// Ensure backup directory exists
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -419,6 +419,11 @@ func (s *Service) RestoreFromPath(ctx context.Context, backupPath string, opts R
 
 // restoreDatabase restores the SQLite database
 func (s *Service) restoreDatabase(r io.Reader, header *tar.Header) error {
+	// Validate that the archive path is exactly what we expect
+	if header.Name != "database/basepod.db" {
+		return fmt.Errorf("unexpected database path in archive: %s", header.Name)
+	}
+
 	dbPath := filepath.Join(s.paths.Data, "basepod.db")
 
 	// Create backup of current database if it exists
@@ -430,7 +435,7 @@ func (s *Service) restoreDatabase(r io.Reader, header *tar.Header) error {
 	}
 
 	// Ensure data directory exists
-	if err := os.MkdirAll(s.paths.Data, 0755); err != nil {
+	if err := os.MkdirAll(s.paths.Data, 0700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
@@ -441,7 +446,8 @@ func (s *Service) restoreDatabase(r io.Reader, header *tar.Header) error {
 	}
 	defer file.Close()
 
-	if _, err := io.Copy(file, r); err != nil {
+	// Use LimitReader to prevent zip bombs (500MB limit for database)
+	if _, err := io.Copy(file, io.LimitReader(r, 500*1024*1024)); err != nil {
 		return fmt.Errorf("failed to write database: %w", err)
 	}
 
@@ -450,7 +456,10 @@ func (s *Service) restoreDatabase(r io.Reader, header *tar.Header) error {
 
 // restoreConfig restores a config file
 func (s *Service) restoreConfig(r io.Reader, header *tar.Header, filename string) error {
-	configPath := filepath.Join(s.paths.Config, filename)
+	configPath := filepath.Join(s.paths.Config, filepath.Clean(filename))
+	if !isInsidePath(s.paths.Config, configPath) {
+		return fmt.Errorf("path traversal detected in archive: %s", filename)
+	}
 
 	// Create backup of current config if it exists
 	if _, err := os.Stat(configPath); err == nil {
@@ -461,7 +470,7 @@ func (s *Service) restoreConfig(r io.Reader, header *tar.Header, filename string
 	}
 
 	// Ensure config directory exists
-	if err := os.MkdirAll(s.paths.Config, 0755); err != nil {
+	if err := os.MkdirAll(s.paths.Config, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -472,7 +481,8 @@ func (s *Service) restoreConfig(r io.Reader, header *tar.Header, filename string
 	}
 	defer file.Close()
 
-	if _, err := io.Copy(file, r); err != nil {
+	// Use LimitReader to prevent zip bombs (10MB limit for config)
+	if _, err := io.Copy(file, io.LimitReader(r, 10*1024*1024)); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 
@@ -485,11 +495,14 @@ func (s *Service) restoreConfig(r io.Reader, header *tar.Header, filename string
 // restoreApp restores a static site file
 func (s *Service) restoreApp(r io.Reader, header *tar.Header) error {
 	// Get relative path within apps directory
-	relPath := strings.TrimPrefix(header.Name, "apps/")
+	relPath := filepath.Clean(strings.TrimPrefix(header.Name, "apps/"))
 	destPath := filepath.Join(s.paths.Apps, relPath)
+	if !isInsidePath(s.paths.Apps, destPath) {
+		return fmt.Errorf("path traversal detected in archive: %s", header.Name)
+	}
 
 	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -505,7 +518,8 @@ func (s *Service) restoreApp(r io.Reader, header *tar.Header) error {
 	}
 	defer file.Close()
 
-	if _, err := io.Copy(file, r); err != nil {
+	// Use LimitReader to prevent zip bombs (500MB limit for app files)
+	if _, err := io.Copy(file, io.LimitReader(r, 500*1024*1024)); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -592,6 +606,19 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// isInsidePath checks if targetPath is contained within basePath (prevents path traversal)
+func isInsidePath(basePath, targetPath string) bool {
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+	return absTarget == absBase || strings.HasPrefix(absTarget, absBase+string(filepath.Separator))
 }
 
 // addFileToTar adds a single file to the tar archive

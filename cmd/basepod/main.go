@@ -178,6 +178,18 @@ func main() {
 
 	// Initialize Caddy HTTP server and sync routes for running apps
 	if caddyClient != nil {
+		// Ensure base Caddy config with HTTPS listeners
+		cfg2, _ := config.Load()
+		apiPort := 3000
+		domain := ""
+		if cfg2 != nil {
+			apiPort = cfg2.Server.APIPort
+			domain = cfg2.Domain.Root
+		}
+		if err := caddyClient.EnsureBaseConfig(apiPort, domain); err != nil {
+			log.Printf("Warning: Failed to ensure Caddy base config: %v", err)
+		}
+		// Then initialize routes
 		if err := initializeCaddyRoutes(caddyClient, store); err != nil {
 			log.Printf("Warning: Failed to initialize Caddy routes: %v", err)
 		}
@@ -414,6 +426,31 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 	// Collect routes for running apps with domains
 	var routes []caddy.Route
 	var staticCount, aliasCount int
+
+	// Load config for dashboard route
+	cfg, _ := config.Load()
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+
+	// Always add dashboard route if domain is configured
+	if cfg.Domain.Root != "" {
+		bpDomain := "bp." + cfg.Domain.Root
+		routes = append(routes, caddy.Route{
+			ID:        "basepod-dashboard",
+			Domain:    bpDomain,
+			Upstream:  fmt.Sprintf("127.0.0.1:%d", cfg.Server.APIPort),
+			EnableSSL: true,
+		})
+		// Also route the root domain to basepod dashboard
+		routes = append(routes, caddy.Route{
+			ID:        "basepod-root",
+			Domain:    cfg.Domain.Root,
+			Upstream:  fmt.Sprintf("127.0.0.1:%d", cfg.Server.APIPort),
+			EnableSSL: true,
+		})
+	}
+
 	for _, a := range apps {
 		if a.Status != "running" || a.Domain == "" {
 			continue
