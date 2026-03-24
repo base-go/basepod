@@ -22,6 +22,7 @@ type App struct {
 	Type        AppType            `json:"type"`        // container or mlx
 	Domain      string             `json:"domain"`      // e.g., myapp.basepod.example.com
 	Aliases     []string           `json:"aliases"`     // Additional domains (e.g., ["duxt.dev", "blog.example.com"])
+	RedirectURL string             `json:"redirect_url,omitempty"` // If set, redirect all traffic to this URL (301)
 	ContainerID string             `json:"container_id"`
 	Image       string             `json:"image"`
 	Status      AppStatus          `json:"status"`
@@ -178,6 +179,7 @@ type UpdateAppRequest struct {
 	Name           *string            `json:"name,omitempty"`
 	Domain         *string            `json:"domain,omitempty"`
 	Aliases        *[]string          `json:"aliases,omitempty"` // Additional domains
+	RedirectURL    *string            `json:"redirect_url,omitempty"`
 	Image          *string            `json:"image,omitempty"`
 	Env            *map[string]string `json:"env,omitempty"`
 	Port           *int               `json:"port,omitempty"`

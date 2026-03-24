@@ -128,6 +128,7 @@ async function restartApp() {
 const settingsForm = ref({
   name: '',
   domain: '',
+  redirectUrl: '',
   image: '',
   port: 8080,
   memory: 0,
@@ -305,6 +306,7 @@ watch(() => app.value, (appData) => {
     settingsForm.value = {
       name: appData.name || '',
       domain: appData.domain || '',
+      redirectUrl: appData.redirect_url || '',
       image: appData.image || '',
       port: appData.ports?.container_port || 8080,
       memory: appData.resources?.memory || 0,
@@ -371,6 +373,7 @@ async function saveSettings() {
       body: {
         name: settingsForm.value.name,
         domain: settingsForm.value.domain,
+        redirect_url: settingsForm.value.redirectUrl || '',
         image: settingsForm.value.image || null,
         port: settingsForm.value.port,
         memory: settingsForm.value.memory || null,
@@ -1836,6 +1839,10 @@ onUnmounted(() => {
 
             <UFormField label="Domain" hint="Primary domain for your app">
               <UInput v-model="settingsForm.domain" placeholder="app.example.com" />
+            </UFormField>
+
+            <UFormField label="Redirect URL" hint="If set, all traffic redirects here (301)">
+              <UInput v-model="settingsForm.redirectUrl" placeholder="https://example.com" />
             </UFormField>
           </div>
         </UCard>

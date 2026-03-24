@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	version = "2.1.0"
+	version = "2.1.1"
 )
 
 // ServerConfig holds configuration for a single server
@@ -537,6 +537,149 @@ func cmdLogout(args []string) {
 	}
 
 	fmt.Printf("Logged out from %s\n", contextName)
+}
+
+// serverContextNames returns sorted context names with current context first
+func serverContextNames(cfg *CLIConfig) []string {
+	names := make([]string, 0, len(cfg.Servers))
+	if cfg.CurrentContext != "" {
+		if _, ok := cfg.Servers[cfg.CurrentContext]; ok {
+			names = append(names, cfg.CurrentContext)
+		}
+	}
+	for name := range cfg.Servers {
+		if name != cfg.CurrentContext {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// promptSelectServer presents an interactive arrow-key selector for server context
+func promptSelectServer(cfg *CLIConfig) (*ServerConfig, string) {
+	names := serverContextNames(cfg)
+
+	if len(names) == 1 {
+		srv := cfg.Servers[names[0]]
+		return &srv, names[0]
+	}
+
+	selected := 0 // Start at current context (first in list)
+
+	// Try interactive mode with raw terminal
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		oldState, err := term.MakeRaw(fd)
+		if err == nil {
+			defer term.Restore(fd, oldState)
+			return interactiveSelect(cfg, names, selected)
+		}
+	}
+
+	// Fallback: simple number input
+	return fallbackSelect(cfg, names)
+}
+
+func interactiveSelect(cfg *CLIConfig, names []string, selected int) (*ServerConfig, string) {
+	renderMenu := func() {
+		// Move cursor up to redraw (except first render)
+		fmt.Print("\r\033[J") // Clear from cursor to end
+		fmt.Println("Deploy to which server? (↑/↓ to select, Enter to confirm)")
+		fmt.Println()
+		for i, name := range names {
+			if i == selected {
+				fmt.Printf("  \033[36m❯ %s\033[0m (%s)\n", name, cfg.Servers[name].URL)
+			} else {
+				fmt.Printf("    %s (%s)\n", name, cfg.Servers[name].URL)
+			}
+		}
+	}
+
+	// Initial render
+	renderMenu()
+
+	buf := make([]byte, 3)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		switch {
+		case buf[0] == 13 || buf[0] == 10: // Enter
+			// Clear menu and print selection
+			fmt.Printf("\r\033[%dA\033[J", len(names)+3) // Move up and clear
+			name := names[selected]
+			srv := cfg.Servers[name]
+			fmt.Printf("Deploying to: %s (%s)\n", name, srv.URL)
+			return &srv, name
+
+		case buf[0] == 3 || buf[0] == 17: // Ctrl+C or Ctrl+Q
+			fmt.Printf("\r\033[%dA\033[J", len(names)+3)
+			fmt.Println("Cancelled.")
+			os.Exit(0)
+
+		case n == 3 && buf[0] == 27 && buf[1] == 91: // Escape sequence
+			switch buf[2] {
+			case 65: // Up arrow
+				if selected > 0 {
+					selected--
+				}
+			case 66: // Down arrow
+				if selected < len(names)-1 {
+					selected++
+				}
+			}
+			// Redraw
+			fmt.Printf("\033[%dA", len(names)+3) // Move up
+			renderMenu()
+
+		case buf[0] == 'k' || buf[0] == 'K': // vim up
+			if selected > 0 {
+				selected--
+			}
+			fmt.Printf("\033[%dA", len(names)+3)
+			renderMenu()
+
+		case buf[0] == 'j' || buf[0] == 'J': // vim down
+			if selected < len(names)-1 {
+				selected++
+			}
+			fmt.Printf("\033[%dA", len(names)+3)
+			renderMenu()
+		}
+	}
+}
+
+func fallbackSelect(cfg *CLIConfig, names []string) (*ServerConfig, string) {
+	fmt.Println("Deploy to which server?")
+	for i, name := range names {
+		fmt.Printf("  %d) %s (%s)\n", i+1, name, cfg.Servers[name].URL)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("Select [1-%d]: ", len(names))
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		// Allow typing name directly
+		for _, name := range names {
+			if input == name {
+				srv := cfg.Servers[name]
+				return &srv, name
+			}
+		}
+
+		var choice int
+		if _, err := fmt.Sscanf(input, "%d", &choice); err == nil && choice >= 1 && choice <= len(names) {
+			name := names[choice-1]
+			srv := cfg.Servers[name]
+			fmt.Printf("Deploying to: %s (%s)\n", name, srv.URL)
+			return &srv, name
+		}
+		fmt.Println("Invalid selection.")
+	}
 }
 
 func cmdContext(args []string) {
@@ -2014,6 +2157,27 @@ func cmdDeploy(args []string) {
 			os.Exit(1)
 		}
 		name := positionalArgs[0]
+
+		// Check basepod.yaml for server context, then prompt if multiple
+		cliCfg, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+		if len(cliCfg.Servers) > 1 {
+			// Try to auto-detect from basepod.yaml
+			if appCfg, err := loadAppConfig("."); err == nil && appCfg.Server != "" {
+				if _, ok := cliCfg.Servers[appCfg.Server]; ok {
+					cliCfg.CurrentContext = appCfg.Server
+					_ = saveConfig(cliCfg)
+				}
+			} else {
+				_, ctxName := promptSelectServer(cliCfg)
+				cliCfg.CurrentContext = ctxName
+				_ = saveConfig(cliCfg)
+			}
+		}
+
 		deployImageOrGit(name, image, gitURL, branch)
 	} else {
 		// Local source deployment mode (default)
@@ -2084,6 +2248,9 @@ func deployLocalSource(dir string, force bool, env string) {
 		}
 		serverCfg = &srv
 		contextName = appCfg.Server
+	} else if len(cliCfg.Servers) > 1 {
+		// Multiple servers configured — ask user which one to deploy to
+		serverCfg, contextName = promptSelectServer(cliCfg)
 	} else {
 		srv, name, err := getCurrentServer(cliCfg)
 		if err != nil {

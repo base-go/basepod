@@ -124,6 +124,8 @@ func (s *Storage) migrate() error {
 		`ALTER TABLE apps ADD COLUMN deployments TEXT`,
 		// Add health_check column for health check configuration
 		`ALTER TABLE apps ADD COLUMN health_check TEXT`,
+		// Add redirect_url column for domain redirects
+		`ALTER TABLE apps ADD COLUMN redirect_url TEXT DEFAULT ''`,
 		// Webhook deliveries table
 		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id TEXT PRIMARY KEY,
@@ -310,13 +312,13 @@ func (s *Storage) CreateApp(a *app.App) error {
 	}
 
 	_, err := s.db.Exec(`
-		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, owner_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO apps (id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, owner_id, redirect_url, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.ID, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
 		appType, string(mlxJSON), string(healthCheckJSON),
-		a.OwnerID, a.CreatedAt, a.UpdatedAt)
+		a.OwnerID, a.RedirectURL, a.CreatedAt, a.UpdatedAt)
 
 	if err != nil {
 		return fmt.Errorf("failed to create app: %w", err)
@@ -328,7 +330,7 @@ func (s *Storage) CreateApp(a *app.App) error {
 // GetApp retrieves an app by ID
 func (s *Storage) GetApp(id string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
 		FROM apps WHERE id = ?
 	`, id)
 
@@ -338,7 +340,7 @@ func (s *Storage) GetApp(id string) (*app.App, error) {
 // GetAppByName retrieves an app by name
 func (s *Storage) GetAppByName(name string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
 		FROM apps WHERE name = ?
 	`, name)
 
@@ -348,9 +350,26 @@ func (s *Storage) GetAppByName(name string) (*app.App, error) {
 // GetAppByDomain retrieves an app by domain
 func (s *Storage) GetAppByDomain(domain string) (*app.App, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
 		FROM apps WHERE domain = ?
 	`, domain)
+
+	return s.scanApp(row)
+}
+
+// GetAppByDomainOrAlias looks up an app by primary domain or alias
+func (s *Storage) GetAppByDomainOrAlias(domain string) (*app.App, error) {
+	// Try primary domain first
+	a, err := s.GetAppByDomain(domain)
+	if a != nil || err != nil {
+		return a, err
+	}
+
+	// Search aliases (stored as JSON array, use LIKE for SQLite)
+	row := s.db.QueryRow(`
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
+		FROM apps WHERE aliases LIKE ?
+	`, `%"`+domain+`"%`)
 
 	return s.scanApp(row)
 }
@@ -364,7 +383,7 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 	err := row.Scan(
 		&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 		&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-		&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID,
+		&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID, &a.RedirectURL,
 		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -407,7 +426,7 @@ func (s *Storage) scanApp(row *sql.Row) (*app.App, error) {
 // ListApps retrieves all apps
 func (s *Storage) ListApps() ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
 		FROM apps ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -424,7 +443,7 @@ func (s *Storage) ListApps() ([]app.App, error) {
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID,
+			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID, &a.RedirectURL,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
 		if err != nil {
@@ -467,7 +486,7 @@ func (s *Storage) ListApps() ([]app.App, error) {
 // ListAppsByOwner retrieves apps owned by a specific user
 func (s *Storage) ListAppsByOwner(ownerID string) ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, created_at, updated_at
+		SELECT id, name, domain, aliases, container_id, image, status, env, ports, volumes, resources, deployment, deployments, ssl, type, mlx, health_check, COALESCE(owner_id,'') as owner_id, COALESCE(redirect_url,'') as redirect_url, created_at, updated_at
 		FROM apps WHERE owner_id = ? ORDER BY created_at DESC
 	`, ownerID)
 	if err != nil {
@@ -484,7 +503,7 @@ func (s *Storage) ListAppsByOwner(ownerID string) ([]app.App, error) {
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID,
+			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID, &a.RedirectURL,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
 		if err != nil {
@@ -555,13 +574,13 @@ func (s *Storage) UpdateApp(a *app.App) error {
 		UPDATE apps SET
 			name = ?, domain = ?, aliases = ?, container_id = ?, image = ?, status = ?,
 			env = ?, ports = ?, volumes = ?, resources = ?, deployment = ?, deployments = ?, ssl = ?,
-			type = ?, mlx = ?, health_check = ?,
+			type = ?, mlx = ?, health_check = ?, redirect_url = ?,
 			updated_at = ?
 		WHERE id = ?
 	`, a.Name, domain, string(aliasesJSON), a.ContainerID, a.Image, a.Status,
 		string(envJSON), string(portsJSON), string(volumesJSON),
 		string(resourcesJSON), string(deploymentJSON), string(deploymentsJSON), string(sslJSON),
-		appType, string(mlxJSON), string(healthCheckJSON),
+		appType, string(mlxJSON), string(healthCheckJSON), a.RedirectURL,
 		a.UpdatedAt, a.ID)
 
 	if err != nil {
@@ -1337,7 +1356,7 @@ func (s *Storage) GetUserAppAccess(userID string) ([]string, error) {
 // ListAppsForUser returns apps filtered by user_app_access
 func (s *Storage) ListAppsForUser(userID string) ([]app.App, error) {
 	rows, err := s.db.Query(`
-		SELECT a.id, a.name, a.domain, a.aliases, a.container_id, a.image, a.status, a.env, a.ports, a.volumes, a.resources, a.deployment, a.deployments, a.ssl, a.type, a.mlx, a.health_check, a.created_at, a.updated_at
+		SELECT a.id, a.name, a.domain, a.aliases, a.container_id, a.image, a.status, a.env, a.ports, a.volumes, a.resources, a.deployment, a.deployments, a.ssl, a.type, a.mlx, a.health_check, COALESCE(a.owner_id,'') as owner_id, COALESCE(a.redirect_url,'') as redirect_url, a.created_at, a.updated_at
 		FROM apps a
 		INNER JOIN user_app_access ua ON a.id = ua.app_id
 		WHERE ua.user_id = ?
@@ -1357,7 +1376,7 @@ func (s *Storage) ListAppsForUser(userID string) ([]app.App, error) {
 		err := rows.Scan(
 			&a.ID, &a.Name, &domain, &aliasesJSON, &containerID, &image, &a.Status,
 			&envJSON, &portsJSON, &volumesJSON, &resourcesJSON, &deploymentJSON, &deploymentsJSON, &sslJSON,
-			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID,
+			&appType, &mlxJSON, &healthCheckJSON, &a.OwnerID, &a.RedirectURL,
 			&a.CreatedAt, &a.UpdatedAt,
 		)
 		if err != nil {

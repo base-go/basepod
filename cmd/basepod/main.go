@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "2.1.0"
+	version = "2.1.1"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -451,7 +451,29 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 		})
 	}
 
+	var redirectCount int
 	for _, a := range apps {
+		// Handle redirect apps (no container needed, any status)
+		if a.RedirectURL != "" && a.Domain != "" {
+			targetURL := strings.TrimSuffix(a.RedirectURL, "/")
+			routeID := "redirect-" + a.Name
+			if err := caddyClient.AddRedirectRoute(routeID, a.Domain, targetURL); err != nil {
+				log.Printf("Warning: Failed to add redirect route for %s: %v", a.Name, err)
+			} else {
+				redirectCount++
+			}
+			// Add redirect routes for aliases too
+			for _, alias := range a.Aliases {
+				aliasRouteID := fmt.Sprintf("redirect-%s-%s", a.ID[:8], alias)
+				if err := caddyClient.AddRedirectRoute(aliasRouteID, alias, targetURL); err != nil {
+					log.Printf("Warning: Failed to add redirect alias route for %s: %v", alias, err)
+				} else {
+					aliasCount++
+				}
+			}
+			continue
+		}
+
 		if a.Status != "running" || a.Domain == "" {
 			continue
 		}
@@ -503,7 +525,7 @@ func initializeCaddyRoutes(caddyClient *caddy.Client, store *storage.Storage) er
 		}
 	}
 
-	log.Printf("Configured Caddy with %d app routes, %d static sites, and %d aliases", len(routes), staticCount, aliasCount)
+	log.Printf("Configured Caddy with %d app routes, %d static sites, %d redirects, and %d aliases", len(routes), staticCount, redirectCount, aliasCount)
 	return nil
 }
 

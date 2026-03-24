@@ -59,6 +59,15 @@ func generateRandomString(length int) string {
 }
 
 // Server represents the API server
+// redirectCacheEntry holds a cached redirect lookup result
+type redirectCacheEntry struct {
+	targetURL    string
+	redirectType int
+	includePath  bool
+	found        bool
+	cachedAt     time.Time
+}
+
 type Server struct {
 	storage      *storage.Storage
 	podman       podman.Client
@@ -74,6 +83,8 @@ type Server struct {
 	healthStates   map[string]*app.HealthStatus
 	healthStatesMu sync.RWMutex
 	healthStop     chan struct{}
+	redirectCache   map[string]*redirectCacheEntry
+	redirectCacheMu sync.RWMutex
 }
 
 // NewServer creates a new API server
@@ -139,6 +150,7 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 
 	s.healthStates = make(map[string]*app.HealthStatus)
 	s.healthStop = make(chan struct{})
+	s.redirectCache = make(map[string]*redirectCacheEntry)
 
 	s.setupRoutes()
 
@@ -960,18 +972,37 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Check if it's an app domain (subdomain of root)
 	if !isDashboard && rootDomain != "" && strings.HasSuffix(host, "."+rootDomain) {
-		// Look up app by domain
-		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
-			s.proxyToApp(w, r, a)
+		if a, _ := s.storage.GetAppByDomain(host); a != nil {
+			// App-level redirect takes priority
+			if a.RedirectURL != "" {
+				s.serveAppRedirect(w, r, a)
+				return
+			}
+			if a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
+				s.proxyToApp(w, r, a)
+				return
+			}
+		}
+		// Subdomain doesn't match any app — check external redirect before parked page
+		if s.checkRedirect(w, r, host) {
 			return
 		}
 	}
 
 	// Check if it's a custom/alias domain (not a subdomain of root, not localhost)
 	if !isDashboard && !isRootDomain && rootDomain != "" && !strings.HasSuffix(host, "."+rootDomain) && host != "localhost" && host != "127.0.0.1" {
-		// Look up by domain (alias)
-		if a, _ := s.storage.GetAppByDomain(host); a != nil && a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
-			s.proxyToApp(w, r, a)
+		if a, _ := s.storage.GetAppByDomainOrAlias(host); a != nil {
+			if a.RedirectURL != "" {
+				s.serveAppRedirect(w, r, a)
+				return
+			}
+			if a.Status == app.StatusRunning && a.Ports.HostPort > 0 {
+				s.proxyToApp(w, r, a)
+				return
+			}
+		}
+		// Check for external redirect before showing parked page
+		if s.checkRedirect(w, r, host) {
 			return
 		}
 		// Unknown domain/IP pointing at this server — serve landing page
@@ -1074,6 +1105,100 @@ p{font-size:.9rem;color:#71717a;line-height:1.6}
 </div>
 </body>
 </html>`
+
+// serveAppRedirect redirects traffic for an app that has a redirect_url configured
+func (s *Server) serveAppRedirect(w http.ResponseWriter, r *http.Request, a *app.App) {
+	target := strings.TrimSuffix(a.RedirectURL, "/") + r.URL.RequestURI()
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
+}
+
+// checkRedirect checks the Construct domains service for a redirect mapping.
+// Returns true if a redirect was found and served.
+func (s *Server) checkRedirect(w http.ResponseWriter, r *http.Request, host string) bool {
+	domainsURL := s.config.Construct.DomainsURL
+	if domainsURL == "" {
+		return false
+	}
+
+	// Check cache first (5 minute TTL)
+	s.redirectCacheMu.RLock()
+	entry, cached := s.redirectCache[host]
+	s.redirectCacheMu.RUnlock()
+
+	if cached && time.Since(entry.cachedAt) < 5*time.Minute {
+		if !entry.found {
+			return false
+		}
+		s.doRedirect(w, r, entry)
+		return true
+	}
+
+	// Lookup from domains API (short timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	lookupURL := fmt.Sprintf("%s/api/redirect/lookup?host=%s", strings.TrimSuffix(domainsURL, "/"), url.QueryEscape(host))
+	req, err := http.NewRequestWithContext(ctx, "GET", lookupURL, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// Cache miss on error to avoid hammering a down service
+		s.redirectCacheMu.Lock()
+		s.redirectCache[host] = &redirectCacheEntry{found: false, cachedAt: time.Now()}
+		s.redirectCacheMu.Unlock()
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.redirectCacheMu.Lock()
+		s.redirectCache[host] = &redirectCacheEntry{found: false, cachedAt: time.Now()}
+		s.redirectCacheMu.Unlock()
+		return false
+	}
+
+	var result struct {
+		TargetURL    string `json:"target_url"`
+		RedirectType int    `json:"redirect_type"`
+		IncludePath  bool   `json:"include_path"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.TargetURL == "" {
+		s.redirectCacheMu.Lock()
+		s.redirectCache[host] = &redirectCacheEntry{found: false, cachedAt: time.Now()}
+		s.redirectCacheMu.Unlock()
+		return false
+	}
+
+	// Cache the result
+	entry = &redirectCacheEntry{
+		targetURL:    result.TargetURL,
+		redirectType: result.RedirectType,
+		includePath:  result.IncludePath,
+		found:        true,
+		cachedAt:     time.Now(),
+	}
+	s.redirectCacheMu.Lock()
+	s.redirectCache[host] = entry
+	s.redirectCacheMu.Unlock()
+
+	s.doRedirect(w, r, entry)
+	return true
+}
+
+func (s *Server) doRedirect(w http.ResponseWriter, r *http.Request, entry *redirectCacheEntry) {
+	target := entry.targetURL
+	if entry.includePath {
+		target = strings.TrimSuffix(target, "/") + r.URL.RequestURI()
+	}
+	code := entry.redirectType
+	if code != http.StatusMovedPermanently && code != http.StatusFound {
+		code = http.StatusMovedPermanently // Default to 301
+	}
+	http.Redirect(w, r, target, code)
+}
 
 // serveParkedPage serves the landing page for unknown domains/IPs
 func (s *Server) serveParkedPage(w http.ResponseWriter, r *http.Request, host string) {
@@ -1427,6 +1552,10 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		a.Deployment = *req.Deployment
 	}
 
+	if req.RedirectURL != nil {
+		a.RedirectURL = *req.RedirectURL
+	}
+
 	// Handle aliases update
 	aliasesChanged := false
 	oldAliases := a.Aliases
@@ -1443,28 +1572,56 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update Caddy routes for aliases if changed
-	if aliasesChanged && s.caddy != nil && a.Status == app.StatusRunning {
-		// Remove old alias routes
-		for _, alias := range oldAliases {
-			routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
-			s.caddy.RemoveRoute(routeID)
-		}
-		// Add new alias routes
-		for _, alias := range a.Aliases {
-			routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
-			// Get the upstream from the main app route
-			upstream := fmt.Sprintf("localhost:%d", a.Ports.HostPort)
-			if a.Ports.HostPort == 0 {
-				upstream = fmt.Sprintf("localhost:%d", assignHostPort(a.ID))
+	// Update Caddy routes
+	if s.caddy != nil {
+		if a.RedirectURL != "" {
+			// App has redirect — configure Caddy redirect routes (no container needed)
+			targetURL := strings.TrimSuffix(a.RedirectURL, "/")
+
+			// Remove any old proxy routes
+			s.caddy.RemoveRoute("basepod-" + a.Name)
+			for _, alias := range oldAliases {
+				s.caddy.RemoveRoute(fmt.Sprintf("alias-%s-%s", a.ID[:8], alias))
 			}
-			route := caddy.Route{
-				ID:       routeID,
-				Domain:   alias,
-				Upstream: upstream,
+
+			// Add redirect route for primary domain
+			if a.Domain != "" {
+				if err := s.caddy.AddRedirectRoute("redirect-"+a.Name, a.Domain, targetURL); err != nil {
+					log.Printf("Warning: failed to add redirect route for %s: %v", a.Domain, err)
+				}
 			}
-			if err := s.caddy.AddRoute(route); err != nil {
-				log.Printf("Warning: failed to add alias route for %s: %v", alias, err)
+			// Add redirect routes for aliases
+			for _, alias := range a.Aliases {
+				routeID := fmt.Sprintf("redirect-%s-%s", a.ID[:8], alias)
+				if err := s.caddy.AddRedirectRoute(routeID, alias, targetURL); err != nil {
+					log.Printf("Warning: failed to add redirect alias route for %s: %v", alias, err)
+				}
+			}
+		} else if aliasesChanged && a.Status == app.StatusRunning {
+			// No redirect — normal alias proxy routes
+			// Remove old alias routes
+			for _, alias := range oldAliases {
+				s.caddy.RemoveRoute(fmt.Sprintf("alias-%s-%s", a.ID[:8], alias))
+				s.caddy.RemoveRoute(fmt.Sprintf("redirect-%s-%s", a.ID[:8], alias))
+			}
+			// Remove any leftover redirect route for primary domain
+			s.caddy.RemoveRoute("redirect-" + a.Name)
+
+			// Add new alias routes
+			for _, alias := range a.Aliases {
+				routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
+				upstream := fmt.Sprintf("localhost:%d", a.Ports.HostPort)
+				if a.Ports.HostPort == 0 {
+					upstream = fmt.Sprintf("localhost:%d", assignHostPort(a.ID))
+				}
+				route := caddy.Route{
+					ID:       routeID,
+					Domain:   alias,
+					Upstream: upstream,
+				}
+				if err := s.caddy.AddRoute(route); err != nil {
+					log.Printf("Warning: failed to add alias route for %s: %v", alias, err)
+				}
 			}
 		}
 	}

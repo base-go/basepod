@@ -160,6 +160,52 @@ func (c *Client) AddRoute(route Route) error {
 	return nil
 }
 
+// AddRedirectRoute adds a Caddy route that returns a redirect (no upstream container needed)
+func (c *Client) AddRedirectRoute(routeID, domain, targetURL string) error {
+	// Remove existing route first
+	c.RemoveRoute(routeID)
+
+	routeConfig := map[string]interface{}{
+		"@id": routeID,
+		"match": []map[string]interface{}{
+			{"host": []string{domain}},
+		},
+		"handle": []map[string]interface{}{
+			{
+				"handler":     "static_response",
+				"status_code": "301",
+				"headers": map[string][]string{
+					"Location": {targetURL + "{http.request.uri}"},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(routeConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal redirect config: %w", err)
+	}
+
+	url := c.adminURL + "/config/apps/http/servers/srv0/routes/0"
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to add redirect route: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to add redirect route (status %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
 // InitializeServer adds routes for running apps to the existing Caddy server
 // Note: The main server (srv0) should already be configured via Caddyfile
 // This function adds dynamic routes for container apps without disturbing existing config

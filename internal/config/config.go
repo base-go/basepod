@@ -54,8 +54,9 @@ type AIConfig struct {
 
 // ConstructConfig holds Construct OAuth integration settings
 type ConstructConfig struct {
-	AccountsURL string `yaml:"accounts_url"` // e.g. "https://accounts.construct.space"
-	Enabled     bool   `yaml:"enabled"`      // Enable Construct OAuth deploy
+	AccountsURL  string `yaml:"accounts_url"`  // e.g. "https://accounts.construct.space"
+	DomainsURL   string `yaml:"domains_url"`   // e.g. "https://domains.construct.space" — redirect lookup API
+	Enabled      bool   `yaml:"enabled"`       // Enable Construct OAuth deploy
 }
 
 // EmailConfig holds email provider configuration for invite emails
