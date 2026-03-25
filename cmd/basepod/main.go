@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "2.1.1"
+	version = "2.1.2"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
@@ -129,6 +129,11 @@ func main() {
 		log.Printf("Warning: Failed to connect to Podman: %v", err)
 		log.Printf("Please start Podman manually: podman machine start")
 	} else {
+		// Ensure CLI subprocesses (podman build, etc.) use the same socket as the API client
+		if socketPath := pm.GetSocketPath(); socketPath != "" {
+			os.Setenv("CONTAINER_HOST", "unix://"+socketPath)
+		}
+
 		// Verify connection with ping
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if pingErr := pm.Ping(ctx); pingErr != nil {
