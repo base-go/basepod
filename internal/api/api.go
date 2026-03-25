@@ -18,12 +18,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/base-go/basepod/internal/ai"
@@ -69,20 +69,20 @@ type redirectCacheEntry struct {
 }
 
 type Server struct {
-	storage      *storage.Storage
-	podman       podman.Client
-	caddy        *caddy.Client
-	config       *config.Config
-	auth         *auth.Manager
-	backup       *backup.Service
-	router         *http.ServeMux
-	staticFS       http.Handler
-	staticDir      string // Path to static files on disk (preferred over embedded)
-	version        string
-	assistant      *ai.Assistant
-	healthStates   map[string]*app.HealthStatus
-	healthStatesMu sync.RWMutex
-	healthStop     chan struct{}
+	storage         *storage.Storage
+	podman          podman.Client
+	caddy           *caddy.Client
+	config          *config.Config
+	auth            *auth.Manager
+	backup          *backup.Service
+	router          *http.ServeMux
+	staticFS        http.Handler
+	staticDir       string // Path to static files on disk (preferred over embedded)
+	version         string
+	assistant       *ai.Assistant
+	healthStates    map[string]*app.HealthStatus
+	healthStatesMu  sync.RWMutex
+	healthStop      chan struct{}
 	redirectCache   map[string]*redirectCacheEntry
 	redirectCacheMu sync.RWMutex
 }
@@ -122,7 +122,7 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 	}
 	staticPaths := []string{
 		webDir,
-		"./dist",                       // Relative to binary
+		"./dist",                      // Relative to binary
 		"/opt/basepod/web/dist",       // Linux production
 		"/usr/local/basepod/web/dist", // macOS production
 	}
@@ -171,7 +171,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.router.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	s.router.HandleFunc("POST /api/auth/setup", s.handleSetup) // Initial password setup
-	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.handleChangePassword))
+	s.router.HandleFunc("POST /api/auth/change-password", s.requireAuth(s.requireSessionOnly(s.handleChangePassword)))
 	s.router.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleGetMe))
 
 	// User management (admin only)
@@ -187,7 +187,7 @@ func (s *Server) setupRoutes() {
 
 	// Apps (auth required, per-app access for deployers)
 	s.router.HandleFunc("GET /api/apps", s.requireAuth(s.handleListApps))
-	s.router.HandleFunc("POST /api/apps", s.requireAuth(s.handleCreateApp))
+	s.router.HandleFunc("POST /api/apps", s.requireAuth(s.requireSessionWriteAccess(s.handleCreateApp)))
 	s.router.HandleFunc("GET /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleGetApp)))
 	s.router.HandleFunc("PUT /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleUpdateApp)))
 	s.router.HandleFunc("DELETE /api/apps/{id}", s.requireAuth(s.requireAppAccess(s.handleDeleteApp)))
@@ -227,18 +227,18 @@ func (s *Server) setupRoutes() {
 
 	// Templates (auth required)
 	s.router.HandleFunc("GET /api/templates", s.requireAuth(s.handleListTemplates))
-	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.requireSessionOnly(s.handleDeployTemplate)))
+	s.router.HandleFunc("POST /api/templates/{id}/deploy", s.requireAuth(s.requireSessionWriteAccess(s.handleDeployTemplate)))
 
 	// MLX LLM service (auth required, session-only for mutating)
 	s.router.HandleFunc("GET /api/mlx/status", s.requireAuth(s.handleMLXStatus))
 	s.router.HandleFunc("GET /api/mlx/models", s.requireAuth(s.handleListMLXModels))
-	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.requireSessionOnly(s.handleMLXPull)))
+	s.router.HandleFunc("POST /api/mlx/pull", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXPull)))
 	s.router.HandleFunc("GET /api/mlx/pull/progress", s.requireAuth(s.handleMLXPullProgress))
-	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.requireSessionOnly(s.handleMLXPullCancel)))
-	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.requireSessionOnly(s.handleMLXRun)))
-	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.requireSessionOnly(s.handleMLXStop)))
-	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.requireSessionOnly(s.handleMLXTranscribe)))
-	s.router.HandleFunc("POST /api/mlx/synthesize", s.requireAuth(s.requireSessionOnly(s.handleMLXSynthesize)))
+	s.router.HandleFunc("POST /api/mlx/pull/cancel", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXPullCancel)))
+	s.router.HandleFunc("POST /api/mlx/run", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXRun)))
+	s.router.HandleFunc("POST /api/mlx/stop", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXStop)))
+	s.router.HandleFunc("POST /api/mlx/transcribe", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXTranscribe)))
+	s.router.HandleFunc("POST /api/mlx/synthesize", s.requireAuth(s.requireSessionWriteAccess(s.handleMLXSynthesize)))
 	s.router.HandleFunc("DELETE /api/mlx/models/{id}", s.requireAdmin(s.handleMLXDeleteModel))
 
 	// Chat messages (auth required)
@@ -311,7 +311,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /api/badge/{id}", s.handleStatusBadge)
 
 	// Source deploy endpoint (auth required)
-	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.handleSourceDeploy))
+	s.router.HandleFunc("POST /api/deploy", s.requireAuth(s.requireWriteAccess(s.handleSourceDeploy)))
 
 	// Construct OAuth deploy endpoints (for Construct app users)
 	s.router.HandleFunc("POST /api/construct/deploy", s.requireConstructAuth(s.handleSourceDeploy))
@@ -341,6 +341,89 @@ func getDeployTokenFromCtx(r *http.Request) *app.DeployToken {
 		return dt
 	}
 	return nil
+}
+
+func deployTokenAllowsRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && r.URL.Path == "/api/deploy"
+}
+
+func deployTokenHasScope(dt *app.DeployToken, want string) bool {
+	if dt == nil {
+		return false
+	}
+	for _, scope := range dt.Scopes {
+		if strings.TrimSpace(scope) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func deployTokenCanDeployApp(dt *app.DeployToken, appName string, existing *app.App) bool {
+	if deployTokenHasScope(dt, "deploy:*") {
+		return true
+	}
+	if appName != "" && deployTokenHasScope(dt, "deploy:"+appName) {
+		return true
+	}
+	if existing == nil {
+		return false
+	}
+	return deployTokenHasScope(dt, "deploy:"+existing.ID) || deployTokenHasScope(dt, "deploy:"+existing.Name)
+}
+
+func resolvePathWithinBase(baseDir, requestedPath string) (string, error) {
+	if requestedPath == "" {
+		requestedPath = "."
+	}
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(baseAbs, requestedPath))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q must stay within %s", requestedPath, baseDir)
+	}
+	baseResolved, err := filepath.EvalSymlinks(baseAbs)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		baseResolved = baseAbs
+	}
+
+	checkPath := targetAbs
+	if _, err := os.Lstat(targetAbs); err != nil {
+		if os.IsNotExist(err) {
+			checkPath = filepath.Dir(targetAbs)
+		} else {
+			return "", err
+		}
+	}
+
+	targetResolved, err := filepath.EvalSymlinks(checkPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		targetResolved = checkPath
+	}
+
+	resolvedRel, err := filepath.Rel(baseResolved, targetResolved)
+	if err != nil {
+		return "", err
+	}
+	if resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q resolves outside %s", requestedPath, baseDir)
+	}
+	return targetAbs, nil
 }
 
 // requireAuth wraps a handler with authentication check
@@ -379,6 +462,10 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 					errorResponse(w, http.StatusUnauthorized, "Deploy token expired")
 					return
 				}
+				if !deployTokenAllowsRequest(r) {
+					errorResponse(w, http.StatusForbidden, "Deploy tokens can only access the source deploy endpoint")
+					return
+				}
 				// Update last used
 				s.storage.UpdateDeployTokenLastUsed(dt.ID)
 				// Store deploy token in context for scope checking
@@ -414,6 +501,10 @@ func (s *Server) requireWriteAccess(handler http.HandlerFunc) http.HandlerFunc {
 		}
 		handler(w, r)
 	}
+}
+
+func (s *Server) requireSessionWriteAccess(handler http.HandlerFunc) http.HandlerFunc {
+	return s.requireSessionOnly(s.requireWriteAccess(handler))
 }
 
 // constructUserKey is the context key for authenticated Construct user info
@@ -1354,14 +1445,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newApp := &app.App{
-		ID:        uuid.New().String(),
-		Name:      req.Name,
-		Type:      appType,
-		Domain:    domain,
-		Image:     req.Image,
-		Status:    app.StatusPending,
-		Env:       req.Env,
-		Volumes:   req.Volumes,
+		ID:      uuid.New().String(),
+		Name:    req.Name,
+		Type:    appType,
+		Domain:  domain,
+		Image:   req.Image,
+		Status:  app.StatusPending,
+		Env:     req.Env,
+		Volumes: req.Volumes,
 		Ports: app.PortConfig{
 			ContainerPort: port,
 			Protocol:      "http",
@@ -2376,12 +2467,12 @@ func (s *Server) handleSystemStorage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"disk":           du,
-		"categories":     categories,
-		"basepod_total":  basepodTotal,
+		"disk":              du,
+		"categories":        categories,
+		"basepod_total":     basepodTotal,
 		"basepod_formatted": diskutil.FormatBytes(basepodTotal),
-		"other_size":     otherSize,
-		"other_formatted": diskutil.FormatBytes(otherSize),
+		"other_size":        otherSize,
+		"other_formatted":   diskutil.FormatBytes(otherSize),
 	})
 }
 
@@ -2461,8 +2552,8 @@ func (s *Server) handleDeleteStorageCategory(w http.ResponseWriter, r *http.Requ
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"message": label + " cleared",
-		"cleared": size,
+		"message":           label + " cleared",
+		"cleared":           size,
 		"cleared_formatted": diskutil.FormatBytes(size),
 	})
 }
@@ -3591,7 +3682,7 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 // SourceDeployConfig represents the config sent by the CLI
 type SourceDeployConfig struct {
 	Name       string            `json:"name"`
-	Type       string            `json:"type,omitempty"`   // "static" or "container" (default)
+	Type       string            `json:"type,omitempty"` // "static" or "container" (default)
 	Domain     string            `json:"domain,omitempty"`
 	Port       int               `json:"port,omitempty"`
 	Public     string            `json:"public,omitempty"` // Public directory for static sites
@@ -3658,6 +3749,23 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Deploy %s: no git info received", deployConfig.Name)
 	}
 
+	// Check if app exists so we can validate ownership and deploy-token scope
+	a, _ := s.storage.GetAppByName(deployConfig.Name)
+
+	// If Construct user, verify ownership of existing app
+	if a != nil {
+		if cu := getConstructUser(r); cu != nil && a.OwnerID != "" && a.OwnerID != cu.ID {
+			errorResponse(w, http.StatusForbidden, "App belongs to another user")
+			return
+		}
+	}
+
+	// Deploy tokens are limited to explicitly scoped app deploys.
+	if dt := getDeployTokenFromCtx(r); dt != nil && !deployTokenCanDeployApp(dt, deployConfig.Name, a) {
+		errorResponse(w, http.StatusForbidden, "Deploy token is not allowed to deploy this app")
+		return
+	}
+
 	// Get source tarball
 	file, _, err := r.FormFile("source")
 	if err != nil {
@@ -3683,17 +3791,6 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeLine("Received source deploy request for: " + deployConfig.Name)
-
-	// Check if app exists, create if not
-	a, _ := s.storage.GetAppByName(deployConfig.Name)
-
-	// If Construct user, verify ownership of existing app
-	if a != nil {
-		if cu := getConstructUser(r); cu != nil && a.OwnerID != "" && a.OwnerID != cu.ID {
-			errorResponse(w, http.StatusForbidden, "App belongs to another user")
-			return
-		}
-	}
 
 	if a == nil {
 		// Enforce per-user app limit for Construct users
@@ -3858,8 +3955,8 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 				Dockerfile string            `yaml:"dockerfile" json:"dockerfile"`
 				Context    string            `yaml:"context" json:"context"`
 				Public     string            `yaml:"public" json:"public"`
-				Env        map[string]string  `yaml:"env" json:"env"`
-				BuildArgs  map[string]string  `yaml:"build_args" json:"build_args"`
+				Env        map[string]string `yaml:"env" json:"env"`
+				BuildArgs  map[string]string `yaml:"build_args" json:"build_args"`
 			}
 			// Try YAML first, then JSON
 			if err := yaml.Unmarshal(configData, &repoConfig); err != nil {
@@ -3971,10 +4068,24 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			publicDir = "dist" // Default
 		}
 
-		publicPath := sourceDir + "/" + publicDir
-		if _, err := os.Stat(publicPath); os.IsNotExist(err) {
+		publicPath, err := resolvePathWithinBase(sourceDir, publicDir)
+		if err != nil {
+			writeLine("ERROR: Invalid public directory: " + err.Error())
+			return
+		}
+
+		publicInfo, err := os.Stat(publicPath)
+		if os.IsNotExist(err) {
 			writeLine("ERROR: Public directory not found: " + publicDir)
 			writeLine("Make sure your build output is in the correct directory")
+			return
+		}
+		if err != nil {
+			writeLine("ERROR: Failed to inspect public directory: " + err.Error())
+			return
+		}
+		if !publicInfo.IsDir() {
+			writeLine("ERROR: Public path is not a directory: " + publicDir)
 			return
 		}
 
@@ -4058,7 +4169,16 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	if deployConfig.Build.Dockerfile != "" {
 		dockerfile = deployConfig.Build.Dockerfile
 	}
-	dockerfilePath := sourceDir + "/" + dockerfile
+	dockerfilePath, err := resolvePathWithinBase(sourceDir, dockerfile)
+	if err != nil {
+		writeLine("ERROR: Invalid Dockerfile path: " + err.Error())
+		return
+	}
+	dockerfileRel, err := filepath.Rel(sourceDir, dockerfilePath)
+	if err != nil {
+		writeLine("ERROR: Failed to normalize Dockerfile path: " + err.Error())
+		return
+	}
 
 	// Check if Dockerfile exists, auto-generate if not
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
@@ -4096,7 +4216,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	output, err := execCommandStreamDir(ctx, sourceDir, podmanPath, []string{"build", "-t", imageName, "-t", imageLatest, "-f", dockerfile, "."}, writeLine)
+	output, err := execCommandStreamDir(ctx, sourceDir, podmanPath, []string{"build", "-t", imageName, "-t", imageLatest, "-f", dockerfileRel, "."}, writeLine)
 	if err != nil {
 		writeLine("ERROR: Build failed: " + err.Error())
 		writeLine(output)
@@ -5124,10 +5244,10 @@ func (s *Server) handleMLXRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"status":       "running",
-		"model":        req.Model,
-		"port":         status.Port,
-		"pid":          status.PID,
+		"status": "running",
+		"model":  req.Model,
+		"port":   status.Port,
+		"pid":    status.PID,
 	})
 }
 
@@ -6090,7 +6210,18 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	if a.Deployment.Dockerfile != "" {
 		dockerfile = a.Deployment.Dockerfile
 	}
-	dockerfilePath := sourceDir + "/" + dockerfile
+	dockerfilePath, err := resolvePathWithinBase(sourceDir, dockerfile)
+	if err != nil {
+		errMsg := fmt.Sprintf("Invalid Dockerfile path: %v", err)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+	dockerfileRel, err := filepath.Rel(sourceDir, dockerfilePath)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to normalize Dockerfile path: %v", err)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
 		log.Printf("Webhook deploy %s: no Dockerfile found, auto-detecting stack", a.Name)
 		port := a.Ports.ContainerPort
@@ -6131,8 +6262,8 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 		}
 	}
 
-	output, err = execCommandDir(ctx, sourceDir, podmanPath, "build", "-t", imageName, "-t", imageLatest, "-f", dockerfile, ".")
-	buildLog.WriteString("$ " + podmanPath + " build -t " + imageName + " -t " + imageLatest + " -f " + dockerfile + " .\n" + output + "\n")
+	output, err = execCommandDir(ctx, sourceDir, podmanPath, "build", "-t", imageName, "-t", imageLatest, "-f", dockerfileRel, ".")
+	buildLog.WriteString("$ " + podmanPath + " build -t " + imageName + " -t " + imageLatest + " -f " + dockerfileRel + " .\n" + output + "\n")
 	if err != nil {
 		errMsg := fmt.Sprintf("Build failed: %v\n%s", err, output)
 		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
@@ -7328,9 +7459,9 @@ func (s *Server) handleConnectionInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info := map[string]interface{}{
-		"host":           fmt.Sprintf("basepod-%s", a.Name),
-		"port":           a.Ports.ContainerPort,
-		"internal_host":  fmt.Sprintf("basepod-%s:%d", a.Name, a.Ports.ContainerPort),
+		"host":          fmt.Sprintf("basepod-%s", a.Name),
+		"port":          a.Ports.ContainerPort,
+		"internal_host": fmt.Sprintf("basepod-%s:%d", a.Name, a.Ports.ContainerPort),
 	}
 
 	if a.Env != nil {
@@ -7747,7 +7878,7 @@ func detectStack(dir string) string {
 	if fileExists(dir + "/go.mod") {
 		return "go"
 	}
-	if fileExists(dir + "/requirements.txt") || fileExists(dir + "/pyproject.toml") || fileExists(dir + "/setup.py") {
+	if fileExists(dir+"/requirements.txt") || fileExists(dir+"/pyproject.toml") || fileExists(dir+"/setup.py") {
 		return "python"
 	}
 	if fileExists(dir + "/Gemfile") {
@@ -7756,7 +7887,7 @@ func detectStack(dir string) string {
 	if fileExists(dir + "/Cargo.toml") {
 		return "rust"
 	}
-	if fileExists(dir + "/pom.xml") || fileExists(dir + "/build.gradle") {
+	if fileExists(dir+"/pom.xml") || fileExists(dir+"/build.gradle") {
 		return "java"
 	}
 	if fileExists(dir + "/composer.json") {
