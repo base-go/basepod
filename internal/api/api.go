@@ -156,6 +156,7 @@ func NewServerWithVersion(store *storage.Storage, pm podman.Client, caddyClient 
 
 	go s.runHealthChecker()
 	go s.runMetricsCollector()
+	go s.reconcileContainers()
 
 	return s
 }
@@ -3046,6 +3047,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSystemPrune removes unused containers, images, and volumes
+// but preserves images that belong to basepod-managed apps
 func (s *Server) handleSystemPrune(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -3060,17 +3062,81 @@ func (s *Server) handleSystemPrune(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Run podman system prune
-	cmd := exec.CommandContext(ctx, podmanPath, "system", "prune", "-af", "--volumes")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		errorResponse(w, http.StatusInternalServerError, "Prune failed: "+err.Error())
-		return
+	// Collect images used by basepod apps so we don't delete them
+	protectedImages := map[string]bool{}
+	if apps, err := s.storage.ListApps(); err == nil {
+		for _, a := range apps {
+			if a.Image != "" {
+				protectedImages[a.Image] = true
+				// Also protect the :latest tag for this app
+				parts := strings.SplitN(a.Image, ":", 2)
+				if len(parts) == 2 {
+					protectedImages[parts[0]+":latest"] = true
+				}
+			}
+		}
+	}
+
+	var output strings.Builder
+
+	// Step 1: Prune stopped containers (safe — doesn't affect images)
+	cmd := exec.CommandContext(ctx, podmanPath, "container", "prune", "-f")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		output.WriteString("Containers: " + strings.TrimSpace(string(out)) + "\n")
+	}
+
+	// Step 2: Remove only dangling (untagged) images — NOT all unused images
+	cmd = exec.CommandContext(ctx, podmanPath, "image", "prune", "-f")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		output.WriteString("Dangling images: " + strings.TrimSpace(string(out)) + "\n")
+	}
+
+	// Step 3: Remove untagged/unused images that are NOT protected by basepod apps
+	if s.podman != nil {
+		images, err := s.podman.ListImages(ctx)
+		if err == nil {
+			removed := 0
+			for _, img := range images {
+				// Skip images with no repo tags (already handled by dangling prune)
+				if len(img.RepoTags) == 0 {
+					continue
+				}
+				// Skip images that are protected by basepod apps
+				isProtected := false
+				for _, tag := range img.RepoTags {
+					if protectedImages[tag] {
+						isProtected = true
+						break
+					}
+				}
+				if isProtected {
+					continue
+				}
+				// Remove unprotected basepod images (old deploy tags)
+				for _, tag := range img.RepoTags {
+					if strings.HasPrefix(tag, "localhost/basepod/") {
+						if err := s.podman.RemoveImage(ctx, img.ID, false); err == nil {
+							removed++
+						}
+						break
+					}
+				}
+			}
+			if removed > 0 {
+				output.WriteString(fmt.Sprintf("Old basepod images: %d removed\n", removed))
+			}
+		}
+	}
+
+	// Step 4: Prune build cache
+	cmd = exec.CommandContext(ctx, podmanPath, "builder", "prune", "-af")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		output.WriteString("Build cache: " + strings.TrimSpace(string(out)) + "\n")
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status": "pruned",
-		"output": string(output),
+		"output": output.String(),
 	})
 }
 
@@ -4866,6 +4932,111 @@ func (s *Server) restartAppForHealth(a *app.App) {
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 	log.Printf("Health check: successfully restarted app %s", a.Name)
+}
+
+// reconcileContainers checks all apps marked as "running" in the DB and restarts
+// any whose containers are not actually running in Podman. This recovers from
+// situations like host reboots where containers stop but the DB state is stale.
+func (s *Server) reconcileContainers() {
+	if s.podman == nil {
+		return
+	}
+
+	// Brief delay to let Podman finish initializing
+	time.Sleep(5 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	apps, err := s.storage.ListApps()
+	if err != nil {
+		log.Printf("Reconcile: failed to list apps: %v", err)
+		return
+	}
+
+	// Build set of actually running container IDs/names
+	containers, err := s.podman.ListContainers(ctx, false) // only running
+	if err != nil {
+		log.Printf("Reconcile: failed to list containers: %v", err)
+		return
+	}
+	runningContainers := map[string]bool{}
+	for _, c := range containers {
+		runningContainers[c.ID] = true
+		for _, name := range c.Names {
+			runningContainers[name] = true
+		}
+	}
+
+	restarted := 0
+	failed := 0
+	for i := range apps {
+		a := &apps[i]
+		if a.Status != app.StatusRunning || a.Type == app.AppTypeMLX {
+			continue
+		}
+		if a.Image == "" {
+			continue
+		}
+
+		containerName := "basepod-" + a.Name
+		if runningContainers[a.ContainerID] || runningContainers[containerName] {
+			continue // already running
+		}
+
+		log.Printf("Reconcile: app %s is marked running but container is not found, restarting...", a.Name)
+
+		// Clean up stale container references
+		if a.ContainerID != "" {
+			_ = s.podman.RemoveContainer(ctx, a.ContainerID, true)
+		}
+		_ = s.podman.RemoveContainer(ctx, containerName, true)
+
+		// Build volume mounts
+		volumeMounts := []string{}
+		for _, v := range a.Volumes {
+			if v.HostPath != "" && v.ContainerPath != "" {
+				volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+			}
+		}
+
+		containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
+			Name:     containerName,
+			Image:    a.Image,
+			Env:      a.Env,
+			Networks: []string{"basepod"},
+			Volumes:  volumeMounts,
+			Ports: map[string]string{
+				fmt.Sprintf("%d", a.Ports.ContainerPort): fmt.Sprintf("%d", a.Ports.HostPort),
+			},
+			Labels: map[string]string{
+				"basepod.app":    a.Name,
+				"basepod.app.id": a.ID,
+			},
+			Memory: a.Resources.Memory,
+			CPUs:   a.Resources.CPUs,
+		})
+		if err != nil {
+			log.Printf("Reconcile: failed to create container for %s: %v", a.Name, err)
+			failed++
+			continue
+		}
+
+		if err := s.podman.StartContainer(ctx, containerID); err != nil {
+			log.Printf("Reconcile: failed to start container for %s: %v", a.Name, err)
+			failed++
+			continue
+		}
+
+		a.ContainerID = containerID
+		s.storage.UpdateApp(a)
+		restarted++
+		log.Printf("Reconcile: successfully restarted app %s", a.Name)
+	}
+
+	if restarted > 0 || failed > 0 {
+		log.Printf("Reconcile complete: %d restarted, %d failed", restarted, failed)
+	}
 }
 
 // runHealthChecker runs the background health check loop
