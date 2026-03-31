@@ -4062,13 +4062,20 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Auto-detect static site: has index.html or package.json with no Dockerfile
+	// Auto-detect static site: has index.html, package.json, or any .html files with no Dockerfile
 	if deployConfig.Type == "" && a.Type != app.AppTypeStatic {
 		_, hasDockerfile := os.Stat(sourceDir + "/Dockerfile")
 		_, hasIndexHTML := os.Stat(sourceDir + "/index.html")
 		_, hasPackageJSON := os.Stat(sourceDir + "/package.json")
 
-		if hasDockerfile != nil && (hasIndexHTML == nil || hasPackageJSON == nil) {
+		// Also check for any .html files as fallback
+		hasAnyHTML := false
+		if hasIndexHTML != nil {
+			htmlFiles, _ := filepath.Glob(sourceDir + "/*.html")
+			hasAnyHTML = len(htmlFiles) > 0
+		}
+
+		if hasDockerfile != nil && (hasIndexHTML == nil || hasPackageJSON == nil || hasAnyHTML) {
 			deployConfig.Type = "static"
 			writeLine("Auto-detected static site (no Dockerfile found)")
 
@@ -4247,18 +4254,27 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if Dockerfile exists, auto-generate if not
-	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) && deployConfig.Type != "static" && a.Type != app.AppTypeStatic {
 		writeLine("No Dockerfile found, auto-detecting stack...")
 		generated := generateDockerfile(sourceDir, deployConfig.Port)
 		if generated == "" {
-			writeLine("ERROR: Could not detect project type. Please create a Dockerfile.")
-			return
+			// Fallback: treat as static site if there are any servable files
+			htmlFiles, _ := filepath.Glob(sourceDir + "/*.html")
+			if len(htmlFiles) > 0 {
+				writeLine("No known stack detected, falling back to static site deployment")
+				deployConfig.Type = "static"
+				a.Type = app.AppTypeStatic
+			} else {
+				writeLine("ERROR: Could not detect project type. Please create a Dockerfile.")
+				return
+			}
+		} else {
+			if err := os.WriteFile(dockerfilePath, []byte(generated), 0644); err != nil {
+				writeLine("ERROR: Failed to write generated Dockerfile: " + err.Error())
+				return
+			}
+			writeLine("Auto-generated Dockerfile for detected stack")
 		}
-		if err := os.WriteFile(dockerfilePath, []byte(generated), 0644); err != nil {
-			writeLine("ERROR: Failed to write generated Dockerfile: " + err.Error())
-			return
-		}
-		writeLine("Auto-generated Dockerfile for detected stack")
 	}
 
 	// Build image using Podman — unique tag for rollback support
