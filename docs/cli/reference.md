@@ -382,10 +382,9 @@ CATEGORY      NAME            DESCRIPTION
 databases     mysql           MySQL Database Server
 databases     postgres        PostgreSQL Database
 databases     redis           Redis Cache
-cms           wordpress       WordPress CMS
 cms           ghost           Ghost Publishing Platform
 devtools      gitea           Self-hosted Git Service
-devtools      portainer       Container Management UI
+devtools      uptime-kuma     Uptime Monitoring
 ...
 ```
 

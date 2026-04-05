@@ -2,10 +2,12 @@
 package podman
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -63,10 +65,31 @@ type Client interface {
 // ContainerStatsResult holds resource usage stats for a container
 type ContainerStatsResult struct {
 	CPUPercent float64 `json:"cpu_percent"`
-	MemUsage   int64   `json:"mem_usage"`   // bytes
-	MemLimit   int64   `json:"mem_limit"`   // bytes
-	NetInput   int64   `json:"net_input"`   // bytes
-	NetOutput  int64   `json:"net_output"`  // bytes
+	MemUsage   int64   `json:"mem_usage"`  // bytes
+	MemLimit   int64   `json:"mem_limit"`  // bytes
+	NetInput   int64   `json:"net_input"`  // bytes
+	NetOutput  int64   `json:"net_output"` // bytes
+}
+
+type dockerCPUUsage struct {
+	TotalUsage  uint64   `json:"total_usage"`
+	PercpuUsage []uint64 `json:"percpu_usage"`
+}
+
+type dockerCPUStats struct {
+	CPUUsage    dockerCPUUsage `json:"cpu_usage"`
+	SystemUsage uint64         `json:"system_cpu_usage"`
+	OnlineCPUs  uint32         `json:"online_cpus"`
+}
+
+type dockerMemoryStats struct {
+	Usage uint64 `json:"usage"`
+	Limit uint64 `json:"limit"`
+}
+
+type dockerNetworkStats struct {
+	RXBytes uint64 `json:"rx_bytes"`
+	TXBytes uint64 `json:"tx_bytes"`
 }
 
 // CreateContainerOpts holds options for creating a container
@@ -866,45 +889,204 @@ func (c *client) ContainerStats(ctx context.Context, id string) (*ContainerStats
 		return nil, fmt.Errorf("failed to get stats (status %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var rawStats struct {
-		Stats []struct {
-			CPU      float64 `json:"CPU"`
-			MemUsage int64   `json:"MemUsage"`
-			MemLimit int64   `json:"MemLimit"`
-			NetInput int64   `json:"NetInput"`
-			NetOutput int64  `json:"NetOutput"`
-		} `json:"Stats"`
-		// Flat fields as fallback
-		CPU      float64 `json:"CPU"`
-		MemUsage int64   `json:"MemUsage"`
-		MemLimit int64   `json:"MemLimit"`
-		NetInput int64   `json:"NetInput"`
-		NetOutput int64  `json:"NetOutput"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&rawStats); err != nil {
+	stats, err := decodeContainerStats(resp.Body)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode stats: %w", err)
 	}
+	return stats, nil
+}
 
-	result := &ContainerStatsResult{
-		CPUPercent: rawStats.CPU,
-		MemUsage:   rawStats.MemUsage,
-		MemLimit:   rawStats.MemLimit,
-		NetInput:   rawStats.NetInput,
-		NetOutput:  rawStats.NetOutput,
+func decodeContainerStats(r io.Reader) (*ContainerStatsResult, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
 	}
 
-	// Podman returns stats in a Stats array
-	if len(rawStats.Stats) > 0 {
-		s := rawStats.Stats[0]
-		result.CPUPercent = s.CPU
-		result.MemUsage = s.MemUsage
-		result.MemLimit = s.MemLimit
-		result.NetInput = s.NetInput
-		result.NetOutput = s.NetOutput
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty stats payload")
 	}
 
-	return result, nil
+	if body[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(body, &items); err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			return nil, fmt.Errorf("empty stats array")
+		}
+		body = bytes.TrimSpace(items[0])
+	}
+
+	type statsPayload struct {
+		Stats []struct {
+			CPU       float64 `json:"CPU"`
+			MemUsage  int64   `json:"MemUsage"`
+			MemLimit  int64   `json:"MemLimit"`
+			NetInput  int64   `json:"NetInput"`
+			NetOutput int64   `json:"NetOutput"`
+		} `json:"Stats"`
+
+		CPU       float64 `json:"CPU"`
+		MemUsage  int64   `json:"MemUsage"`
+		MemLimit  int64   `json:"MemLimit"`
+		NetInput  int64   `json:"NetInput"`
+		NetOutput int64   `json:"NetOutput"`
+
+		CPUPercentText string `json:"cpu_percent"`
+		MemUsageText   string `json:"mem_usage"`
+		NetIOText      string `json:"net_io"`
+
+		CPUStats    dockerCPUStats                `json:"cpu_stats"`
+		PreCPUStats dockerCPUStats                `json:"precpu_stats"`
+		MemoryStats dockerMemoryStats             `json:"memory_stats"`
+		Networks    map[string]dockerNetworkStats `json:"networks"`
+	}
+
+	var raw statsPayload
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+
+	if len(raw.Stats) > 0 {
+		s := raw.Stats[0]
+		return &ContainerStatsResult{
+			CPUPercent: s.CPU,
+			MemUsage:   s.MemUsage,
+			MemLimit:   s.MemLimit,
+			NetInput:   s.NetInput,
+			NetOutput:  s.NetOutput,
+		}, nil
+	}
+
+	if raw.CPU != 0 || raw.MemUsage != 0 || raw.MemLimit != 0 || raw.NetInput != 0 || raw.NetOutput != 0 {
+		return &ContainerStatsResult{
+			CPUPercent: raw.CPU,
+			MemUsage:   raw.MemUsage,
+			MemLimit:   raw.MemLimit,
+			NetInput:   raw.NetInput,
+			NetOutput:  raw.NetOutput,
+		}, nil
+	}
+
+	if raw.CPUPercentText != "" || raw.MemUsageText != "" || raw.NetIOText != "" {
+		result := &ContainerStatsResult{}
+		if cpu, ok := parsePercent(raw.CPUPercentText); ok {
+			result.CPUPercent = cpu
+		}
+		if used, limit, ok := parseUsagePair(raw.MemUsageText); ok {
+			result.MemUsage = used
+			result.MemLimit = limit
+		}
+		if input, output, ok := parseUsagePair(raw.NetIOText); ok {
+			result.NetInput = input
+			result.NetOutput = output
+		}
+		return result, nil
+	}
+
+	if raw.MemoryStats.Usage != 0 || raw.MemoryStats.Limit != 0 || len(raw.Networks) > 0 || raw.CPUStats.SystemUsage != 0 {
+		result := &ContainerStatsResult{
+			CPUPercent: calculateDockerCPUPercent(raw.CPUStats, raw.PreCPUStats),
+			MemUsage:   int64(raw.MemoryStats.Usage),
+			MemLimit:   int64(raw.MemoryStats.Limit),
+		}
+		for _, network := range raw.Networks {
+			result.NetInput += int64(network.RXBytes)
+			result.NetOutput += int64(network.TXBytes)
+		}
+		return result, nil
+	}
+
+	return &ContainerStatsResult{}, nil
+}
+
+func parsePercent(value string) (float64, bool) {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseUsagePair(value string) (int64, int64, bool) {
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+
+	left, ok := parseByteValue(parts[0])
+	if !ok {
+		return 0, 0, false
+	}
+	right, ok := parseByteValue(parts[1])
+	if !ok {
+		return 0, 0, false
+	}
+
+	return left, right, true
+}
+
+func parseByteValue(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	units := []struct {
+		suffix string
+		scale  float64
+	}{
+		{"TiB", 1024 * 1024 * 1024 * 1024},
+		{"GiB", 1024 * 1024 * 1024},
+		{"MiB", 1024 * 1024},
+		{"KiB", 1024},
+		{"TB", 1000 * 1000 * 1000 * 1000},
+		{"GB", 1000 * 1000 * 1000},
+		{"MB", 1000 * 1000},
+		{"kB", 1000},
+		{"KB", 1000},
+		{"B", 1},
+	}
+
+	for _, unit := range units {
+		if strings.HasSuffix(value, unit.suffix) {
+			number := strings.TrimSpace(strings.TrimSuffix(value, unit.suffix))
+			parsed, err := strconv.ParseFloat(number, 64)
+			if err != nil {
+				return 0, false
+			}
+			return int64(math.Round(parsed * unit.scale)), true
+		}
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64(parsed), true
+}
+
+func calculateDockerCPUPercent(current, previous dockerCPUStats) float64 {
+	cpuDelta := float64(current.CPUUsage.TotalUsage - previous.CPUUsage.TotalUsage)
+	systemDelta := float64(current.SystemUsage - previous.SystemUsage)
+	if cpuDelta <= 0 || systemDelta <= 0 {
+		return 0
+	}
+
+	cpus := float64(current.OnlineCPUs)
+	if cpus == 0 {
+		cpus = float64(len(current.CPUUsage.PercpuUsage))
+	}
+	if cpus == 0 {
+		cpus = 1
+	}
+
+	return (cpuDelta / systemDelta) * cpus * 100
 }
 
 // GetHTTPClient returns the underlying HTTP client

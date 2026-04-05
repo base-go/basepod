@@ -2,6 +2,8 @@
 
 Deploy pre-configured applications with a single command.
 
+The catalog is curated for apps that Basepod can run cleanly as single managed services. Reverse proxies, container-engine managers, and templates that need a separately wired peer service are intentionally excluded.
+
 ## Available Templates
 
 ### Databases
@@ -26,22 +28,19 @@ Deploy pre-configured applications with a single command.
 
 | Name | Description | Default Port |
 |------|-------------|--------------|
-| `wordpress` | WordPress CMS | 80 |
 | `ghost` | Ghost Publishing | 2368 |
 | `strapi` | Headless CMS | 1337 |
 | `nextcloud` | File Sync & Share | 80 |
 | `directus` | Headless CMS | 8055 |
 | `drupal` | Enterprise CMS | 80 |
 | `mediawiki` | Wiki Software | 80 |
-| `bookstack` | Documentation | 80 |
-| `pocketbase` | Backend in a File | 8090 |
+| `pocketbase` | Backend in a File | 8080 |
 
 ### Development Tools
 
 | Name | Description | Default Port |
 |------|-------------|--------------|
 | `gitea` | Self-hosted Git | 3000 |
-| `portainer` | Container Management | 9000 |
 | `uptime-kuma` | Uptime Monitoring | 3001 |
 | `code-server` | VS Code in Browser | 8080 |
 
@@ -50,7 +49,6 @@ Deploy pre-configured applications with a single command.
 | Name | Description | Default Port |
 |------|-------------|--------------|
 | `mattermost` | Slack Alternative | 8065 |
-| `rocket-chat` | Team Chat | 3000 |
 
 ### Automation
 
@@ -62,7 +60,6 @@ Deploy pre-configured applications with a single command.
 
 | Name | Description | Default Port |
 |------|-------------|--------------|
-| `plausible` | Privacy Analytics | 8000 |
 | `grafana` | Metrics Dashboard | 3000 |
 
 ### Storage
@@ -71,6 +68,44 @@ Deploy pre-configured applications with a single command.
 |------|-------------|--------------|
 | `minio` | S3-Compatible Storage | 9000 |
 | `filebrowser` | Web File Manager | 80 |
+
+### Business
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `nocodb` | Airtable Alternative | 8080 |
+| `listmonk` | Newsletter Manager | 9000 |
+
+### AI
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `ollama` | Local LLM Runtime | 11434 |
+| `flowise` | LLM Workflow Builder | 3000 |
+
+### Security
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `vaultwarden` | Bitwarden-Compatible Vault | 80 |
+
+### Media
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `jellyfin` | Media Streaming Server | 8096 |
+
+### Search
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `meilisearch` | Search Engine | 7700 |
+
+### Messaging
+
+| Name | Description | Default Port |
+|------|-------------|--------------|
+| `rabbitmq` | Message Broker | 15672 |
 
 ## Deploy via CLI
 
@@ -99,7 +134,7 @@ bp template deploy postgres \
 
 ```bash
 bp template deploy postgres --version 16
-bp template deploy redis --version 7-alpine
+bp template deploy redis --version 7
 ```
 
 ## Deploy via Web UI
@@ -146,19 +181,6 @@ bp template deploy redis
 **Volumes:** `/data`
 
 **Versions:** 7, 6 (alpine variants available)
-
-### WordPress
-
-```bash
-bp template deploy wordpress \
-  -e WORDPRESS_DB_HOST=mysql:3306 \
-  -e WORDPRESS_DB_USER=wordpress \
-  -e WORDPRESS_DB_PASSWORD=secret
-```
-
-**Volumes:** `/var/www/html`
-
-**Note:** Requires MySQL/MariaDB. Deploy database first.
 
 ### Gitea
 

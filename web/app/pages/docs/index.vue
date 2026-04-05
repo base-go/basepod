@@ -153,21 +153,21 @@ const activeSection = ref('getting-started')
             <h3 class="text-lg font-semibold mt-6 mb-3">External Access</h3>
             <p class="text-(--ui-text-muted) mb-4">Enable "External Access" when deploying to expose the database port to the host. The assigned port will appear in the connection info after deployment.</p>
 
-            <h3 class="text-lg font-semibold mt-6 mb-3">Default Credentials</h3>
+            <h3 class="text-lg font-semibold mt-6 mb-3">Generated Credentials</h3>
             <div class="border border-(--ui-border) rounded-lg overflow-hidden">
               <table class="w-full text-sm">
                 <thead>
                   <tr class="bg-(--ui-bg-muted) border-b border-(--ui-border)">
                     <th class="text-left px-4 py-2.5 font-medium">Database</th>
                     <th class="text-left px-4 py-2.5 font-medium">Username</th>
-                    <th class="text-left px-4 py-2.5 font-medium">Default Password</th>
+                    <th class="text-left px-4 py-2.5 font-medium">Password</th>
                   </tr>
                 </thead>
                 <tbody class="text-(--ui-text-muted)">
-                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">PostgreSQL</td><td class="px-4 py-2.5 font-mono">postgres</td><td class="px-4 py-2.5 font-mono">changeme</td></tr>
-                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">MySQL/MariaDB</td><td class="px-4 py-2.5 font-mono">root</td><td class="px-4 py-2.5 font-mono">changeme</td></tr>
-                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">MongoDB</td><td class="px-4 py-2.5 font-mono">admin</td><td class="px-4 py-2.5 font-mono">changeme</td></tr>
-                  <tr><td class="px-4 py-2.5">Redis</td><td class="px-4 py-2.5 font-mono">—</td><td class="px-4 py-2.5 font-mono">changeme</td></tr>
+                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">PostgreSQL</td><td class="px-4 py-2.5 font-mono">basepod</td><td class="px-4 py-2.5">Generated at deploy time</td></tr>
+                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">MySQL/MariaDB</td><td class="px-4 py-2.5 font-mono">basepod</td><td class="px-4 py-2.5">Generated at deploy time</td></tr>
+                  <tr class="border-b border-(--ui-border)"><td class="px-4 py-2.5">MongoDB</td><td class="px-4 py-2.5 font-mono">admin</td><td class="px-4 py-2.5">Generated at deploy time</td></tr>
+                  <tr><td class="px-4 py-2.5">Redis</td><td class="px-4 py-2.5 font-mono">—</td><td class="px-4 py-2.5">Generated at deploy time</td></tr>
                 </tbody>
               </table>
             </div>

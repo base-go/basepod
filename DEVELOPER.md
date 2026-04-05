@@ -209,10 +209,12 @@ type Template struct {
 **Available Templates:**
 - Databases: mysql, mariadb, postgres, mongodb, redis
 - Admin: phpmyadmin, adminer, pgadmin
-- Web servers: nginx, apache, caddy
-- CMS: wordpress, ghost, strapi
-- DevTools: gitea, portainer, uptime-kuma, code-server
-- Others: mattermost, n8n, plausible, grafana, minio, filebrowser
+- CMS: ghost, strapi, nextcloud, directus, drupal, mediawiki, pocketbase
+- DevTools: gitea, uptime-kuma, code-server
+- Communication & Automation: mattermost, n8n
+- Analytics & Storage: grafana, minio, filebrowser
+- Business & AI: nocodb, listmonk, ollama, flowise
+- Security, Media, Search & Messaging: vaultwarden, jellyfin, meilisearch, rabbitmq
 
 ### 6. Auth (`internal/auth/auth.go`)
 
@@ -453,10 +455,10 @@ curl http://localhost:2019/config/apps/http/servers/srv0/routes
 ### Test Proxy Directly
 ```bash
 # Direct to container
-curl -X POST http://localhost:31281/login -d 'password=changeme' -v
+curl -X POST http://localhost:31281/login -d 'password=<generated-password>' -v
 
 # Through deployer proxy
-curl -X POST -H 'Host: code.common.al' http://localhost:3000/login -d 'password=changeme' -v
+curl -X POST -H 'Host: code.common.al' http://localhost:3000/login -d 'password=<generated-password>' -v
 ```
 
 ### Check Database

@@ -54,7 +54,9 @@ func assignHostPort(appID string) int {
 // generateRandomString generates a random alphanumeric string of the given length
 func generateRandomString(length int) string {
 	b := make([]byte, length)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
 	return hex.EncodeToString(b)[:length]
 }
 
@@ -1842,6 +1844,13 @@ func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		errorResponse(w, http.StatusBadGateway, "App did not become ready: "+err.Error())
+		return
+	}
+
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 
@@ -1989,6 +1998,13 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.ContainerID = containerID
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		errorResponse(w, http.StatusBadGateway, "App did not become ready: "+err.Error())
+		return
+	}
+
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 
@@ -2104,19 +2120,13 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get container IP for reverse proxy
-	containerIP := ""
-	if inspect, err := s.podman.InspectContainer(ctx, containerID); err == nil {
-		containerIP = inspect.NetworkSettings.IPAddress
-		// Try to get IP from networks if direct IP is empty
-		if containerIP == "" {
-			for _, net := range inspect.NetworkSettings.Networks {
-				if net.IPAddress != "" {
-					containerIP = net.IPAddress
-					break
-				}
-			}
-		}
+	a.ContainerID = containerID
+	a.Image = image
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		errorResponse(w, http.StatusBadGateway, "App did not become ready: "+err.Error())
+		return
 	}
 
 	// Configure Caddy reverse proxy if domain is set
@@ -2149,8 +2159,6 @@ func (s *Server) handleDeployApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update app record
-	a.ContainerID = containerID
-	a.Image = image
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 
@@ -3434,6 +3442,12 @@ func (s *Server) deployPlaceholder(a *app.App) {
 	// Update app with container info
 	a.ContainerID = containerID
 	a.Image = placeholderImage
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
 	s.storage.UpdateApp(a)
@@ -3501,15 +3515,6 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge template env with user-provided env
-	env := make(map[string]string)
-	for k, v := range tmpl.Env {
-		env[k] = v
-	}
-	for k, v := range req.Env {
-		env[k] = v
-	}
-
 	// For non-database templates, assign domain; for databases, skip domain
 	domain := req.Domain
 	if tmpl.Category != "database" {
@@ -3524,49 +3529,12 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Override url env var for apps that need it (e.g., Ghost)
-		if _, hasURL := env["url"]; hasURL {
-			env["url"] = "http://" + domain
-		}
 	} else {
 		// No domain for database apps
 		domain = ""
-
-		// Auto-generate secure credentials for database templates
-		autoPassword := generateRandomString(24)
-		autoUser := "basepod"
-		autoDB := name
-
-		switch tmpl.ID {
-		case "postgres", "postgresql":
-			if env["POSTGRES_PASSWORD"] == "" || env["POSTGRES_PASSWORD"] == "changeme" {
-				env["POSTGRES_PASSWORD"] = autoPassword
-			}
-			if env["POSTGRES_USER"] == "" {
-				env["POSTGRES_USER"] = autoUser
-			}
-			if env["POSTGRES_DB"] == "" {
-				env["POSTGRES_DB"] = autoDB
-			}
-		case "mysql", "mariadb":
-			if env["MYSQL_ROOT_PASSWORD"] == "" || env["MYSQL_ROOT_PASSWORD"] == "changeme" {
-				env["MYSQL_ROOT_PASSWORD"] = autoPassword
-			}
-			if env["MYSQL_USER"] == "" {
-				env["MYSQL_USER"] = autoUser
-			}
-			if env["MYSQL_PASSWORD"] == "" {
-				env["MYSQL_PASSWORD"] = autoPassword
-			}
-			if env["MYSQL_DATABASE"] == "" || env["MYSQL_DATABASE"] == "app" {
-				env["MYSQL_DATABASE"] = autoDB
-			}
-		case "redis":
-			if env["REDIS_PASSWORD"] == "" {
-				env["REDIS_PASSWORD"] = autoPassword
-			}
-		}
 	}
+
+	env := mergedTemplateEnv(tmpl, req.Env, name, domain)
 
 	// Convert template volumes to app volumes
 	var volumes []app.VolumeMount
@@ -3646,7 +3614,7 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 		Name:     "basepod-" + a.Name,
 		Image:    image,
 		Env:      a.Env,
-		Command:  tmpl.Command,
+		Command:  resolveTemplateCommand(tmpl.Command, a.Env),
 		Networks: []string{"basepod"},
 		Volumes:  volumeMounts,
 		Ports: map[string]string{
@@ -3675,6 +3643,13 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 
 	// Update app with container info
 	a.ContainerID = containerID
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		a.UpdatedAt = time.Now()
+		s.storage.UpdateApp(a)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
 	s.storage.UpdateApp(a)
@@ -4370,6 +4345,14 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	// Update app record
 	a.ContainerID = containerID
 	a.Image = imageName
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		writeLine("ERROR: App did not become ready: " + err.Error())
+		a.Status = app.StatusFailed
+		a.UpdatedAt = time.Now()
+		s.storage.UpdateApp(a)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
 
@@ -4945,6 +4928,13 @@ func (s *Server) restartAppForHealth(a *app.App) {
 	}
 
 	a.ContainerID = containerID
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		a.Status = app.StatusFailed
+		s.storage.UpdateApp(a)
+		log.Printf("Health check restart failed waiting for %s readiness: %v", a.Name, err)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	s.storage.UpdateApp(a)
 	log.Printf("Health check: successfully restarted app %s", a.Name)
@@ -5045,6 +5035,14 @@ func (s *Server) reconcileContainers() {
 		}
 
 		a.ContainerID = containerID
+		if err := s.waitForAppReadiness(ctx, a); err != nil {
+			log.Printf("Reconcile: container for %s did not become ready: %v", a.Name, err)
+			a.Status = app.StatusFailed
+			s.storage.UpdateApp(a)
+			failed++
+			continue
+		}
+
 		s.storage.UpdateApp(a)
 		restarted++
 		log.Printf("Reconcile: successfully restarted app %s", a.Name)
@@ -6520,6 +6518,16 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	// Update app record
 	a.ContainerID = containerID
 	a.Image = imageName
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		errMsg := fmt.Sprintf("App did not become ready: %v", err)
+		log.Printf("Webhook deploy %s: %s", a.Name, errMsg)
+		a.Status = app.StatusFailed
+		a.UpdatedAt = time.Now()
+		s.storage.UpdateApp(a)
+		s.storage.UpdateWebhookDeliveryStatus(deliveryID, "failed", errMsg)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
 
@@ -6879,6 +6887,14 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	// Update app
 	a.ContainerID = containerID
 	a.Image = targetDeploy.Image
+	if err := s.waitForAppReadiness(ctx, a); err != nil {
+		errorResponse(w, http.StatusBadGateway, "App did not become ready: "+err.Error())
+		a.Status = app.StatusFailed
+		a.UpdatedAt = time.Now()
+		s.storage.UpdateApp(a)
+		return
+	}
+
 	a.Status = app.StatusRunning
 	a.UpdatedAt = time.Now()
 

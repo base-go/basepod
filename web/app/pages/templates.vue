@@ -112,6 +112,14 @@ const categoryLabels: Record<string, string> = {
   devtools: 'Dev Tools',
   communication: 'Communication',
   automation: 'Automation',
+  analytics: 'Analytics',
+  storage: 'Storage',
+  business: 'Business Tools',
+  ai: 'AI / LLM',
+  security: 'Security',
+  media: 'Media',
+  search: 'Search',
+  messaging: 'Messaging',
   framework: 'Frameworks'
 }
 
