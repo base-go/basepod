@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	version = "2.1.6"
+	version = "2.1.8"
 
 	// Release URL for updates (uses GitHub releases API)
 	releaseBaseURL = "https://github.com/base-go/basepod/releases/latest/download"
