@@ -609,8 +609,9 @@ func (c *client) RemoveImage(ctx context.Context, id string, force bool) error {
 // CreateNetwork creates a new network
 func (c *client) CreateNetwork(ctx context.Context, name string) error {
 	spec := map[string]interface{}{
-		"name":   name,
-		"driver": "bridge",
+		"name":        name,
+		"driver":      "bridge",
+		"dns_enabled": true,
 	}
 
 	body, err := json.Marshal(spec)
