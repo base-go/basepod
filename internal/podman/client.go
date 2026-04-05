@@ -364,9 +364,12 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 
 	if len(opts.Networks) > 0 {
 		// Podman API expects networks as a map, not an array
+		// Add container name as network alias so other containers can resolve it by name
 		networksMap := make(map[string]interface{})
 		for _, network := range opts.Networks {
-			networksMap[network] = map[string]interface{}{}
+			networksMap[network] = map[string]interface{}{
+				"aliases": []string{opts.Name},
+			}
 		}
 		spec["networks"] = networksMap
 	}
