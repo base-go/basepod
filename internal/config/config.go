@@ -54,7 +54,7 @@ type AIConfig struct {
 
 // ConstructConfig holds Construct OAuth integration settings
 type ConstructConfig struct {
-	AccountsURL  string `yaml:"accounts_url"`  // e.g. "https://accounts.construct.space"
+	AccountsURL  string `yaml:"accounts_url"`  // e.g. "https://my.construct.space" — gateway fronts /api/accounts/* (accounts is internal-only)
 	DomainsURL   string `yaml:"domains_url"`   // e.g. "https://domains.construct.space" — redirect lookup API
 	Enabled      bool   `yaml:"enabled"`       // Enable Construct OAuth deploy
 }

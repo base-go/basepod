@@ -524,9 +524,13 @@ type ConstructUser struct {
 // requireConstructAuth verifies the request has a valid Construct OAuth token
 func (s *Server) requireConstructAuth(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Accounts is no longer publicly served. We go through the
+		// my.construct.space gateway, which fronts /api/accounts/ →
+		// accounts internal /api/. Auth happens inside the gateway's
+		// auth_request to /internal/validate-token.
 		accountsURL := s.config.Construct.AccountsURL
 		if accountsURL == "" {
-			accountsURL = "https://accounts.construct.space"
+			accountsURL = "https://my.construct.space"
 		}
 
 		token := r.Header.Get("Authorization")
@@ -536,8 +540,8 @@ func (s *Server) requireConstructAuth(handler http.HandlerFunc) http.HandlerFunc
 			return
 		}
 
-		// Verify token against Construct accounts service
-		req, err := http.NewRequest("GET", accountsURL+"/api/me", nil)
+		// Verify token against Construct accounts service via gateway.
+		req, err := http.NewRequest("GET", accountsURL+"/api/accounts/me", nil)
 		if err != nil {
 			errorResponse(w, http.StatusInternalServerError, "Failed to create verification request")
 			return
@@ -3837,8 +3841,8 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 		// Enforce per-user app limit for Construct users
 		if cu := getConstructUser(r); cu != nil {
 			userApps, _ := s.storage.ListAppsByOwner(cu.ID)
-			if len(userApps) >= 5 {
-				errorResponse(w, http.StatusForbidden, "Free hosting limit reached (5 apps). Delete an existing app to deploy a new one.")
+			if len(userApps) >= 10 {
+				errorResponse(w, http.StatusForbidden, "Free hosting limit reached (10 apps). Delete an existing app to deploy a new one.")
 				return
 			}
 		}
