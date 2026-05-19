@@ -1443,6 +1443,7 @@ func GetModelCatalog() []ModelInfo {
 		// === Agent / Tool Use Models ===
 		{ID: "mlx-community/functiongemma-270m-it-bf16", Name: "FunctionGemma 270M", Size: "0.54GB", Category: "agent", Description: "Google, function calling / tool use router (full precision)"},
 		{ID: "mlx-community/Orchestrator-8B-4bit", Name: "Orchestrator 8B", Size: "5GB", Category: "agent", Description: "Agent orchestration and planning"},
+		{ID: "construct/trinity-qwen-v23-4bit", Name: "Trinity v23", Size: "2.1GB", Category: "agent", Description: "Construct Source family, on-device text + tool dispatch"},
 
 		// === Embedding Models ===
 		{ID: "mlx-community/bge-small-en-v1.5-mlx", Name: "BGE Small", Size: "0.1GB", Category: "embedding", Description: "Fast English embeddings"},
