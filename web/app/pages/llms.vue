@@ -54,12 +54,13 @@ const categoryInfo: Record<string, { label: string; icon: string; description: s
   code: { label: 'Code', icon: 'i-heroicons-code-bracket', description: 'Programming and code generation' },
   reasoning: { label: 'Reasoning', icon: 'i-heroicons-light-bulb', description: 'Chain-of-thought reasoning' },
   vision: { label: 'Vision', icon: 'i-heroicons-eye', description: 'Image understanding' },
+  agent: { label: 'Agent', icon: 'i-heroicons-bolt', description: 'Function calling, tool use, orchestration' },
   embedding: { label: 'Embedding', icon: 'i-heroicons-cube-transparent', description: 'Text to vector embeddings' },
   speech: { label: 'Speech', icon: 'i-heroicons-microphone', description: 'Audio transcription' }
 }
 
 // Get ordered categories
-const categories = ['chat', 'code', 'reasoning', 'vision', 'embedding', 'speech']
+const categories = ['chat', 'code', 'reasoning', 'vision', 'agent', 'embedding', 'speech']
 
 // Models grouped by category
 const modelsByCategory = computed(() => {
