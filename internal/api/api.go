@@ -1701,12 +1701,26 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 			for _, alias := range oldAliases {
 				s.caddy.RemoveRoute(fmt.Sprintf("alias-%s-%s", a.ID[:8], alias))
 				s.caddy.RemoveRoute(fmt.Sprintf("redirect-%s-%s", a.ID[:8], alias))
+				s.caddy.RemoveRoute("static-" + alias)
 			}
 			// Remove any leftover redirect route for primary domain
 			s.caddy.RemoveRoute("redirect-" + a.Name)
 
 			// Add new alias routes
 			for _, alias := range a.Aliases {
+				// Static apps have no upstream container; serve their files for
+				// the alias the same way the primary domain is served. Using a
+				// reverse_proxy route here would point at a non-existent port
+				// and return 502.
+				if a.Type == app.AppTypeStatic {
+					if p, perr := config.GetPaths(); perr == nil {
+						staticDir := filepath.Join(p.Apps, a.Name)
+						if err := s.caddy.AddStaticRoute(alias, staticDir); err != nil {
+							log.Printf("Warning: failed to add static alias route for %s: %v", alias, err)
+						}
+					}
+					continue
+				}
 				routeID := fmt.Sprintf("alias-%s-%s", a.ID[:8], alias)
 				upstream := fmt.Sprintf("localhost:%d", a.Ports.HostPort)
 				if a.Ports.HostPort == 0 {
@@ -4205,10 +4219,15 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Update Caddy configuration for static site
+		// Update Caddy configuration for static site (primary + aliases)
 		if err := s.caddy.AddStaticRoute(a.Domain, appDataDir); err != nil {
 			writeLine("WARNING: Failed to update Caddy: " + err.Error())
 			// Continue anyway, can manually configure
+		}
+		for _, alias := range a.Aliases {
+			if err := s.caddy.AddStaticRoute(alias, appDataDir); err != nil {
+				writeLine("WARNING: Failed to add alias route for " + alias + ": " + err.Error())
+			}
 		}
 
 		writeLine("Static site deployed successfully!")
