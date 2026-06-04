@@ -251,6 +251,12 @@ func (s *Storage) migrate() error {
 		// Add owner_id for Construct user-scoped apps
 		`ALTER TABLE apps ADD COLUMN owner_id TEXT DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_apps_owner ON apps(owner_id)`,
+		// Fix existing postgres apps whose data volume was mounted at the parent
+		// dir. The postgres image declares VOLUME /var/lib/postgresql/data, so a
+		// named volume mounted at /var/lib/postgresql does NOT capture the data —
+		// the data subdir becomes an anonymous volume that podman wipes on every
+		// container recreation. Mount it at the data dir so it actually persists.
+		`UPDATE apps SET volumes = REPLACE(volumes, '"container_path":"/var/lib/postgresql"', '"container_path":"/var/lib/postgresql/data"') WHERE volumes LIKE '%"container_path":"/var/lib/postgresql"%'`,
 	}
 
 	for _, migration := range migrations {
