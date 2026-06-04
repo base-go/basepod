@@ -1982,9 +1982,19 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 	// Build volume mounts from app record
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
-		if v.HostPath != "" && v.ContainerPath != "" {
-			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+		if v.ContainerPath == "" {
+			continue
 		}
+		// Named volumes have an empty HostPath — they must be mounted by their
+		// managed name (basepod-<app>-<name>), exactly like the deploy path.
+		// Skipping them here left the container with no mount, so the image's
+		// declared VOLUME became a throwaway anonymous volume = data loss on
+		// every restart/recreate.
+		source := v.HostPath
+		if source == "" {
+			source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		}
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 	}
 
 	// Create new container with current settings
@@ -4919,9 +4929,19 @@ func (s *Server) restartAppForHealth(a *app.App) {
 
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
-		if v.HostPath != "" && v.ContainerPath != "" {
-			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+		if v.ContainerPath == "" {
+			continue
 		}
+		// Named volumes have an empty HostPath — they must be mounted by their
+		// managed name (basepod-<app>-<name>), exactly like the deploy path.
+		// Skipping them here left the container with no mount, so the image's
+		// declared VOLUME became a throwaway anonymous volume = data loss on
+		// every restart/recreate.
+		source := v.HostPath
+		if source == "" {
+			source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		}
+		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 	}
 
 	containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
@@ -5024,9 +5044,15 @@ func (s *Server) reconcileContainers() {
 		// Build volume mounts
 		volumeMounts := []string{}
 		for _, v := range a.Volumes {
-			if v.HostPath != "" && v.ContainerPath != "" {
-				volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", v.HostPath, v.ContainerPath))
+			if v.ContainerPath == "" {
+				continue
 			}
+			// Named volumes have an empty HostPath — mount by managed name.
+			source := v.HostPath
+			if source == "" {
+				source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+			}
+			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 		}
 
 		containerID, err := s.podman.CreateContainer(ctx, podman.CreateContainerOpts{
