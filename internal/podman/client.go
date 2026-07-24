@@ -106,6 +106,16 @@ type CreateContainerOpts struct {
 	Labels         map[string]string
 	Memory         int64 // Memory limit in bytes
 	CPUs           float64
+	// RestartPolicy is the Podman restart policy: "no", "on-failure",
+	// "always", or "unless-stopped". Empty defaults to "unless-stopped" so a
+	// basepod-managed service survives crashes AND host reboots: an app that
+	// loses a startup race (e.g. its database's container DNS isn't resolvable
+	// yet) is retried by Podman instead of staying dead until someone notices.
+	// "unless-stopped" still honors a deliberate stop across reboots, so an app
+	// an operator stopped is not resurrected.
+	RestartPolicy string
+	// RestartRetries caps retries for the "on-failure" policy (0 = unlimited).
+	RestartRetries int
 }
 
 // FlexibleTime handles Podman's Created field which can be int64 or string
@@ -373,6 +383,18 @@ func (c *client) CreateContainer(ctx context.Context, opts CreateContainerOpts) 
 		"command":      opts.Command,
 		"working_dir":  opts.WorkingDir,
 		"labels":       opts.Labels,
+	}
+
+	// Restart policy — default to "unless-stopped" so service containers come
+	// back after a crash or host reboot (Podman retries until dependencies like
+	// the database are reachable), while still honoring a deliberate stop.
+	restartPolicy := opts.RestartPolicy
+	if restartPolicy == "" {
+		restartPolicy = "unless-stopped"
+	}
+	spec["restart_policy"] = restartPolicy
+	if restartPolicy == "on-failure" && opts.RestartRetries > 0 {
+		spec["restart_tries"] = opts.RestartRetries
 	}
 
 	// Only add mounts if there are any
