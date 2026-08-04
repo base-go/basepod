@@ -660,7 +660,14 @@ func fallbackSelect(cfg *CLIConfig, names []string) (*ServerConfig, string) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Printf("Select [1-%d]: ", len(names))
-		input, _ := reader.ReadString('\n')
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			// Non-interactive stdin (CI, piped, background): we can't prompt.
+			// Fail with guidance instead of looping forever on EOF.
+			fmt.Fprintln(os.Stderr, "\nMultiple servers configured but stdin is not interactive.")
+			fmt.Fprintln(os.Stderr, "Set `server: <context>` in basepod.yaml, or run from a terminal.")
+			os.Exit(1)
+		}
 		input = strings.TrimSpace(input)
 
 		// Allow typing name directly
@@ -2382,11 +2389,14 @@ func deployLocalSource(dir string, force bool, env string) {
 
 	// Stream response (build logs)
 	fmt.Println("\n--- Build Output ---")
+	var out strings.Builder
 	buf := make([]byte, 1024)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			fmt.Print(string(buf[:n]))
+			chunk := string(buf[:n])
+			fmt.Print(chunk)
+			out.WriteString(chunk)
 		}
 		if err != nil {
 			break
@@ -2398,10 +2408,34 @@ func deployLocalSource(dir string, force bool, env string) {
 		os.Exit(1)
 	}
 
+	// The source-deploy endpoint streams build/run errors with a 200, so trusting
+	// the status alone reports "Deployed successfully!" over a failed build.
+	// Scan the streamed output for failure markers and exit non-zero if present.
+	if failMarker := deployFailureMarker(out.String()); failMarker != "" {
+		fmt.Fprintf(os.Stderr, "\nDeploy failed: %s (see output above).\n", failMarker)
+		os.Exit(1)
+	}
+
 	fmt.Println("\nDeployed successfully!")
 	if appCfg.Domain != "" {
 		fmt.Printf("URL: https://%s\n", appCfg.Domain)
 	}
+}
+
+// deployFailureMarker returns the first build/run failure phrase found in the
+// server's streamed deploy output, or "" if the deploy looks clean.
+func deployFailureMarker(output string) string {
+	for _, m := range []string{
+		"ERROR: Build failed",
+		"Failed to create container",
+		"Failed to start container",
+		"Error: building at STEP",
+	} {
+		if strings.Contains(output, m) {
+			return m
+		}
+	}
+	return ""
 }
 
 // deployImageOrGit deploys from a Docker image or Git repository

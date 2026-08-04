@@ -1992,7 +1992,7 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 		// every restart/recreate.
 		source := v.HostPath
 		if source == "" {
-			source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+			source = volumeMountSource(a.Name, v.Name)
 		}
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 	}
@@ -3633,7 +3633,7 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
 		// Use named volume format: volumeName:containerPath
-		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeName := volumeMountSource(a.Name, v.Name)
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
 	}
 
@@ -3691,6 +3691,18 @@ func (s *Server) deployFromTemplate(a *app.App, tmpl *templates.Template) {
 			EnableSSL: a.SSL.Enabled,
 		})
 	}
+}
+
+// volumeMountSource maps a configured volume to a podman mount source. An
+// absolute path is a bind mount and is used as-is; anything else becomes a
+// per-app named volume. Without this, a bind mount like
+// "/Users/base/studio-storage" produced the name "basepod-<app>-/Users/base/..."
+// which podman rejects ("names must match [a-zA-Z0-9_.-]"), failing the deploy.
+func volumeMountSource(appName, name string) string {
+	if strings.HasPrefix(name, "/") {
+		return name
+	}
+	return fmt.Sprintf("basepod-%s-%s", appName, name)
 }
 
 // handleCaddyCheck handles Caddy on-demand TLS certificate checks
@@ -4342,7 +4354,7 @@ func (s *Server) handleSourceDeploy(w http.ResponseWriter, r *http.Request) {
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
 		// Use named volume format: volumeName:containerPath
-		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeName := volumeMountSource(a.Name, v.Name)
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
 		writeLine(fmt.Sprintf("Volume: %s -> %s", volumeName, v.ContainerPath))
 	}
@@ -4944,7 +4956,7 @@ func (s *Server) restartAppForHealth(a *app.App) {
 		// every restart/recreate.
 		source := v.HostPath
 		if source == "" {
-			source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+			source = volumeMountSource(a.Name, v.Name)
 		}
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 	}
@@ -5055,7 +5067,7 @@ func (s *Server) reconcileContainers() {
 			// Named volumes have an empty HostPath — mount by managed name.
 			source := v.HostPath
 			if source == "" {
-				source = fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+				source = volumeMountSource(a.Name, v.Name)
 			}
 			volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", source, v.ContainerPath))
 		}
@@ -6529,7 +6541,7 @@ func (s *Server) deployFromGit(a *app.App, commitHash, commitMsg, branch, delive
 	// Build volume mounts
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
-		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeName := volumeMountSource(a.Name, v.Name)
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
 	}
 
@@ -6903,7 +6915,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	// Build volume mounts
 	volumeMounts := []string{}
 	for _, v := range a.Volumes {
-		volumeName := fmt.Sprintf("basepod-%s-%s", a.Name, v.Name)
+		volumeName := volumeMountSource(a.Name, v.Name)
 		volumeMounts = append(volumeMounts, fmt.Sprintf("%s:%s", volumeName, v.ContainerPath))
 	}
 
