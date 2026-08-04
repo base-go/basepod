@@ -1227,29 +1227,44 @@ CMD ["python", "app.py"]
 	}
 }
 
+// readBpignore returns the patterns declared in <dir>/.bpignore (basenames,
+// trailing slashes trimmed), or nil if the file is absent. These are the app's
+// authoritative exclude list for the deploy context.
+func readBpignore(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, ".bpignore"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(line, "/"))
+	}
+	return out
+}
+
 // createTarball creates a gzipped tarball of the directory
 func createTarball(dir string) (*bytes.Buffer, error) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
-	// Files/dirs to ignore
+	// Always-strip: secrets and noise, regardless of app config.
 	ignorePatterns := []string{
-		".git",
-		"node_modules",
-		".env",
-		".env.local",
-		"__pycache__",
-		"*.pyc",
-		".DS_Store",
-		"vendor",
-		"dist",
-		"build",
-		".next",
-		".nuxt",
-		".output",
-		"sdk",
-		"bin",
+		".git", ".env", ".env.local", ".env.*.local", "__pycache__", "*.pyc", ".DS_Store",
+	}
+	// An app's own .bpignore is authoritative for everything else — an app may
+	// legitimately ship a prebuilt output (e.g. a Dockerfile that COPYs
+	// web/.output/public) that a hardcoded list would wrongly strip. Fall back
+	// to sensible defaults only when the app declares no .bpignore.
+	if bp := readBpignore(dir); len(bp) > 0 {
+		ignorePatterns = append(ignorePatterns, bp...)
+	} else {
+		ignorePatterns = append(ignorePatterns,
+			"node_modules", "vendor", "dist", "build", ".next", ".nuxt", ".output", "sdk", "bin")
 	}
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1268,18 +1283,36 @@ func createTarball(dir string) (*bytes.Buffer, error) {
 			return nil
 		}
 
-		// Check ignore patterns
+		// Check ignore patterns. Three shapes, so a pattern means what it says:
+		//   /foo        anchored to the context root (only top-level foo)
+		//   a/b         a specific relative path (matches that path, at root)
+		//   foo, *.log  a basename glob (matches at any depth)
+		// This keeps "storage/" from also stripping "api/core/storage".
 		for _, pattern := range ignorePatterns {
-			if matched, _ := filepath.Match(pattern, info.Name()); matched {
+			p := strings.TrimSuffix(pattern, "/")
+			var match bool
+			switch {
+			case strings.HasPrefix(p, "/"):
+				a := strings.TrimPrefix(p, "/")
+				match = relPath == a || strings.HasPrefix(relPath, a+"/")
+			case strings.Contains(p, "/"):
+				match = relPath == p || strings.HasPrefix(relPath, p+"/")
+			default:
+				match, _ = filepath.Match(p, info.Name())
+			}
+			if match {
 				if info.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			// Also check if path contains ignored dir
-			if strings.Contains(relPath, pattern+string(filepath.Separator)) {
-				return nil
-			}
+		}
+
+		// Skip symlinks: filepath.Walk doesn't follow them, so a symlink to a
+		// directory (e.g. a cross-repo `dist ->`) would otherwise be opened as a
+		// regular file and fail the whole tarball. Build contexts don't need them.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		// Create tar header
