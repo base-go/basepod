@@ -187,11 +187,13 @@ func main() {
 		cfg2, _ := config.Load()
 		apiPort := 3000
 		domain := ""
+		cloudflareToken := ""
 		if cfg2 != nil {
 			apiPort = cfg2.Server.APIPort
 			domain = cfg2.Domain.Root
+			cloudflareToken = cfg2.Domain.CloudflareToken
 		}
-		if err := caddyClient.EnsureBaseConfig(apiPort, domain); err != nil {
+		if err := caddyClient.EnsureBaseConfig(apiPort, domain, cloudflareToken); err != nil {
 			log.Printf("Warning: Failed to ensure Caddy base config: %v", err)
 		}
 		// Then initialize routes

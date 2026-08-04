@@ -96,6 +96,15 @@ type DomainConfig struct {
 	Suffix   string `yaml:"suffix"`   // Local dev: domain suffix (e.g., .pod) - apps become {name}.pod
 	Wildcard bool   `yaml:"wildcard"` // Enable wildcard subdomains
 	Email    string `yaml:"email"`    // For Let's Encrypt SSL certificates
+
+	// CloudflareToken, when set, makes Caddy solve ACME challenges via the
+	// Cloudflare DNS-01 method instead of TLS-ALPN-01. This is REQUIRED when the
+	// domain is proxied through Cloudflare ("orange cloud"): TLS-ALPN-01 / HTTP-01
+	// challenges terminate at Cloudflare's edge and never reach Caddy, so
+	// issuance fails and the origin serves no cert (Cloudflare then returns 525).
+	// DNS-01 validates via a DNS record and works regardless of proxy status.
+	// Needs a Caddy binary built with the caddy-dns/cloudflare module.
+	CloudflareToken string `yaml:"cloudflare_token"`
 }
 
 type PodmanConfig struct {

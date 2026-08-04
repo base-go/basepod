@@ -475,7 +475,7 @@ func (c *Client) AddStaticRoute(domain, rootDir string) error {
 // EnsureBaseConfig ensures the base Caddy server (srv0) exists with HTTPS listeners.
 // If srv0 doesn't exist, it creates one with :80 and :443 listeners.
 // Also ensures TLS on-demand check endpoint is configured.
-func (c *Client) EnsureBaseConfig(apiPort int, domain string) error {
+func (c *Client) EnsureBaseConfig(apiPort int, domain string, cloudflareToken string) error {
 	// Check if srv0 already exists
 	resp, err := c.httpClient.Get(c.adminURL + "/config/apps/http/servers/srv0")
 	if err != nil {
@@ -506,13 +506,7 @@ func (c *Client) EnsureBaseConfig(apiPort int, domain string) error {
 
 	// Ensure TLS on-demand is configured (check endpoint)
 	if apiPort > 0 {
-		tlsConfig := map[string]interface{}{
-			"automation": map[string]interface{}{
-				"on_demand": map[string]interface{}{
-					"ask": fmt.Sprintf("http://localhost:%d/api/caddy/check", apiPort),
-				},
-			},
-		}
+		tlsConfig := buildTLSConfig(apiPort, cloudflareToken)
 		data, _ := json.Marshal(tlsConfig)
 		req, err := http.NewRequest("POST", c.adminURL+"/config/apps/tls", bytes.NewReader(data))
 		if err != nil {
@@ -527,6 +521,41 @@ func (c *Client) EnsureBaseConfig(apiPort int, domain string) error {
 	}
 
 	return nil
+}
+
+// buildTLSConfig builds Caddy's tls-app config: on-demand issuance gated by the
+// check endpoint, plus — when a Cloudflare token is set — an ACME issuer that
+// solves challenges via Cloudflare DNS-01. DNS-01 is mandatory for domains
+// proxied through Cloudflare, where TLS-ALPN-01/HTTP-01 can never reach the
+// origin (the cause of the 525s). Without a token the behavior is unchanged.
+func buildTLSConfig(apiPort int, cloudflareToken string) map[string]interface{} {
+	automation := map[string]interface{}{
+		"on_demand": map[string]interface{}{
+			"ask": fmt.Sprintf("http://localhost:%d/api/caddy/check", apiPort),
+		},
+	}
+	if cloudflareToken != "" {
+		// A catch-all policy (no "subjects") routes every managed name through an
+		// ACME issuer that uses the Cloudflare DNS provider for the challenge.
+		automation["policies"] = []interface{}{
+			map[string]interface{}{
+				"issuers": []interface{}{
+					map[string]interface{}{
+						"module": "acme",
+						"challenges": map[string]interface{}{
+							"dns": map[string]interface{}{
+								"provider": map[string]interface{}{
+									"name":      "cloudflare",
+									"api_token": cloudflareToken,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	return map[string]interface{}{"automation": automation}
 }
 
 // EnableAccessLog enables Caddy access logging on the HTTP server.

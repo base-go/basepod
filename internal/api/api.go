@@ -3739,8 +3739,13 @@ func (s *Server) handleCaddyCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Allow any subdomain of our base domain (for future apps)
-	if strings.HasSuffix(domain, "."+baseDomain) {
+	// Allow any subdomain of our base domain only when wildcard is explicitly
+	// enabled. This authorizes on-demand certs for names that have no app yet
+	// (hand-managed Caddy blocks, future apps). It's gated on config because
+	// blanket authorization means Caddy will attempt ACME issuance for ANY
+	// subdomain someone points at us — fine with a working DNS-01 issuer, a
+	// source of doomed retries (and 525s) without one.
+	if s.config.Domain.Wildcard && strings.HasSuffix(domain, "."+baseDomain) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
